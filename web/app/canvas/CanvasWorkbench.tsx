@@ -86,7 +86,7 @@ export default function CanvasWorkbench() {
   const projects = useProjects();
   // 这几个是 useCallback 包出来的稳定引用：放进 useEffect 的依赖数组里不会每次渲染都重置
   const { createProject: createProjectRequest, openProject: openProjectRequest } = projects;
-  const { saveManifest, writeOutput } = projects;
+  const { saveManifest, writeOutput, remember: rememberProject } = projects;
 
   const mapHandleRef = useRef<MapCanvasHandle | null>(null);
   const idRef = useRef(0);
@@ -380,20 +380,30 @@ export default function CanvasWorkbench() {
     const t = setTimeout(() => {
       const next = buildManifest();
       if (!next) return;
-      void saveManifest(projectPath, next).catch((err) => {
-        setBanner(`项目清单未保存：${(err as Error).message}`);
-      });
+      void saveManifest(projectPath, next)
+        .then(() => {
+          // 存好了就把"最近项目"里的摘要也刷新一下：
+          // 否则列表里显示的还是打开那一刻的图层数，用户会以为改动没存上
+          rememberProject(projectPath, next);
+        })
+        .catch((err) => {
+          setBanner(`项目清单未保存：${(err as Error).message}`);
+        });
     }, 800);
     return () => clearTimeout(t);
-  }, [projectPath, manifest, buildManifest, saveManifest]);
+  }, [projectPath, manifest, buildManifest, saveManifest, rememberProject]);
 
   /** 回到项目列表：先把当前状态存下去（否则最后 800ms 的防抖会被清掉） */
   const leaveProject = useCallback(() => {
     const next = buildManifest();
     if (projectPath && next) {
-      void saveManifest(projectPath, next).catch((err) => {
-        setBanner(`项目清单未保存：${(err as Error).message}`);
-      });
+      void saveManifest(projectPath, next)
+        .then(() => {
+          rememberProject(projectPath, next);
+        })
+        .catch((err) => {
+          setBanner(`项目清单未保存：${(err as Error).message}`);
+        });
     }
     setProjectPath(null);
     setManifest(null);
@@ -405,7 +415,7 @@ export default function CanvasWorkbench() {
     setDir('');
     setFiles([]);
     setBanner(null);
-  }, [buildManifest, projectPath, saveManifest]);
+  }, [buildManifest, projectPath, saveManifest, rememberProject]);
 
   /* ───────── 导出 PDF ───────── */
 
