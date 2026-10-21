@@ -5,9 +5,21 @@
  */
 import { createServer, type Server } from 'node:http';
 import { readFileSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { join, dirname, resolve, isAbsolute, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { LocalFolderStore, NotFoundError, OccupiedError, PathEscapeError } from '@cartouche/engine';
+import {
+  LocalFolderStore,
+  NotFoundError,
+  OccupiedError,
+  PathEscapeError,
+  RootRegistry,
+  ProjectStore,
+  newManifest,
+  type CompatOperation,
+  type ProjectHistoryEntry,
+  type ProjectManifest,
+  type WorkspaceAdapter,
+} from '@cartouche/engine';
 import {
   resolveGdal,
   probeDataset,
@@ -17,9 +29,9 @@ import {
   vectorToGeoJson,
   datasetExtent,
   buildPdfFromJpeg,
-  type CompatOperation,
 } from '@cartouche/engine';
 import { llmStatus, scrub, setSessionApiKey } from './llm.ts';
+import { loadRegisteredRoots, registerRoot } from './roots.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
 // dist/app.js → 仓库根目录
@@ -35,6 +47,13 @@ export interface EngineInfo {
 /** 工作区根目录：引擎只能在这个目录内读写 */
 export const WORKSPACE_ROOT = process.env.ENGINE_WORKSPACE_ROOT ?? join(repoRoot, 'workspace');
 const store = new LocalFolderStore(WORKSPACE_ROOT);
+
+/* ── ③a-1：已登记根（默认根内置 + 用户登记的其它目录） ── */
+const roots = new RootRegistry(WORKSPACE_ROOT);
+loadRegisteredRoots(roots);
+
+/* ── ③a-1：项目存储（清单 / 留痕 / 产出物） ── */
+const projects = new ProjectStore(roots);
 
 /** GDAL 运行时位置（找不到会在调用时给出可读错误） */
 const gdalLoc = resolveGdal();
@@ -58,6 +77,78 @@ async function readBody(req: import('node:http').IncomingMessage): Promise<Buffe
   const chunks: Buffer[] = [];
   for await (const c of req) chunks.push(c as Buffer);
   return Buffer.concat(chunks);
+}
+
+/** 一次路径解析的结果：操作的 store、相对该 store 根的相对路径、绝对路径 */
+interface WorkspaceTarget {
+  readonly store: WorkspaceAdapter;
+  readonly relative: string;
+  readonly absolute: string;
+}
+
+/**
+ * 把「根 + 相对路径」解析成可以操作的 store 与相对路径。
+ *
+ * - 不给 `root` → 相对**默认根**，与今天的行为完全一致；
+ * - 给了 `root` → 先拼成绝对路径，再经 RootRegistry 最长前缀匹配找到所属的根。
+ *   这样即便项目目录本身没被登记成根（只要在某个已登记根之下）也能正确定位。
+ *
+ * `path` **必须**是相对路径：绝对路径会绕过根的边界
+ * （今天 `GET /api/fs/read?path=C:\任意路径` 就能读到工作区外的文件），
+ * 一律按越界处理 —— 这是「路径安全不可放松」的要求。
+ */
+function resolveTarget(root: string | null, rel: string): WorkspaceTarget {
+  // 绝对路径（含 `C:foo` 这种盘符相对写法）一律拒绝：它能绕过根的边界
+  if (isAbsolute(rel) || /^[A-Za-z]:/.test(rel)) {
+    throw new PathEscapeError(rel);
+  }
+  if (!root) {
+    // 不给 root：相对默认根。store.resolve 内部还会挡掉 `../` 逃逸
+    return { store, relative: rel, absolute: store.resolve(rel) };
+  }
+  const rootAbs = resolve(root);
+  const abs = resolve(rootAbs, rel);
+  // 相对路径不得逃出它自己声明的那个根
+  if (!isInside(rootAbs, abs)) throw new PathEscapeError(rel);
+  // 且必须落在**某个已登记根**之下（不在 → PathEscapeError）
+  const r = roots.resolve(abs);
+  return { store: roots.storeFor(r.rootId), relative: r.relative, absolute: abs };
+}
+
+/** 只要绝对路径时用这个（出图 / 矢量 / 兼容性报告） */
+function resolveWorkspacePath(root: string | null, rel: string): string {
+  return resolveTarget(root, rel).absolute;
+}
+
+/**
+ * 同上，但给出该路径所属根的 store 与**相对该根**的路径。
+ * `/api/fs/*` 这类按 store 操作的地方用（`store.list(rel)` 收的是相对根的路径）。
+ */
+function storeFor(
+  root: string | null,
+  rel: string,
+): { store: WorkspaceAdapter; relative: string } {
+  const t = resolveTarget(root, rel);
+  return { store: t.store, relative: t.relative };
+}
+
+/** 路径是否落在 root 之下（Windows 上文件系统不区分大小写） */
+function isInside(rootPath: string, candidate: string): boolean {
+  const root = foldCase(rootPath);
+  const cand = foldCase(candidate);
+  if (cand === root) return true;
+  const prefix = root.endsWith(sep) ? root : root + sep;
+  return cand.startsWith(prefix);
+}
+
+function foldCase(p: string): string {
+  return process.platform === 'win32' ? p.toLowerCase() : p;
+}
+
+/** 项目默认名：取路径最后一段（Windows 与 POSIX 的分隔符都认） */
+function defaultProjectName(p: string): string {
+  const parts = p.split(/[\\/]+/).filter(Boolean);
+  return parts[parts.length - 1] ?? p;
 }
 
 export function createEngineServer(): Server {
@@ -194,6 +285,7 @@ export function createEngineServer(): Server {
             return;
           }
           const rel = url.searchParams.get('path') ?? '';
+          const root = url.searchParams.get('root');
           const width = Number(url.searchParams.get('width') ?? 1024);
           const height = Number(url.searchParams.get('height') ?? 768);
           const bboxParam = url.searchParams.get('bbox');
@@ -204,7 +296,7 @@ export function createEngineServer(): Server {
           // 所以 PNG 必须是 4326 的，否则投影坐标系的栅格会与 bbox 对不上位（错开一块）。
           const targetCrs = url.searchParams.get('targetCrs') ?? 'EPSG:4326';
           const res = await renderRasterPng(gdalLoc, {
-            path: store.resolve(rel),
+            path: resolveWorkspacePath(root, rel),
             width,
             height,
             targetCrs,
@@ -213,7 +305,7 @@ export function createEngineServer(): Server {
           binary(200, Buffer.from(res.png));
         } catch (err) {
           const message = (err as Error).message;
-          const bad = /bbox|范围不合法/.test(message) ? 400 : 500;
+          const bad = err instanceof PathEscapeError || /bbox|范围不合法/.test(message) ? 400 : 500;
           json(bad, { error: bad === 400 ? 'bad_request' : 'internal', message: scrub(message) });
         }
       })();
@@ -228,9 +320,10 @@ export function createEngineServer(): Server {
             return;
           }
           const rel = url.searchParams.get('path') ?? '';
+          const root = url.searchParams.get('root');
           const limitParam = url.searchParams.get('limit');
           const res = await vectorToGeoJson(gdalLoc, {
-            path: store.resolve(rel),
+            path: resolveWorkspacePath(root, rel),
             // ⚠️ 必须显式换算到 4326：ogr2ogr 不给 -t_srs 时**按源 CRS 输出**。
             //    投影坐标系的矢量会带着 UTM 东坐标/北坐标出去（如 816690, 3381042），
             //    MapLibre 当成经纬度解析 → 要素跑到几百万度外，画布上什么都看不见。
@@ -240,7 +333,8 @@ export function createEngineServer(): Server {
           });
           json(200, res);
         } catch (err) {
-          json(500, { error: 'internal', message: scrub((err as Error).message) });
+          const bad = err instanceof PathEscapeError ? 400 : 500;
+          json(bad, { error: bad === 400 ? 'bad_request' : 'internal', message: scrub((err as Error).message) });
         }
       })();
       return;
@@ -254,10 +348,12 @@ export function createEngineServer(): Server {
             return;
           }
           const rel = url.searchParams.get('path') ?? '';
-          const res = await datasetExtent(gdalLoc, { path: store.resolve(rel) });
+          const root = url.searchParams.get('root');
+          const res = await datasetExtent(gdalLoc, { path: resolveWorkspacePath(root, rel) });
           json(200, res);
         } catch (err) {
-          json(500, { error: 'internal', message: scrub((err as Error).message) });
+          const bad = err instanceof PathEscapeError ? 400 : 500;
+          json(bad, { error: bad === 400 ? 'bad_request' : 'internal', message: scrub((err as Error).message) });
         }
       })();
       return;
@@ -273,10 +369,11 @@ export function createEngineServer(): Server {
           const body = await readBody(req);
           const req0 = JSON.parse(body.toString('utf8') || '{}') as {
             path?: string;
+            root?: string;
             operations?: CompatOperation[];
           };
           const rel = req0.path ?? '';
-          const abs = store.resolve(rel);
+          const abs = resolveWorkspacePath(req0.root ?? null, rel);
           const { dataset } = await probeDataset(gdalLoc, abs);
           if (!dataset) {
             json(400, { error: 'bad_request', message: '无法打开该数据集' });
@@ -296,7 +393,8 @@ export function createEngineServer(): Server {
             manualChecks: report.manualChecks,
           });
         } catch (err) {
-          json(500, { error: 'internal', message: scrub((err as Error).message) });
+          const bad = err instanceof PathEscapeError ? 400 : 500;
+          json(bad, { error: bad === 400 ? 'bad_request' : 'internal', message: scrub((err as Error).message) });
         }
       })();
       return;
@@ -342,6 +440,154 @@ export function createEngineServer(): Server {
       return;
     }
 
+    /* ───────── ③a-1：已登记根与项目 ───────── */
+
+    if (url.pathname === '/api/workspace/roots' && req.method === 'GET') {
+      json(200, { roots: roots.list() });
+      return;
+    }
+
+    if (url.pathname === '/api/workspace/roots' && req.method === 'POST') {
+      void (async () => {
+        try {
+          const body = JSON.parse((await readBody(req)).toString('utf8') || '{}') as {
+            path?: string;
+            label?: string;
+          };
+          if (!body.path) {
+            json(400, { error: 'bad_request', message: '缺少 path：告诉引擎要登记哪个文件夹' });
+            return;
+          }
+          json(200, registerRoot(roots, body.path, body.label));
+        } catch (err) {
+          json(400, { error: 'bad_request', message: scrub((err as Error).message) });
+        }
+      })();
+      return;
+    }
+
+    if (url.pathname === '/api/project/manifest' && req.method === 'GET') {
+      void (async () => {
+        try {
+          const p = url.searchParams.get('path') ?? '';
+          const m = await projects.readManifest(p);
+          json(200, m ? { exists: true, manifest: m } : { exists: false });
+        } catch (err) {
+          json(400, { error: 'bad_request', message: scrub((err as Error).message) });
+        }
+      })();
+      return;
+    }
+
+    if (url.pathname === '/api/project/manifest' && req.method === 'PUT') {
+      void (async () => {
+        try {
+          const body = JSON.parse((await readBody(req)).toString('utf8')) as {
+            path?: string;
+            manifest?: ProjectManifest;
+            create?: boolean;
+            name?: string;
+          };
+          if (!body.path) {
+            json(400, { error: 'bad_request', message: '缺少 path：告诉引擎是哪个文件夹' });
+            return;
+          }
+          // create：写一份空清单。**已存在就不覆盖** —— 免得把用户已经配好的项目冲掉。
+          if (body.create) {
+            const existing = await projects.readManifest(body.path);
+            if (existing) {
+              json(200, { ok: true, manifest: existing, created: false });
+              return;
+            }
+            const name = (body.name ?? '').trim() || defaultProjectName(body.path);
+            const m = newManifest(name);
+            await projects.writeManifest(body.path, m);
+            json(200, { ok: true, manifest: m, created: true });
+            return;
+          }
+          if (!body.manifest) {
+            json(400, { error: 'bad_request', message: '缺少 manifest：把要保存的项目清单一起发来' });
+            return;
+          }
+          await projects.writeManifest(body.path, body.manifest);
+          json(200, { ok: true });
+        } catch (err) {
+          json(400, { error: 'bad_request', message: scrub((err as Error).message) });
+        }
+      })();
+      return;
+    }
+
+    if (url.pathname === '/api/project/history' && req.method === 'GET') {
+      void (async () => {
+        try {
+          const p = url.searchParams.get('path') ?? '';
+          json(200, { entries: await projects.readHistory(p) });
+        } catch (err) {
+          json(400, { error: 'bad_request', message: scrub((err as Error).message) });
+        }
+      })();
+      return;
+    }
+
+    if (url.pathname === '/api/project/history' && req.method === 'POST') {
+      void (async () => {
+        try {
+          const body = JSON.parse((await readBody(req)).toString('utf8')) as {
+            path?: string;
+            entry?: ProjectHistoryEntry;
+          };
+          if (!body.path || !body.entry) {
+            json(400, { error: 'bad_request', message: '缺少 path 或 entry：告诉引擎是哪个项目、要记哪一条操作' });
+            return;
+          }
+          await projects.appendHistory(body.path, body.entry);
+          json(200, { ok: true });
+        } catch (err) {
+          json(400, { error: 'bad_request', message: scrub((err as Error).message) });
+        }
+      })();
+      return;
+    }
+
+    if (url.pathname === '/api/project/outputs' && req.method === 'GET') {
+      void (async () => {
+        try {
+          const p = url.searchParams.get('path') ?? '';
+          json(200, { outputs: await projects.listOutputs(p) });
+        } catch (err) {
+          json(400, { error: 'bad_request', message: scrub((err as Error).message) });
+        }
+      })();
+      return;
+    }
+
+    if (url.pathname === '/api/project/output' && req.method === 'POST') {
+      void (async () => {
+        try {
+          const body = JSON.parse((await readBody(req)).toString('utf8')) as {
+            path?: string;
+            name?: string;
+            dataBase64?: string;
+          };
+          if (!body.path || !body.name || !body.dataBase64) {
+            json(400, { error: 'bad_request', message: '缺少 path / name / dataBase64：告诉引擎存到哪个项目、叫什么名字、内容是什么' });
+            return;
+          }
+          const data = Buffer.from(body.dataBase64, 'base64');
+          const relative = await projects.writeOutput(
+            body.path,
+            body.name,
+            new Uint8Array(data),
+          );
+          json(200, { ok: true, relative });
+        } catch (err) {
+          json(400, { error: 'bad_request', message: scrub((err as Error).message) });
+        }
+      })();
+      return;
+    }
+
     /* ───────── 工作区文件接口（契约见 src/engine/workspace/http-store.ts） ───────── */
 
     if (url.pathname.startsWith('/api/fs/')) {
@@ -349,19 +595,22 @@ export function createEngineServer(): Server {
         try {
           if (req.method === 'GET' && url.pathname === '/api/fs/read') {
             const p = url.searchParams.get('path') ?? '';
-            const data = await store.read(p);
+            const s = storeFor(url.searchParams.get('root'), p);
+            const data = await s.store.read(s.relative);
             binary(200, Buffer.from(data));
             return;
           }
           if (req.method === 'GET' && url.pathname === '/api/fs/stat') {
             const p = url.searchParams.get('path') ?? '';
-            const s = await store.stat(p);
-            json(200, s);
+            const s = storeFor(url.searchParams.get('root'), p);
+            const st = await s.store.stat(s.relative);
+            json(200, st);
             return;
           }
           if (req.method === 'GET' && url.pathname === '/api/fs/list') {
             const p = url.searchParams.get('path') ?? '';
-            json(200, { entries: await store.list(p) });
+            const s = storeFor(url.searchParams.get('root'), p);
+            json(200, { entries: await s.store.list(s.relative) });
             return;
           }
           if (req.method === 'POST') {
@@ -374,12 +623,15 @@ export function createEngineServer(): Server {
               }
               const p = body.subarray(0, sep).toString('utf8');
               const data = new Uint8Array(body.subarray(sep + 1));
-              await store.write(p, data);
+              // 写操作同样要过路径闸门：绝对路径等于可以改工作区外的文件
+              const t = resolveTarget(null, p);
+              await t.store.write(t.relative, data);
               json(200, { ok: true, size: data.length });
               return;
             }
             if (url.pathname === '/api/fs/remove') {
-              await store.remove(body.toString('utf8'));
+              const t = resolveTarget(null, body.toString('utf8'));
+              await t.store.remove(t.relative);
               json(200, { ok: true });
               return;
             }
@@ -389,13 +641,16 @@ export function createEngineServer(): Server {
                 json(400, { error: 'bad_request' });
                 return;
               }
-              if (url.pathname === '/api/fs/copy') await store.copy(from, to);
-              else await store.rename(from, to);
+              const f = resolveTarget(null, from);
+              const t = resolveTarget(null, to);
+              if (url.pathname === '/api/fs/copy') await f.store.copy(f.relative, t.relative);
+              else await f.store.rename(f.relative, t.relative);
               json(200, { ok: true });
               return;
             }
             if (url.pathname === '/api/fs/assert-writable') {
-              await store.assertWritable(body.toString('utf8'));
+              const t = resolveTarget(null, body.toString('utf8'));
+              await t.store.assertWritable(t.relative);
               json(200, { ok: true });
               return;
             }

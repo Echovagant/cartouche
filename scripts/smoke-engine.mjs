@@ -11,9 +11,17 @@
 import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { existsSync } from 'node:fs';
-import { copyFile, rm } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+
+// 已登记根会持久化到配置目录。冒烟**不能**污染用户真实的 %LOCALAPPDATA%\cartouche\roots.json，
+// 所以先把 CARTOUCHE_CONFIG_DIR 指到一个临时目录。
+// 必须在导入 app.js 之前设好：roots.ts 在模块加载时就读这个变量。
+const smokeConfigDir = await mkdtemp(join(tmpdir(), 'cartouche-smoke-config-'));
+process.env.CARTOUCHE_CONFIG_DIR = smokeConfigDir;
+
 // Windows 上 ESM 动态导入必须是 file:// URL，裸绝对路径会被当成未知协议
 const { createEngineServer, opCount } = await import(
   pathToFileURL(join(root, 'server', 'dist', 'app.js')).href
@@ -35,6 +43,10 @@ const check = (name, ok, detail) => {
   console.log(`  ${ok ? OK : BAD} ${name}${detail ? '  ' + detail : ''}`);
   if (!ok) failed = true;
 };
+
+// ③a-1 冒烟用到的临时目录（结束时清掉）
+let extraRoot = null;
+let tmpProject = null;
 
 try {
   console.log(`\n${BOLD}引擎服务冒烟测试${RESET}  ${DIM}${BASE}${RESET}\n`);
@@ -131,6 +143,26 @@ try {
   // 路径越界必须被拒绝（400 = 越界，404 = 不存在）
   const escape = await fetch(`${BASE}/api/fs/read?path=${encodeURIComponent('../../etc/passwd')}`);
   check('路径越界被拒绝', escape.status === 400 || escape.status === 404, `HTTP ${escape.status}`);
+
+  // 绝对路径必须被拒：它能绕过"只能在工作区里读写"这条底线。
+  // 实测（2026-10-21，改造前）：GET /api/fs/stat?path=C:\Windows\...\hosts → 200，
+  //   POST /api/fs/write 用绝对路径 → 在工作区外真的建出了文件。
+  const absProbePath = join(tmpdir(), `cartouche-abs-probe-${Date.now()}.txt`);
+  const absStat = await fetch(`${BASE}/api/fs/stat?path=${encodeURIComponent(absProbePath)}`);
+  check('GET /api/fs/stat 拒绝绝对路径', absStat.status === 400, `HTTP ${absStat.status}`);
+
+  const absWriteBody = new Uint8Array(Buffer.byteLength(absProbePath, 'utf8') + 1 + 5);
+  const absWritePathBytes = Buffer.from(absProbePath, 'utf8');
+  absWriteBody.set(absWritePathBytes, 0);
+  absWriteBody[absWritePathBytes.length] = 0;
+  absWriteBody.set(Buffer.from('PROBE', 'utf8'), absWritePathBytes.length + 1);
+  const absWrite = await fetch(`${BASE}/api/fs/write`, { method: 'POST', body: absWriteBody });
+  check('POST /api/fs/write 拒绝绝对路径', absWrite.status === 400, `HTTP ${absWrite.status}`);
+  check(
+    '被拒的绝对路径没有在工作区外建出文件',
+    !existsSync(absProbePath),
+    existsSync(absProbePath) ? `文件被创建了：${absProbePath}` : '未创建',
+  );
 
   await fetch(`${BASE}/api/fs/remove`, { method: 'POST', body: rel });
 
@@ -238,11 +270,129 @@ try {
     void jpegRes;
   }
 
+  /* ── ③a-1：已登记根与项目清单 ── */
+  const rootsRes = await fetch(`${BASE}/api/workspace/roots`);
+  const rootsJson = await rootsRes.json();
+  check(
+    'GET /api/workspace/roots 返回默认根',
+    rootsRes.ok && Array.isArray(rootsJson.roots) && rootsJson.roots.length >= 1,
+    JSON.stringify(rootsJson.roots?.[0]?.path),
+  );
+
+  // 登记**另一个**根（工作区之外），用来验证多根真的能定位
+  extraRoot = await mkdtemp(join(tmpdir(), 'cartouche-smoke-root-'));
+  await writeFile(join(extraRoot, '标记.txt'), 'x', 'utf8');
+  const addRoot = await fetch(`${BASE}/api/workspace/roots`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ path: extraRoot, label: '冒烟根' }),
+  });
+  const addRootJson = await addRoot.json();
+  check(
+    'POST /api/workspace/roots 登记根',
+    addRoot.ok && typeof addRootJson.id === 'string',
+    JSON.stringify(addRootJson),
+  );
+
+  // 用 root 参数列这个根：证明"项目目录不在工作区里"也能用
+  const listExtra = await fetch(`${BASE}/api/fs/list?path=&root=${encodeURIComponent(extraRoot)}`);
+  const listExtraJson = await listExtra.json();
+  check(
+    'GET /api/fs/list 带 root 参数能列到工作区之外的目录',
+    listExtra.ok && Array.isArray(listExtraJson.entries) && listExtraJson.entries.includes('标记.txt'),
+    JSON.stringify(listExtraJson).slice(0, 160),
+  );
+
+  // 绝对路径必须被拒（不能靠 path=绝对路径 绕过根的边界）
+  const absProbe = await fetch(`${BASE}/api/fs/list?path=${encodeURIComponent(extraRoot)}`);
+  check('GET /api/fs/list 拒绝绝对路径', absProbe.status === 400, `HTTP ${absProbe.status}`);
+
+  // 项目目录名带时间戳：上一轮跑崩了留下半截目录也不会影响这一轮
+  tmpProject = join(wsRoot, `smoke-project-${Date.now()}`);
+  await mkdir(tmpProject, { recursive: true });
+  const createM = await fetch(`${BASE}/api/project/manifest`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ path: tmpProject, create: true, name: '冒烟项目' }),
+  });
+  const createMJson = await createM.json();
+  check(
+    'PUT /api/project/manifest create 新建项目',
+    createM.ok && createMJson.manifest?.name === '冒烟项目',
+    JSON.stringify(createMJson).slice(0, 160),
+  );
+
+  const getM = await fetch(`${BASE}/api/project/manifest?path=${encodeURIComponent(tmpProject)}`);
+  const getMJson = await getM.json();
+  check(
+    'GET /api/project/manifest 读回清单',
+    getM.ok && getMJson.exists === true && getMJson.manifest?.name === '冒烟项目',
+    JSON.stringify(getMJson).slice(0, 160),
+  );
+
+  const hist = await fetch(`${BASE}/api/project/history`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      path: tmpProject,
+      entry: { at: '2026-10-21T00:00:00.000Z', op: 'raster.paint', target: 'a.tff', ok: true },
+    }),
+  });
+  check('POST /api/project/history 追加留痕', hist.ok, `HTTP ${hist.status}`);
+
+  const histGet = await fetch(`${BASE}/api/project/history?path=${encodeURIComponent(tmpProject)}`);
+  const histJson = await histGet.json();
+  check(
+    'GET /api/project/history 读回留痕',
+    histGet.ok && histJson.entries?.length === 1,
+    JSON.stringify(histJson).slice(0, 160),
+  );
+
+  const out = await fetch(`${BASE}/api/project/output`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      path: tmpProject,
+      name: '冒烟.pdf',
+      dataBase64: Buffer.from('%PDF-1.4').toString('base64'),
+    }),
+  });
+  const outJson = await out.json();
+  check(
+    'POST /api/project/output 写产出物',
+    out.ok && typeof outJson.relative === 'string',
+    JSON.stringify(outJson).slice(0, 160),
+  );
+
+  const outList = await fetch(`${BASE}/api/project/outputs?path=${encodeURIComponent(tmpProject)}`);
+  const outListJson = await outList.json();
+  check(
+    'GET /api/project/outputs 列出产出物',
+    outList.ok && outListJson.outputs?.some((o) => o.name === '冒烟.pdf'),
+    JSON.stringify(outListJson).slice(0, 160),
+  );
+
+  // 产出物文件名带路径必须被拒
+  const outEscape = await fetch(`${BASE}/api/project/output`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ path: tmpProject, name: '../逃逸.pdf', dataBase64: 'eA==' }),
+  });
+  check(
+    'POST /api/project/output 拒绝带路径的文件名',
+    outEscape.status === 400,
+    `HTTP ${outEscape.status}`,
+  );
+
   console.log(`\n  ${failed ? BAD : OK} 冒烟测试${failed ? '未通过' : '通过'}${RESET}\n`);
 } catch (err) {
   console.error(`  ${BAD} 冒烟测试异常: ${err.message}`);
   failed = true;
 } finally {
+  // ③a-1 的临时目录清掉，别把垃圾留在工作区与临时目录里
+  if (tmpProject) await rm(tmpProject, { recursive: true, force: true });
+  if (extraRoot) await rm(extraRoot, { recursive: true, force: true });
+  await rm(smokeConfigDir, { recursive: true, force: true });
   await new Promise((r) => server.close(r));
 }
 
