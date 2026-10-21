@@ -240,5 +240,12 @@ export function useProjects() {
     saveManifest,
     listOutputs,
     writeOutput,
+    /**
+     * 项目内容变了之后刷新"最近项目"里的那条摘要。
+     *
+     * 不刷的话，列表里会一直显示**打开那一刻**的图层数 ——
+     * 用户明明加了图层，回到列表却看到"0 图层"，会以为改动没存上。
+     */
+    remember,
   };
 }

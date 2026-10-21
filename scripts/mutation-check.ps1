@@ -18,9 +18,17 @@ function Hash($rel) { (Get-FileHash (Join-Path $root $rel) -Algorithm SHA256).Ha
 # 写入变异后的文本，并确认"变异真的生效"。
 # 不做这一步检查的话：正则没匹配上 → 文件没变 → 测试当然全绿 →
 # 会被误报成"变异未被测试抓到"，这是假阴性的来源（2026-10-21 踩过一次）。
+# 门禁要**自己说清覆盖了多少**：跑了几项、抓住几项、几项作废。
+# 以前这里不报总数，"变异未生效"的项目被静默跳过 —— 看着像全绿，其实没测到。
+$script:total = 0
+$script:caught = 0
+$script:voided = 0
+
 function ApplyMutation($rel, $text, $origHash) {
+  $script:total += 1
   [System.IO.File]::WriteAllText((Join-Path $root $rel), $text, (New-Object System.Text.UTF8Encoding $false))
   if ((Hash $rel) -eq $origHash) {
+    $script:voided += 1
     Write-Output "  [ERROR] 变异未生效（正则未匹配到目标代码）—— 本项作废，不能据此判断测试有效性"
     return $false
   }
@@ -35,9 +43,20 @@ function RunTests() {
 }
 
 function Report($label, $out) {
-  $failed = ($out -match 'fail 1') -or ($out -match 'fail 2') -or ($out -match 'fail 3') -or ($out -match 'fail 4')
-  if ($failed) { Write-Output "  [PASS] 变异被测试抓到（测试失败 = 测试有效）" }
-  else { Write-Output "  [FAIL] 变异未被抓到 —— 测试是假绿！" }
+  # 从 node --test 的汇总行里取**真实失败数**。
+  # 以前是匹配 'fail 1'..'fail 4' 这种字面量 —— 测试数变多之后，
+  # 一个变异可能让 5 个以上测试变红，那些字面量一个都匹配不上，
+  # 就会被**误报成"测试是假绿"**（2026-10-21 真的踩到过：193 个测试时
+  # 有个变异让 6 个测试红了，脚本却判它没被抓住）。
+  $m = [regex]::Matches($out, '(?m)^\s*\S+\s+fail\s+(\d+)\s*$')
+  $n = 0
+  if ($m.Count -gt 0) { $n = [int]$m[$m.Count - 1].Groups[1].Value }
+  if ($n -gt 0) {
+    $script:caught += 1
+    Write-Output "  [PASS] 变异被测试抓到（$n 个测试失败 = 测试有效）"
+  } else {
+    Write-Output "  [FAIL] 变异未被抓到 —— 测试是假绿！"
+  }
   ($out -split "`n" | Select-String -Pattern '✖|fail ' | Select-Object -First 4) | ForEach-Object { "    " + $_.ToString().Trim() }
 }
 
@@ -101,7 +120,10 @@ Restore $rel5 $b5
 Write-Output ("  已还原，hash 一致: " + ((Hash $rel5) -eq $h5))
 
 # 变异 6：exists() 把"访问被拒"当成"不存在"（恢复旧的危险语义）
-$rel6 = 'src\engine\workspace\index.ts'
+# ⚠️ 目标文件在 2026-10-21 的 ③a-1 重构里从 workspace/index.ts 拆到了
+#    workspace/errors.ts —— 变异点必须跟着代码走，否则正则匹配不到，
+#    脚本会报"变异未生效"并**跳过这一项**（那一项就等于没测）。
+$rel6 = 'src\engine\workspace\errors.ts'
 $b6 = Backup $rel6
 $h6 = Hash $rel6
 $t6 = Get-Content (Join-Path $root $rel6) -Raw -Encoding UTF8
@@ -172,4 +194,6 @@ Write-Output ("  已还原，hash 一致: " + ((Hash $rel11) -eq $h11))
 Write-Output "`n--- 还原后复跑 ---"
 $final = RunTests
 ($final -split "`n" | Select-String -Pattern '^. (tests|pass|fail) ' | Select-Object -First 4) | ForEach-Object { "  " + $_.ToString().Trim() }
+Write-Output ("  变异捕获率: " + $script:caught + "/" + $script:total + "（另有 " + $script:voided + " 项作废：变异点已失效，需更新脚本）")
 Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
+if ($script:caught -lt ($script:total - $script:voided)) { exit 1 }
