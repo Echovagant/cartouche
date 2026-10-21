@@ -7,11 +7,32 @@
 export { LocalFolderStore, NotFoundError, OccupiedError, PathEscapeError, lockCandidates, sha256, existsFromErrorCode } from './workspace/index.ts';
 export type { FileStat, WorkspaceAdapter } from './workspace/index.ts';
 
+export { RootRegistry } from './workspace/roots.ts';
+export type { WorkspaceRoot, ResolvedPath } from './workspace/roots.ts';
+
 export { MemoryStore } from './workspace/memory-store.ts';
 export { HttpProjectStore } from './workspace/http-store.ts';
 export type { HttpProjectStoreOptions } from './workspace/http-store.ts';
 export { FileHandleStore } from './workspace/file-handle-store.ts';
 export type { FileHandleStoreOptions, FileSystemAccessLike } from './workspace/file-handle-store.ts';
+
+/* ── ③a-1：项目清单（源数据原地 + .cartouche/ 旁挂目录） ── */
+
+export {
+  PROJECT_MANIFEST_VERSION,
+  ManifestError,
+  newManifest,
+  parseManifest,
+  serializeManifest,
+} from './project/index.ts';
+export type {
+  ProjectLayer,
+  ProjectLayerKind,
+  ProjectManifest,
+  ProjectOperation,
+  ProjectSheet,
+  ProjectView,
+} from './project/index.ts';
 
 export { resolveGdal, gdalEnv, candidateBinDirs } from './gdal/env.ts';
 export type { GdalLocation } from './gdal/env.ts';

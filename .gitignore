@@ -58,7 +58,11 @@ samples/*
 !samples/README.md
 
 # 工作区（用户实际操作的图件所在目录；由 scripts\seed-workspace.mjs 播种）
-workspace/
+# 必须写成 /workspace/ 锚定到仓库根：
+# 不带前导斜杠时这条规则会匹配**任意层级**的 workspace/ 目录，
+# 把引擎核心目录 src/engine/workspace/ 一起吞掉 —— 那样仓库里就缺了引擎的
+# workspace 适配器，clone 出来直接编译不过。
+/workspace/
 
 # 操作系统与编辑器
 Thumbs.db
