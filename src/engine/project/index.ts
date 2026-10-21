@@ -19,3 +19,5 @@ export type {
   ProjectSheet,
   ProjectView,
 } from './manifest.ts';
+export { ProjectStore, PROJECT_DIR_NAME } from './store.ts';
+export type { ProjectOutput, ProjectHistoryEntry } from './store.ts';
