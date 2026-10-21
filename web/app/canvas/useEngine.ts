@@ -14,6 +14,12 @@
  *   若把页面挂在 http://localhost:3000 上跑，Origin 是 http://localhost:3000，
  *   与引擎放行的 null 不匹配，请求会被浏览器拦掉——这属于部署形态的限制，
  *   不是前端能绕过去的（改引擎的 CORS 头超出本目录的边界）。
+ *
+ * `root`（③a-1）：
+ *   打开项目后，画布里的一切路径都相对**项目根**，引擎靠 `root=<项目根绝对路径>`
+ *   把它定位回去。给了这个参数，所有请求都带上它；不给就保持今天的行为
+ *   （相对默认工作区根）。根变了，下面的回调身份也跟着变（依赖数组里有 root），
+ *   否则会出现"换了项目还在用旧根发请求"。
  */
 'use client';
 
@@ -127,7 +133,7 @@ interface ListResponse {
   readonly entries: string[];
 }
 
-export function useEngine(): EngineApi {
+export function useEngine(root?: string | null): EngineApi {
   const [health, setHealth] = useState<HealthState>({ status: 'checking', info: null, error: null });
   const [pending, setPending] = useState<Record<string, boolean>>({});
   const [error, setError] = useState<string | null>(null);
@@ -176,11 +182,14 @@ export function useEngine(): EngineApi {
   const listDir = useCallback(
     (path = '') =>
       run('list', async () => {
-        const query = path ? `?path=${encodeURIComponent(path)}` : '';
-        const data = await requestJson<ListResponse>(`${ENGINE_BASE}/api/fs/list${query}`);
+        // path 一律相对 root；不给 root 就是相对默认根（今天的行为）
+        const params = new URLSearchParams();
+        if (path) params.set('path', path);
+        if (root) params.set('root', root);
+        const data = await requestJson<ListResponse>(`${ENGINE_BASE}/api/fs/list?${params.toString()}`);
         return [...data.entries].sort((a, b) => a.localeCompare(b, 'zh-CN'));
       }),
-    [run],
+    [run, root],
   );
 
   const fetchGeoJson = useCallback(
@@ -188,9 +197,10 @@ export function useEngine(): EngineApi {
       run('geojson', async () => {
         const params = new URLSearchParams({ path });
         if (limit !== undefined) params.set('limit', String(limit));
+        if (root) params.set('root', root);
         return requestJson<GeoJsonPayload>(`${ENGINE_BASE}/api/data/geojson?${params.toString()}`);
       }),
-    [run],
+    [run, root],
   );
 
   /**
@@ -203,27 +213,33 @@ export function useEngine(): EngineApi {
     (path: string) =>
       run('extent', async () => {
         const query = new URLSearchParams({ path });
+        if (root) query.set('root', root);
         return requestJson<ExtentPayload>(`${ENGINE_BASE}/api/data/extent?${query.toString()}`);
       }),
-    [run],
+    [run, root],
   );
 
   /**
    * 只拼 URL，不发请求——栅格图交给 MapLibre 的 image source 去加载，
    * 由它管理并发与生命周期，前端不重复造轮子。
    */
-  const rasterUrl = useCallback((path: string, options: RasterUrlOptions) => {
-    const params = new URLSearchParams({
-      path,
-      width: String(Math.max(1, Math.round(options.width))),
-      height: String(Math.max(1, Math.round(options.height))),
-    });
-    if (options.bbox) {
-      params.set('bbox', options.bbox.map((n) => n.toFixed(8)).join(','));
-    }
-    if (options.cacheBust !== undefined) params.set('t', String(options.cacheBust));
-    return `${ENGINE_BASE}/api/render/raster.png?${params.toString()}`;
-  }, []);
+  const rasterUrl = useCallback(
+    (path: string, options: RasterUrlOptions) => {
+      const params = new URLSearchParams({
+        path,
+        width: String(Math.max(1, Math.round(options.width))),
+        height: String(Math.max(1, Math.round(options.height))),
+      });
+      if (options.bbox) {
+        params.set('bbox', options.bbox.map((n) => n.toFixed(8)).join(','));
+      }
+      if (options.cacheBust !== undefined) params.set('t', String(options.cacheBust));
+      // root 必须进查询串（不是 body）：这张图是 MapLibre 用 <img> 直接拉的
+      if (root) params.set('root', root);
+      return `${ENGINE_BASE}/api/render/raster.png?${params.toString()}`;
+    },
+    [root],
+  );
 
   const fetchCompatReport = useCallback(
     (path: string) =>
@@ -231,7 +247,8 @@ export function useEngine(): EngineApi {
         const res = await fetch(`${ENGINE_BASE}/api/report/compat`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ path }),
+          // root 为空时**不要**带这个键：不带才是"相对默认根"的语义
+          body: JSON.stringify({ path, ...(root ? { root } : {}) }),
         });
         if (!res.ok) {
           let detail = `HTTP ${res.status}`;
@@ -245,7 +262,7 @@ export function useEngine(): EngineApi {
         }
         return (await res.json()) as CompatReportPayload;
       }),
-    [run],
+    [run, root],
   );
 
   const exportPdf = useCallback(

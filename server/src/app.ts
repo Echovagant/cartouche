@@ -193,7 +193,10 @@ export function createEngineServer(): Server {
 
     const corsHeaders = (): Record<string, string> => ({
       'access-control-allow-origin': allowOrigin,
-      'access-control-allow-methods': 'GET, POST, OPTIONS',
+      // ⚠️ 必须包含 PUT：项目清单的保存走 `PUT /api/project/manifest`。
+      //    少了它，浏览器的预检会直接拦掉这个请求（请求根本到不了服务端），
+      //    表现是"点保存没反应、控制台一条 CORS 报错"——很容易被误当成前端 bug。
+      'access-control-allow-methods': 'GET, POST, PUT, DELETE, OPTIONS',
       'access-control-allow-headers': 'content-type',
       'access-control-max-age': '600',
       'x-content-type-options': 'nosniff',

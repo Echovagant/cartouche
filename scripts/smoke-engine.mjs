@@ -110,6 +110,10 @@ try {
     (preflight.headers.get('access-control-allow-headers') ?? '').includes('content-type'),
     preflight.headers.get('access-control-allow-headers') ?? '(无)',
   );
+  // PUT 必须被允许：项目清单的保存走 PUT /api/project/manifest。
+  // 少了它，浏览器预检会把请求拦在服务端之前（控制台一条 CORS 报错，请求根本没发出去）。
+  const allowMethods = preflight.headers.get('access-control-allow-methods') ?? '';
+  check('预检允许 PUT', allowMethods.includes('PUT'), `Access-Control-Allow-Methods: ${allowMethods}`);
 
   /* ── 工作区文件接口（真实契约验证） ── */
   const wsRoot = process.env.ENGINE_WORKSPACE_ROOT ?? join(root, 'workspace');

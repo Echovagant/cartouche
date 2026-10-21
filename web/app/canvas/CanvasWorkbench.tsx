@@ -4,12 +4,17 @@
  * 地图画布工作台：把引擎调用、图层状态、图面要素、导出与报告串起来。
  *
  * 分工：
- *   - useEngine  负责所有与引擎的网络往返（唯一的调用点）
- *   - MapCanvas  负责地图本身与图面要素的绘制
- *   - 本组件    负责状态与编排：图层清单、当前选中、抽屉、导出、报告
+ *   - useEngine    负责所有与引擎的网络往返（唯一的调用点）
+ *   - useProjects  负责项目本身（登记根、读写清单、产出物落盘）
+ *   - MapCanvas    负责地图本身与图面要素的绘制
+ *   - 本组件      负责状态与编排：图层清单、当前选中、抽屉、导出、报告
  *
  * 状态都收在这里，是为了让"屏幕上看到的"和"导出的 PDF 里的"必然一致——
  * 两边各存一份状态，是这类工具最容易出现的 bug 来源。
+ *
+ * ③a-1：**两态**。
+ *   - 没打开项目（projectPath === null）：只显示项目列表，不列文件、不请求路径接口；
+ *   - 打开了项目：画布里的一切路径都相对**项目根**，清单自动保存，关掉再开能恢复。
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -17,12 +22,19 @@ import AttributeTable from './AttributeTable';
 import { CanvasBoot, ExportDevelop, LayerArrival, SelectionShutter } from './CanvasMotion';
 import LayerPanel from './LayerPanel';
 import MapCanvas, { type MapCanvasHandle } from './MapCanvas';
+import ProjectPicker from './ProjectPicker';
 import Toolbar from './Toolbar';
 import { MarkdownView } from './markdown';
 import { ThemeToggle } from './ThemeToggle';
 import { ActionButton, TextField } from './ui';
 import { useEngine, type CompatReportPayload } from './useEngine';
-import { type LayerKind, type MapLayer, type SelectedFeature } from './types';
+import { useProjects } from './useProjects';
+import {
+  type LayerKind,
+  type MapLayer,
+  type ProjectManifest,
+  type SelectedFeature,
+} from './types';
 
 /** 本地时间戳：出图时间与导出文件名都用它 */
 function formatNow(): string {
@@ -65,9 +77,28 @@ function downloadBlob(blob: Blob, filename: string): void {
 }
 
 export default function CanvasWorkbench() {
-  const engine = useEngine();
+  // ③a-1：项目根。
+  // **必须声明在 useEngine 之前**——useEngine 要拿它当 root（hook 调用顺序不能变）。
+  const [projectPath, setProjectPath] = useState<string | null>(null);
+  const [manifest, setManifest] = useState<ProjectManifest | null>(null);
+
+  const engine = useEngine(projectPath);
+  const projects = useProjects();
+  // 这几个是 useCallback 包出来的稳定引用：放进 useEffect 的依赖数组里不会每次渲染都重置
+  const { createProject: createProjectRequest, openProject: openProjectRequest } = projects;
+  const { saveManifest, writeOutput } = projects;
+
   const mapHandleRef = useRef<MapCanvasHandle | null>(null);
   const idRef = useRef(0);
+  /**
+   * 当前项目根的"代号"。
+   *
+   * 图层数据是异步回来的：用户可能在数据回来之前就换项目了。
+   * 不做这个校验的话，旧项目的数据会落进新项目的数据表
+   * （两个项目都叫 layer-1 时，地图上会出现另一个项目的图层）。
+   */
+  const projectPathRef = useRef<string | null>(null);
+  projectPathRef.current = projectPath;
 
   const [layers, setLayers] = useState<MapLayer[]>([]);
   const [activeLayerId, setActiveLayerId] = useState<string | null>(null);
@@ -94,6 +125,8 @@ export default function CanvasWorkbench() {
   const [report, setReport] = useState<CompatReportPayload | null>(null);
   const [reportOpen, setReportOpen] = useState(false);
   const [banner, setBanner] = useState<string | null>(null);
+  /** 正在打开/新建项目：项目列表上的按钮要置灰 */
+  const [projectBusy, setProjectBusy] = useState(false);
   /**
    * file:// 下打开会出不来地图。
    *
@@ -109,11 +142,54 @@ export default function CanvasWorkbench() {
     setFileProtocol(window.location.protocol === 'file:');
   }, []);
 
+  /* ───────── 打开 / 新建 / 退回项目列表 ───────── */
+
+  const openProject = useCallback(
+    async (path: string) => {
+      setProjectBusy(true);
+      try {
+        const m = await openProjectRequest(path);
+        if (!m) {
+          setBanner('这个文件夹里还没有项目清单。用「登记并新建」建一个。');
+          return;
+        }
+        // 两个 state 一起设：React 会批处理，
+        // 所以第一帧就同时有 projectPath 和 manifest（MapCanvas 建图时就能拿到 initialView）
+        setProjectPath(path);
+        setManifest(m);
+        setBanner(null);
+      } catch (err) {
+        setBanner(`打开项目失败：${(err as Error).message}`);
+      } finally {
+        setProjectBusy(false);
+      }
+    },
+    [openProjectRequest],
+  );
+
+  const createProject = useCallback(
+    async (path: string) => {
+      setProjectBusy(true);
+      try {
+        const m = await createProjectRequest(path);
+        setProjectPath(path);
+        setManifest(m);
+        setBanner(null);
+      } catch (err) {
+        setBanner(`新建项目失败：${(err as Error).message}`);
+      } finally {
+        setProjectBusy(false);
+      }
+    },
+    [createProjectRequest],
+  );
+
   /* ───────── 工作区文件列表 ───────── */
 
   const listDir = engine.listDir;
   useEffect(() => {
-    if (!engineReady) return;
+    // 没打开项目时不该去列默认工作区：那时候用户还没选项目
+    if (!engineReady || !projectPath) return;
     let cancelled = false;
     void listDir(dir).then((res) => {
       if (cancelled) return;
@@ -122,7 +198,59 @@ export default function CanvasWorkbench() {
     return () => {
       cancelled = true;
     };
-  }, [engineReady, dir, listDir]);
+  }, [engineReady, projectPath, dir, listDir]);
+
+  // 换项目时把浏览位置清回项目根（上一个项目的子目录在新项目里多半不存在）
+  useEffect(() => {
+    setDir('');
+  }, [projectPath]);
+
+  /* ───────── 图层数据 ───────── */
+
+  /**
+   * 把图层的数据拉回来：矢量的 GeoJSON + 各自的地理范围。
+   *
+   * 新增图层和恢复项目**共用这一份** —— 恢复时只回填图层列表是不够的，
+   * 那样地图上还是一片空白（列表有了、数据没回来，用户以为没恢复成功）。
+   *
+   * 返回是否全部成功：新增图层失败时不要顺手把错误提示清掉。
+   */
+  const loadLayerData = useCallback(
+    async (target: readonly MapLayer[]): Promise<boolean> => {
+      let ok = true;
+      // 记下这次请求属于哪个项目：中途换了项目就不要再往回写数据了
+      const owner = projectPathRef.current;
+      const stillMine = (): boolean => projectPathRef.current === owner;
+      for (const layer of target) {
+        if (layer.kind === 'vector') {
+          const res = await engine.fetchGeoJson(layer.path);
+          if (!res.ok) {
+            setBanner(`读取 ${layer.path} 失败：${res.error}`);
+            ok = false;
+            continue;
+          }
+          if (!stillMine()) return ok;
+          setVectorData((prev) => {
+            const next = new Map(prev);
+            next.set(layer.id, res.data.geojson);
+            return next;
+          });
+        }
+        const extentRes = await engine.fetchExtent(layer.path);
+        if (extentRes.ok) {
+          if (!stillMine()) return ok;
+          const bbox = extentRes.data.bbox;
+          setExtents((prev) => {
+            const next = new Map(prev);
+            next.set(layer.id, [bbox[0], bbox[1], bbox[2], bbox[3]]);
+            return next;
+          });
+        }
+      }
+      return ok;
+    },
+    [engine.fetchGeoJson, engine.fetchExtent],
+  );
 
   /* ───────── 图层操作 ───────── */
 
@@ -131,35 +259,8 @@ export default function CanvasWorkbench() {
       const path = dir ? `${dir}/${name}` : name;
       const id = `layer-${(idRef.current += 1)}`;
 
-      if (kind === 'vector') {
-        // 矢量：先把 GeoJSON 取回来。source 用对象形式，
-        // 数据必须先到手上，不能让 MapLibre 自己去 fetch（跨域与失败提示都在自己手里）。
-        const res = await engine.fetchGeoJson(path);
-        if (!res.ok) {
-          setBanner(`读取 ${path} 失败：${res.error}`);
-          return;
-        }
-        setVectorData((prev) => {
-          const next = new Map(prev);
-          next.set(id, res.data.geojson);
-          return next;
-        });
-      }
-
-      // 取地理范围，让画布把视野挪到数据上。
-      // 栅格尤其需要：底图是"按视口实时出图"的，视野不动就看不到东西。
-      // 取不到也不阻断加载——只是视野留在原处，用户可以自己拖。
-      const extentRes = await engine.fetchExtent(path);
-      if (extentRes.ok) {
-        const bbox = extentRes.data.bbox;
-        setExtents((prev) => {
-          const next = new Map(prev);
-          next.set(id, [bbox[0], bbox[1], bbox[2], bbox[3]]);
-          return next;
-        });
-      }
-
       const layer: MapLayer = { id, name, kind, path, visible: true, opacity: 1 };
+      const ok = await loadLayerData([layer]);
       setLayers((prev) => {
         // 叠放次序 = 数组顺序（末尾在最上），和面板里的上移/下移一致。
         //
@@ -173,9 +274,9 @@ export default function CanvasWorkbench() {
         return [...prev.slice(0, firstVector), layer, ...prev.slice(firstVector)];
       });
       setActiveLayerId(id);
-      setBanner(null);
+      if (ok) setBanner(null);
     },
-    [dir, engine.fetchGeoJson, engine.fetchExtent],
+    [dir, loadLayerData],
   );
 
   const removeLayer = useCallback((id: string) => {
@@ -219,6 +320,93 @@ export default function CanvasWorkbench() {
     });
   }, []);
 
+  /* ───────── 恢复项目 ───────── */
+
+  useEffect(() => {
+    if (!manifest) return;
+    const restored: MapLayer[] = manifest.layers.map((l) => ({
+      id: l.id,
+      name: l.path.split('/').pop() ?? l.path,
+      kind: l.kind,
+      path: l.path,
+      visible: l.visible,
+      opacity: l.opacity,
+    }));
+    // 先清空上一个项目留下的数据：两个项目都可能有 layer-1，
+    // 不清的话旧项目的 GeoJSON 会灌进新项目的图层里
+    setVectorData(new Map());
+    setExtents(new Map());
+    setLayers(restored);
+    setTitle(manifest.sheet.title);
+    setOperator(manifest.sheet.operator);
+
+    // id 计数器要跳过已用过的编号：否则新加的图层会和恢复出来的撞 id
+    // （MapLibre 的 source/layer 名是拿 id 拼的，撞了就是两个图层互相覆盖）
+    const maxN = restored.reduce((acc, l) => {
+      const m = /(\d+)$/.exec(l.id);
+      const n = m?.[1];
+      return n ? Math.max(acc, Number(n)) : acc;
+    }, 0);
+    idRef.current = Math.max(idRef.current, maxN);
+
+    // 数据也要拉回来 —— 只回填列表的话地图上是空的
+    void loadLayerData(restored);
+  }, [manifest, loadLayerData]);
+
+  /* ───────── 自动保存清单 ───────── */
+
+  /** 把当前画布状态组装成一份项目清单（视角从地图 handle 现取） */
+  const buildManifest = useCallback((): ProjectManifest | null => {
+    if (!manifest) return null;
+    const v = mapHandleRef.current?.getView() ?? null;
+    return {
+      ...manifest,
+      updatedAt: new Date().toISOString(),
+      sheet: { ...manifest.sheet, title, operator },
+      layers: layers.map((l) => ({
+        id: l.id,
+        kind: l.kind,
+        path: l.path,
+        visible: l.visible,
+        opacity: l.opacity,
+      })),
+      ...(v ? { view: { center: v.center, zoom: v.zoom } } : {}),
+    };
+  }, [manifest, title, operator, layers]);
+
+  useEffect(() => {
+    if (!projectPath || !manifest) return;
+    // 防抖 800ms：改一次顺序、拖一次透明度不该写一次盘
+    const t = setTimeout(() => {
+      const next = buildManifest();
+      if (!next) return;
+      void saveManifest(projectPath, next).catch((err) => {
+        setBanner(`项目清单未保存：${(err as Error).message}`);
+      });
+    }, 800);
+    return () => clearTimeout(t);
+  }, [projectPath, manifest, buildManifest, saveManifest]);
+
+  /** 回到项目列表：先把当前状态存下去（否则最后 800ms 的防抖会被清掉） */
+  const leaveProject = useCallback(() => {
+    const next = buildManifest();
+    if (projectPath && next) {
+      void saveManifest(projectPath, next).catch((err) => {
+        setBanner(`项目清单未保存：${(err as Error).message}`);
+      });
+    }
+    setProjectPath(null);
+    setManifest(null);
+    setLayers([]);
+    setVectorData(new Map());
+    setExtents(new Map());
+    setActiveLayerId(null);
+    setSelected([]);
+    setDir('');
+    setFiles([]);
+    setBanner(null);
+  }, [buildManifest, projectPath, saveManifest]);
+
   /* ───────── 导出 PDF ───────── */
 
   const exportPdf = engine.exportPdf;
@@ -242,9 +430,16 @@ export default function CanvasWorkbench() {
       return;
     }
     setProducedAt(stamp);
-    downloadBlob(res.data, `cartouche-${fileStamp()}.pdf`);
+    const filename = `cartouche-${fileStamp()}.pdf`;
+    downloadBlob(res.data, filename);
     setBanner(null);
-  }, [exportPdf, title, operator]);
+    // 既存进项目目录（.cartouche/outputs/），再触发下载 —— 交差时能直接找到上一版
+    if (projectPath) {
+      void writeOutput(projectPath, filename, res.data).catch((err) => {
+        setBanner(`PDF 已下载，但没存进项目目录：${(err as Error).message}`);
+      });
+    }
+  }, [exportPdf, title, operator, projectPath, writeOutput]);
 
   /* ───────── 兼容性报告 ───────── */
 
@@ -270,6 +465,28 @@ export default function CanvasWorkbench() {
 
   const engineError = engine.health.status === 'offline' ? engine.health.error : null;
 
+  /**
+   * 两态分叉。
+   *
+   * 放在**所有 hook 之后**：hook 的调用顺序不能变，
+   * 少写一个 useState 在早退之后，下一次渲染就会炸。
+   */
+  if (!projectPath) {
+    return (
+      <ProjectPicker
+        recent={projects.recent}
+        error={banner ?? projects.error}
+        busy={projectBusy}
+        onOpenExisting={(p) => {
+          void openProject(p);
+        }}
+        onCreateFromFolder={(p) => {
+          void createProject(p);
+        }}
+      />
+    );
+  }
+
   return (
     <>
       <CanvasBoot leftRef={leftRef} rightRef={rightRef} stageRef={stageRef} />
@@ -286,6 +503,16 @@ export default function CanvasWorkbench() {
           地图画布
         </strong>
         <span className="font-mono text-[11.5px] text-studio-ink-3">图签 Cartouche</span>
+
+        <span className="h-4 w-px bg-studio-line" />
+        <button
+          type="button"
+          onClick={leaveProject}
+          title="回到项目列表"
+          className="max-w-[280px] truncate rounded-md px-1.5 py-1 font-mono text-[11.5px] text-studio-ink-2 transition-colors hover:bg-studio-3 hover:text-studio-ink"
+        >
+          {manifest?.name ?? '项目'} ▾
+        </button>
 
         <span className="flex-1" />
 
@@ -381,6 +608,10 @@ export default function CanvasWorkbench() {
               selectedFeatures={selected}
               vectorData={vectorData}
               extents={extents}
+              initialView={
+                manifest?.view ? { center: [manifest.view.center[0], manifest.view.center[1]], zoom: manifest.view.zoom } : undefined
+              }
+              preserveViewLayerIds={manifest?.layers.map((l) => l.id)}
               onSelectFeatures={(features) => {
                 setSelected(features);
                 setSelectedIndex(0);

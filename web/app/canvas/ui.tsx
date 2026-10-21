@@ -61,12 +61,17 @@ export function ActionButton({
 
 export function TextField({
   className = '',
+  tone = 'studio',
   ...rest
-}: InputHTMLAttributes<HTMLInputElement>) {
+}: InputHTMLAttributes<HTMLInputElement> & { tone?: 'studio' | 'paper' }) {
+  const toneClass =
+    tone === 'paper'
+      ? 'border-line bg-surface-raised text-ink placeholder:text-ink-4'
+      : 'border-studio-line bg-studio/70 text-studio-ink placeholder:text-studio-ink-3';
   return (
     <input
       {...rest}
-      className={`rounded-lg border border-studio-line bg-studio/70 px-2.5 py-1.5 text-[12.5px] text-studio-ink transition-colors placeholder:text-studio-ink-3 focus:border-accent focus:outline-none ${className}`}
+      className={`rounded-lg border px-2.5 py-1.5 text-[12.5px] transition-colors focus:border-accent focus:outline-none ${toneClass} ${className}`}
     />
   );
 }
@@ -87,10 +92,26 @@ export function StatusDot({ tone }: { tone: 'ready' | 'checking' | 'offline' }) 
   );
 }
 
-/** 空状态：不是一句"暂无数据"，而是告诉用户下一步做什么 */
-export function EmptyHint({ children }: { children: ReactNode }) {
+/**
+ * 空状态：不是一句"暂无数据"，而是告诉用户下一步做什么。
+ *
+ * `tone` 决定色阶：画布（制图台）用 studio，项目列表（纸面）用 paper。
+ */
+export function EmptyHint({
+  children,
+  tone = 'studio',
+}: {
+  children: ReactNode;
+  tone?: 'studio' | 'paper';
+}) {
+  const toneClass =
+    tone === 'paper'
+      ? 'border-line bg-surface text-ink-3'
+      : 'border-studio-line bg-studio/45 text-studio-ink-3';
   return (
-    <div className="rounded-lg border border-dashed border-studio-line bg-studio/45 px-4 py-5 text-[12.5px] leading-relaxed text-studio-ink-3">
+    <div
+      className={`rounded-lg border border-dashed px-4 py-5 text-[12.5px] leading-relaxed ${toneClass}`}
+    >
       {children}
     </div>
   );
