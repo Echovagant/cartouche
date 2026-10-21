@@ -34,6 +34,9 @@ export type {
   ProjectView,
 } from './project/index.ts';
 
+export { ProjectStore, PROJECT_DIR_NAME } from './project/index.ts';
+export type { ProjectOutput, ProjectHistoryEntry } from './project/index.ts';
+
 export { resolveGdal, gdalEnv, candidateBinDirs } from './gdal/env.ts';
 export type { GdalLocation } from './gdal/env.ts';
 export { runTool, tools, classifyError } from './gdal/runner.ts';
