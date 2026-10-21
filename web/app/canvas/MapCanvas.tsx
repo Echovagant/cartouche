@@ -85,6 +85,14 @@ export interface MapCanvasHandle {
     quality?: number;
     producedAt?: string;
   }) => { jpeg: string; width: number; height: number } | null;
+  /**
+   * 当前视角（经度、纬度、缩放）。
+   * 地图没建好时返回 null。
+   *
+   * 存在的理由：项目清单里要存"用户最后看到的那个视角"，
+   * 而视角只有地图自己知道（前端拿不到 MapLibre 的内部状态）。
+   */
+  getView: () => { center: [number, number]; zoom: number } | null;
 }
 
 export interface MapCanvasProps {
@@ -126,8 +134,42 @@ export interface MapCanvasProps {
    * 拿到范围后画布会自动把视野移到该图层——不挪的话用户看到的是一张空白图。
    */
   extents: ReadonlyMap<string, readonly [number, number, number, number]>;
+  /**
+   * 建图时的初始视角（经度、纬度、缩放）。
+   * 不给就用默认视角（[116.4, 39.9] / zoom 3）。
+   *
+   * 恢复项目时传清单里的 `view`——用户上次看到的画面要原样回来。
+   */
+  initialView?: { center: [number, number]; zoom: number };
+  /**
+   * 恢复项目时传这些图层 id：它们的视角已经由 `initialView` 定好了，
+   * 不要再被"视野自动挪到数据上"覆盖掉。
+   *
+   * 不给就没有这层保护：加载图层后视野会照常挪到数据范围。
+   */
+  preserveViewLayerIds?: readonly string[];
   /** 点击地图上的要素时回调 */
   onSelectFeatures: (features: SelectedFeature[]) => void;
+}
+
+/**
+ * 把范围夹进合法的经纬度区间；夹不回来就返回 null（这次就不挪视野）。
+ *
+ * 为什么必须夹：引擎给的世界级栅格范围是
+ * `[-180, -90.000000000036, 180, 90.00000000000001]`——浮点误差把纬度顶到了 -90 之外。
+ * MapLibre 的 `fitBounds` 碰到越界的纬度会**抛异常**
+ * （"Invalid LngLat latitude value: must be between -90 and 90"），
+ * 而这个异常发生在 effect 里 → React 整个页面被卸载 → 画布直接白掉。
+ * 夹一下就没事，视野差这一丁点看不出来。
+ */
+function clampBounds(
+  bounds: readonly [number, number, number, number],
+): [number, number, number, number] | null {
+  const [minX, minY, maxX, maxY] = bounds;
+  if (![minX, minY, maxX, maxY].every((n) => Number.isFinite(n))) return null;
+  const lon = (n: number) => Math.min(180, Math.max(-180, n));
+  const lat = (n: number) => Math.min(90, Math.max(-90, n));
+  return [lon(minX), lat(minY), lon(maxX), lat(maxY)];
 }
 
 /**
@@ -199,12 +241,26 @@ export default function MapCanvas({
   selectedFeatures,
   vectorData,
   extents,
+  initialView,
+  preserveViewLayerIds,
   onSelectFeatures,
 }: MapCanvasProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const overlayRef = useRef<HTMLCanvasElement | null>(null);
   const mapRef = useRef<MlMap | null>(null);
   const [styleReady, setStyleReady] = useState(false);
+
+  /**
+   * 初始视角与"别动我的视角"的图层集合。
+   *
+   * 用 ref 留住：地图只建一次，建图时要读的是**那一刻**的值；
+   * 用 props 直接读会把建图 effect 的依赖变成 initialView，
+   * 换个项目就重建整张地图（白闪一次，图层重来）。
+   */
+  const initialViewRef = useRef(initialView);
+  initialViewRef.current = initialView;
+  const preserveIdsRef = useRef<ReadonlySet<string>>(new Set());
+  preserveIdsRef.current = new Set(preserveViewLayerIds ?? []);
 
   // 用 ref 留住最新的 props，避免把回调重建进 map 的事件监听里
   const layersRef = useRef<readonly MapLayer[]>(layers);
@@ -432,11 +488,13 @@ export default function MapCanvas({
 
     configureWorkerUrl();
 
+    // 恢复项目时用清单里的视角；没有就回默认视角
+    const init = initialViewRef.current ?? { center: [116.4, 39.9] as [number, number], zoom: 3 };
     const map = new MlMap({
       container,
       style: BASE_STYLE,
-      center: [116.4, 39.9],
-      zoom: 3,
+      center: init.center,
+      zoom: init.zoom,
       // 不引在线底图，也就没有在线数据的署名义务；保持图面干净
       attributionControl: false,
       maplibreLogo: false,
@@ -551,25 +609,36 @@ export default function MapCanvas({
    * 矢量图层加载完 → 把视野挪到数据范围。
    *
    * 只做一次（每个图层记一次），否则用户手动缩放后会被拽回去。
+   *
+   * 恢复项目时例外：视角已经由清单里的 `view` 定好了，
+   * 再自动挪一次就等于"恢复了个寂寞"——用户看到的还是数据范围，
+   * 不是他上次走到的那个位置。
    */
+  const shouldKeepView = useCallback((layerId: string): boolean => {
+    return Boolean(initialViewRef.current) && preserveIdsRef.current.has(layerId);
+  }, []);
+
   const fittedRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !styleReady) return;
     for (const [layerId, data] of vectorData) {
       if (fittedRef.current.has(layerId)) continue;
+      if (shouldKeepView(layerId)) continue;
       const bounds = geoJsonBounds(data);
       if (!bounds) continue;
+      const safe = clampBounds(bounds);
+      if (!safe) continue;
       fittedRef.current.add(layerId);
       map.fitBounds(
         [
-          [bounds[0], bounds[1]],
-          [bounds[2], bounds[3]],
+          [safe[0], safe[1]],
+          [safe[2], safe[3]],
         ],
         { padding: 48, duration: 0 },
       );
     }
-  }, [vectorData, styleReady]);
+  }, [vectorData, styleReady, shouldKeepView]);
 
   /**
    * 栅格图层 → 同样把视野挪到它的范围。
@@ -583,17 +652,20 @@ export default function MapCanvas({
     if (!map || !styleReady) return;
     for (const [layerId, bbox] of extents) {
       if (fittedRef.current.has(layerId)) continue;
+      if (shouldKeepView(layerId)) continue;
       if (!Array.isArray(bbox) || bbox.length !== 4) continue;
+      const safe = clampBounds(bbox);
+      if (!safe) continue;
       fittedRef.current.add(layerId);
       map.fitBounds(
         [
-          [bbox[0], bbox[1]],
-          [bbox[2], bbox[3]],
+          [safe[0], safe[1]],
+          [safe[2], safe[3]],
         ],
         { padding: 48, duration: 0 },
       );
     }
-  }, [extents, styleReady]);
+  }, [extents, styleReady, shouldKeepView]);
 
   // 选中的要素 → 高亮
   useEffect(() => {
@@ -673,6 +745,12 @@ export default function MapCanvas({
         });
 
         return { jpeg: out.toDataURL('image/jpeg', quality), width, height };
+      },
+      getView: () => {
+        const map = mapRef.current;
+        if (!map) return null;
+        const center = map.getCenter();
+        return { center: [center.lng, center.lat], zoom: map.getZoom() };
       },
     }),
     [legend],

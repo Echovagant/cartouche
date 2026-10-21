@@ -14,12 +14,81 @@ export interface MapLayer {
   /** 显示名（文件名） */
   readonly name: string;
   readonly kind: LayerKind;
-  /** 工作区内的相对路径 */
+  /**
+   * 相对**项目根**的路径。
+   *
+   * ③a-1 之后，打开项目时画布里的一切路径都以**项目根**为基准
+   * （`子目录/图.tff`），引擎请求靠 `root=<项目根绝对路径>` 把它定位回去。
+   * 清单里存的也是同一个值——项目文件夹整体拷走，路径依然成立。
+   */
   readonly path: string;
   /** 是否显示 */
   visible: boolean;
   /** 不透明度 0~1 */
   opacity: number;
+}
+
+/* ───────── 项目清单（`.cartouche/project.json`） ───────── */
+
+/** 图面参数：图名、操作人、页幅与分辨率 */
+export interface ProjectSheet {
+  readonly title: string;
+  readonly operator: string;
+  readonly page: 'A4-landscape' | 'A4-portrait';
+  readonly dpi: number;
+}
+
+/** 清单里的一个图层：只有恢复画布需要的信息，不含显示名（显示名从 path 推） */
+export interface ProjectLayer {
+  readonly id: string;
+  readonly kind: LayerKind;
+  /** 相对项目根的路径 */
+  readonly path: string;
+  readonly visible: boolean;
+  readonly opacity: number;
+}
+
+/** 地图视角：中心点（经度、纬度）与缩放级别 */
+export interface ProjectView {
+  readonly center: readonly [number, number];
+  readonly zoom: number;
+}
+
+/** 留痕里的一次操作 */
+export interface ProjectOperation {
+  readonly at: string;
+  readonly op: string;
+  readonly target: string;
+  readonly ok: boolean;
+  readonly impact?: Readonly<Record<string, unknown>>;
+}
+
+/** 项目清单本体（与引擎的 ProjectManifest 一一对应） */
+export interface ProjectManifest {
+  readonly version: number;
+  readonly name: string;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly sheet: ProjectSheet;
+  readonly layers: readonly ProjectLayer[];
+  readonly view?: ProjectView;
+  readonly operations: readonly ProjectOperation[];
+}
+
+/** 项目目录里的一份产出物（PDF / 报告） */
+export interface ProjectOutput {
+  readonly name: string;
+  readonly size: number;
+  readonly mtimeMs: number;
+}
+
+/** 「最近打开的项目」列表里的一项 */
+export interface ProjectSummary {
+  /** 项目根的绝对路径 */
+  readonly path: string;
+  readonly name: string;
+  readonly updatedAt: string;
+  readonly layerCount: number;
 }
 
 export interface SelectedFeature {

@@ -28,6 +28,7 @@ keys/
 # 本地工具与日志
 scripts/*.log
 scripts/*.err.log
+scripts/*.log.err
 tools/
 vendor/gdal/
 .conda/
