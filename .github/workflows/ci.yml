@@ -39,6 +39,21 @@ jobs:
       - name: 类型检查
         run: npm run typecheck
 
+      - name: 打印运行时版本（排查平台差异用）
+        run: |
+          node --version
+          npm --version
+          node -p "JSON.stringify(process.versions)"
+
+      # 样本生成必须排在单元测试**之前**：
+      # 有几个测试直接读 fixtures/ 下由 `npm run fixture` 生成的样本
+      # （embedded.tff / worldref.tff 等），没先生成就跑不起来。
+      # 2026-10-21：步骤顺序反了，CI 第一次跑就挂在单元测试上。
+      - name: 样本生成与写回往返校验
+        env:
+          PATH: ${{ env.GDAL_BIN }}:${{ env.PATH }}
+        run: npm run fixture
+
       - name: 单元测试
         env:
           PATH: ${{ env.GDAL_BIN }}:${{ env.PATH }}
@@ -68,11 +83,6 @@ jobs:
         env:
           PATH: ${{ env.GDAL_BIN }}:${{ env.PATH }}
         run: npm run smoke:engine
-
-      - name: 样本生成与写回往返校验
-        env:
-          PATH: ${{ env.GDAL_BIN }}:${{ env.PATH }}
-        run: npm run fixture
 
       - name: 构建前端静态站点
         run: npm run build:web
