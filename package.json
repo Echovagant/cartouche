@@ -1,0 +1,47 @@
+{
+  "name": "cartouche",
+  "version": "0.1.0",
+  "description": "图签 Cartouche — AI 驱动的地图修改工作台：用自然语言描述要改什么，AI 给出可核对的修改方案，确定性引擎执行，全程留痕。",
+  "license": "Apache-2.0",
+  "type": "module",
+  "private": false,
+  "engines": {
+    "node": ">=22"
+  },
+  "workspaces": [
+    "web",
+    "server",
+    "src/engine"
+  ],
+  "scripts": {
+    "doctor": "node scripts/doctor.mjs",
+    "fixture": "node scripts/make-fixture.mjs",
+    "check:schema": "node scripts/check-schema.mjs",
+    "check:bench": "node scripts/check-bench.mjs",
+    "check:licenses": "node scripts/check-licenses.mjs",
+    "check:secrets": "node scripts/check-secrets.mjs",
+    "scan:encoding": "node scripts/scan-encoding.mjs",
+    "samples": "node scripts/fetch-samples.mjs",
+    "samples:eval": "node scripts/eval-samples.mjs",
+    "samples:seed": "node scripts/seed-workspace.mjs",
+    "smoke:engine": "npm run build:server && node scripts/smoke-engine.mjs",
+    "test": "node --test",
+    "test:ci": "node --test --test-concurrency=1",
+    "dev:web": "npm -w web run dev",
+    "dev:server": "npm -w server run dev",
+    "serve:web": "node scripts/serve-static.mjs",
+    "build:web": "npm -w web run build",
+    "build:server": "npm -w @cartouche/engine run build && npm -w server run build",
+    "build:engine": "npm -w @cartouche/engine run build",
+    "typecheck": "npm -w @cartouche/engine run build && npm -w @cartouche/engine run typecheck && npm -w server run typecheck && npm -w web run typecheck"
+  },
+  "keywords": [
+    "gis",
+    "arcgis",
+    "geospatial",
+    "raster",
+    "vector",
+    "ai",
+    "offline"
+  ]
+}

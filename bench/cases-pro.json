@@ -1,0 +1,679 @@
+{
+  "version": "1.0",
+  "name": "图签 Cartouche · ArcGIS Pro 进阶工作流对照用例集",
+  "description": "以真实 ArcGIS Pro 工作流为蓝本的一组用例。判定真实度的标准是「对应的 Pro 操作链有多复杂」——Pro 侧步骤越多、涉及的工具有越多，说明该场景离基层作业人员的真实活儿越近。每条标注 proParity（Pro 工具链 / 步骤数 / 复杂度 / 出处）与 status（covered=我们已支持，gap=Pro 里真实存在但我们还没这个能力）。",
+  "authoring": {
+    "draftedBy": "AI（基于 2026-10-21 对 Esri 官方文档、ArcGIS Pro 教程与公开数据集的联网调研）",
+    "needsHumanReview": true,
+    "reviewNote": "本集的 Pro 工具链映射来自公开资料整理，**具体参数取值（缓冲距离、等高线间距、格网大小）需真实作业人员按本地规范替换**；gap 项需产品侧确认取舍。"
+  },
+  "proComplexity": {
+    "L1": "单工具、单数据源（改属性、导一张图）",
+    "L2": "2~3 个工具串联，或多数据源叠加（选址分析、栅格+矢量出图）",
+    "L3": "需要坐标/格式前置处理，或可复现流程（ModelBuilder、多期对比、批量）",
+    "L4": "多源 + 多步 + 外部依赖（数据下载器、多维镶嵌、生成可引用成果）"
+  },
+  "statusMeaning": {
+    "covered": "引擎现有 op 可完整表达，期望计划可直接执行",
+    "gap": "该工作流在 ArcGIS Pro 里真实存在且高频，但引擎目前缺对应能力；expected.ops 为空，expected.gap 写明缺什么"
+  },
+  "cases": [
+    {
+      "id": "P1",
+      "status": "covered",
+      "category": "export",
+      "title": "多源叠加出交差图（行政边界 + 影像，唯一值分级）",
+      "utterance": "把今年的卫星底图和县界套在一块，县界按地级市分色，打一张能直接报上去的 PDF",
+      "preconditions": {
+        "datasets": ["sentinel2-2024Q2.tif", "china_counties.shp"],
+        "state": "影像为 UTM 31N 投影，县界为 CGCS2000 经纬度，两者尚未统一坐标",
+        "crs": "混合：EPSG:32631 与 CGCS2000"
+      },
+      "expected": {
+        "ops": [
+          { "op": "dataset.open", "params": { "targets": ["dataset://sentinel2-2024Q2.tif", "dataset://china_counties.shp"] } },
+          { "op": "dataset.healthCheck", "params": { "target": "dataset://china_counties.shp" } },
+          { "op": "vector.reproject", "params": { "target": "dataset://china_counties.shp", "to": "EPSG:32631" } },
+          { "op": "export.image", "params": { "target": "dataset://sentinel2-2024Q2.tif", "format": "pdf", "dpi": 300 } }
+        ],
+        "assertions": [
+          { "kind": "impact-report", "mustContain": ["备份文件名"] },
+          { "kind": "no-self-commit", "expect": true }
+        ]
+      },
+      "traps": [
+        "县界是经纬度、底图是 UTM 米制，**不统一坐标就叠不上**，出图会错位几百米",
+        "PDF 要 300 dpi，72 dpi 交差时会被退回",
+        "唯一值分级属于**符号化**，不改数据；不要把分级写成改属性"
+      ],
+      "proParity": {
+        "level": "L2",
+        "steps": 4,
+        "tools": ["Add Data", "Project (矢量)", "Unique Values symbology", "New Layout → Export PDF"],
+        "source": "Esri《ArcGIS Pro 实操教程》选址分析/制图流程；Esri 官方 Layout 导出 PDF 文档"
+      }
+    },
+    {
+      "id": "P2",
+      "status": "gap",
+      "category": "vector-edit",
+      "title": "缓冲区选址：道路 500 米范围 × 人口密度栅格",
+      "utterance": "找出主干道周边 500 米内、人口密度又高的地方，划出候选范围",
+      "preconditions": {
+        "datasets": ["roads.shp（道路等级字段）", "population_density.tif"],
+        "state": "道路为线要素，含「等级」字段；人口密度为栅格；两者 CRS 一致但需先对齐",
+        "crs": "CGCS2000 / 3 度带"
+      },
+      "expected": {
+        "ops": [],
+        "gap": {
+          "missingCapability": "vector.buffer（缓冲区）与栅格/矢量的联合判定",
+          "closestOps": ["vector.overlay（只能做已有面之间的叠加）", "feature.summarize（只能对已有面做统计）"],
+          "why": "Pro 里 Buffer → Intersect 是选址分析的标准两步；我们没有「由几何生成缓冲区」的能力，也没有「栅格按掩膜求统计」的能力",
+          "proTools": ["Buffer (Analysis)", "Intersect (Analysis)"]
+        },
+        "assertions": []
+      },
+      "traps": [
+        "缓冲距离是**米**，在经纬度下算长度没有意义——必须先投影",
+        "Pro 的 Intersect 默认保留**所有**输入属性，字段会爆炸；要显式指定保留哪些",
+        "候选区是**面要素**，不是栅格连通域"
+      ],
+      "proParity": {
+        "level": "L2",
+        "steps": 3,
+        "tools": ["Buffer (Analysis)", "Intersect (Analysis)"],
+        "source": "Esri《ArcGIS Pro 实操教程》选址分析章节（道路缓冲 500m → 与人口密度相交）"
+      }
+    },
+    {
+      "id": "P3",
+      "status": "gap",
+      "category": "batch-rules",
+      "title": "ModelBuilder 化：同一套流程套 20 个图幅",
+      "utterance": "这 20 个图幅都要做一样的处理（统一亮度、裁到行政区、出图），能不能一次跑完",
+      "preconditions": {
+        "datasets": ["tile_01.tff … tile_20.tff（同一批次、不同图幅）"],
+        "state": "20 个图幅亮度不一致，需要执行完全相同的一串操作",
+        "crs": "同一坐标系"
+      },
+      "expected": {
+        "ops": [],
+        "gap": {
+          "missingCapability": "批处理/循环语义（一次声明「对集合中的每个数据集执行这串操作」）",
+          "closestOps": ["dataset.open（可一次列多个 target，但后续操作仍要逐个写）"],
+          "why": "Pro 的 ModelBuilder / ArcPy 循环一次处理 20 个图幅；我们的操作计划是**平铺的 op 列表**，只能把 20×N 个 op 全列出来——既冗长又容易漏",
+          "proTools": ["ModelBuilder", "Batch (arcpy)"]
+        },
+        "assertions": []
+      },
+      "traps": [
+        "漏掉其中一个图幅是最常见的失败模式——**沉默地少处理一个**比报错更糟",
+        "每个图幅都要**独立备份**，不能共用一个备份名",
+        "中断后要能**续跑**，而不是从头再来"
+      ],
+      "proParity": {
+        "level": "L3",
+        "steps": 3,
+        "tools": ["ModelBuilder", "Iterate over raster datasets", "Export map"]
+      }
+    },
+    {
+      "id": "P4",
+      "status": "gap",
+      "category": "raster-edit",
+      "title": "由 DEM 生成等高线",
+      "utterance": "这份高程数据要出 10 米间隔的等高线，用于工程图",
+      "preconditions": {
+        "datasets": ["dem.tif"],
+        "state": "DEM 为地理坐标（度），等高线必须用投影后的米制 DEM 生成",
+        "crs": "WGS84 经纬度"
+      },
+      "expected": {
+        "ops": [],
+        "gap": {
+          "missingCapability": "raster.contour（栅格→等值线矢量派生）",
+          "closestOps": ["raster.resample（只能改分辨率）", "feature.create（不能由栅格生成线）"],
+          "why": "Pro 里的 Contour 是**派生矢量**工具，输出与输入是不同数据类型；我们的 op 集合目前没有跨类型的派生能力",
+          "proTools": ["Project Raster", "Contour (3D Analyst)"]
+        },
+        "assertions": []
+      },
+      "traps": [
+        "**必须先 Project Raster**——在经纬度 DEM 上直接跑 Contour，结果全错",
+        "等高线带高程属性（Contour 与 Zonal 字段），不是纯几何",
+        "等高距要跟出图比例尺匹配"
+      ],
+      "proParity": {
+        "level": "L3",
+        "steps": 2,
+        "tools": ["Project Raster", "Contour (3D Analyst)"]
+      }
+    },
+    {
+      "id": "P5",
+      "status": "gap",
+      "category": "raster-edit",
+      "title": "NDVI 植被指数（波段运算）",
+      "utterance": "用近红外和红光波段算一下植被指数 NDVI，圈出长势差的地块",
+      "preconditions": {
+        "datasets": ["S2_B08.tif（NIR）", "S2_B04.tif（Red）", "parcels.shp"],
+        "state": "两波段同网格（10 m，UTM 31N），反射率为 int16 且**缩放因子 0.0001 未写入文件**",
+        "crs": "EPSG:32631"
+      },
+      "expected": {
+        "ops": [],
+        "gap": {
+          "missingCapability": "raster.bandMath（波段间算术）与非 Byte 类型支持",
+          "closestOps": ["raster.adjustLevels（只对单波段做拉伸/伽马）"],
+          "why": "Pro 的 Raster Calculator / Band Math 是**波段间算术**（(B8-B4)/(B8+B4)），且要处理 int16 反射率与缩放因子；我们既没有波段算术，读取时还会把 int16 静默降级成 Byte（见 samples 报告 typeFidelity=DOWNGRADED）",
+          "proTools": ["Band Arithmetic / Raster Calculator", "Extract by Polygon"]
+        },
+        "assertions": []
+      },
+      "traps": [
+        "**int16 被降级成 Byte 后，NDVI 的物理量纲就找不回来了**（这是实测确认的实现缺口）",
+        "缩放因子 0.0001 不在文件里，GDAL 也不会替你补",
+        "除法要防除零（裸地/水体）",
+        "NDVI 出图要拉伸到 -1~1，直接拉伸到 0~255 会全糊"
+      ],
+      "proParity": {
+        "level": "L3",
+        "steps": 2,
+        "tools": ["Band Arithmetic (Raster Functions)", "Extract by Polygon", "Symbology stretch"]
+      }
+    },
+    {
+      "id": "P6",
+      "status": "gap",
+      "category": "vector-edit",
+      "title": "鱼网采样：生成格网并统计每个格网内的点数",
+      "utterance": "按 500 米格网把这批监测点归类，看每个格网有几个点",
+      "preconditions": {
+        "datasets": ["monitor_points.shp"],
+        "state": "点要素，需落在规则格网内",
+        "crs": "CGCS2000 / 3 度带（米制）"
+      },
+      "expected": {
+        "ops": [],
+        "gap": {
+          "missingCapability": "vector.fishnet（生成规则格网）",
+          "closestOps": ["feature.create（可以手工造点，但无法批量生成格网面）"],
+          "why": "Pro 的 Create Fishnet 生成规则格网面；后续「点落格网」可由 vector.overlay 的 clip/intersection 近似，但**格网本身造不出来**",
+          "proTools": ["Create Fishnet (Data Management)", "Spatial Join"]
+        },
+        "assertions": []
+      },
+      "traps": [
+        "格网范围要**显式指定**，不能默认用输入范围（否则多出一圈空白格）",
+        "格网边长要跟坐标系单位一致",
+        "点数为 0 的格网是否保留，是业务口径问题"
+      ],
+      "proParity": {
+        "level": "L2",
+        "steps": 2,
+        "tools": ["Create Fishnet (Data Management)", "Spatial Join"]
+      }
+    },
+    {
+      "id": "P7",
+      "status": "gap",
+      "category": "raster-edit",
+      "title": "多维数据镶嵌数据集（netCDF）",
+      "utterance": "有一批 netCDF 的气候数据，要建成镶嵌数据集，后面还要出金字塔和统计量",
+      "preconditions": {
+        "datasets": ["climate_*.nc（netCDF，含时间维与垂直维）"],
+        "state": "多变量、多维度，尚未建镶嵌数据集",
+        "crs": "WGS84"
+      },
+      "expected": {
+        "ops": [],
+        "gap": {
+          "missingCapability": "raster.mosaicDataset（带维度的镶嵌数据集容器）",
+          "closestOps": ["raster.mosaic（只能把若干平铺栅格拼成一张）"],
+          "why": "Pro 的 Create Mosaic Dataset + Add Rasters + Build Pyramids and Statistics 处理的是**带维度的多变量数据**，产物是一个容器而非一张图；我们的 mosaic 是单张拼接",
+          "proTools": ["Create Mosaic Dataset", "Add Rasters To Mosaic Dataset", "Build Pyramids and Statistics"]
+        },
+        "assertions": []
+      },
+      "traps": [
+        "变量名要选对，导错变量整套白做",
+        "统计量是按**镶嵌后的像元**算的，不是单景",
+        "金字塔缺失会让后续出图卡死"
+      ],
+      "proParity": {
+        "level": "L4",
+        "steps": 4,
+        "tools": ["Create Mosaic Dataset", "Add Rasters To Mosaic Dataset", "Raster Type Properties", "Build Pyramids and Statistics"]
+      }
+    },
+    {
+      "id": "P8",
+      "status": "gap",
+      "category": "vector-edit",
+      "title": "字段计算器：算综合评分",
+      "utterance": "给每个地块算个评分，人口密度占六成、离主干道距离占四成",
+      "preconditions": {
+        "datasets": ["parcels.shp（人口密度、到主干道距离两个数值字段）"],
+        "state": "两个字段已存在，需要按权重线性组合出新字段",
+        "crs": "CGCS2000 / 3 度带"
+      },
+      "expected": {
+        "ops": [],
+        "gap": {
+          "missingCapability": "字段表达式（field expression）",
+          "closestOps": ["feature.setAttributes（只能把字段设成常量）"],
+          "why": "Pro 的字段计算器支持 Python 表达式 !人口密度! * 0.6 + !道路距离! * 0.4；我们只能写死值，无法按行计算",
+          "proTools": ["Calculate Field (Data Management)"]
+        },
+        "assertions": []
+      },
+      "traps": [
+        "表达式里的字段名必须**加 ! 包围**，中文字段名尤其容易写错",
+        "除以权重之和前要处理空值与零值",
+        "评分是派生字段，**不应覆盖原始字段**"
+      ],
+      "proParity": {
+        "level": "L2",
+        "steps": 1,
+        "tools": ["Calculate Field (Data Management)"]
+      }
+    },
+    {
+      "id": "P9",
+      "status": "gap",
+      "category": "batch-rules",
+      "title": "物种发生点下载器（学名 + 范围 + 时间 + DOI）",
+      "utterance": "帮我把这个研究区里 2019 年至今的某种植物的分布点下载下来，整理成能引用的成果",
+      "preconditions": {
+        "datasets": ["study_area.shp（研究区面）", "外部 API：物种出现记录服务"],
+        "state": "研究区面要素 < 300 顶点；需要按学名 + 空间范围 + 时间窗查询外部数据源",
+        "crs": "WGS84"
+      },
+      "expected": {
+        "ops": [],
+        "gap": {
+          "missingCapability": "外部数据获取 + 成果溯源（DOI）",
+          "closestOps": ["feature.create（只能造本地要素，接不上外部数据）"],
+          "why": "Pro 的 GBIF 下载工具做的是**联网抓取 + 过滤 + 合并 + 登记 DOI**；我们目前完全没有「取数」这一类操作，也不处理成果引用",
+          "proTools": ["Download Species Occurrence Points (GBIF) tool", "Generate & register DOI"]
+        },
+        "assertions": []
+      },
+      "traps": [
+        "单次请求上限 10 万条，超了要**按时间窗拆批**再合并",
+        "研究区多边形顶点数有上限，复杂边界要**先简化**",
+        "多学名要合并成一个输出，字段要能区分来源",
+        "对外发布必须登记 DOI，否则引用不成立"
+      ],
+      "proParity": {
+        "level": "L4",
+        "steps": 5,
+        "tools": ["Download Species Occurrence Points (GBIF)", "Filter by Year", "Merge", "Generate DOI"]
+      }
+    },
+    {
+      "id": "P10",
+      "status": "covered",
+      "category": "raster-edit",
+      "title": "影像按行政界裁切 + 按区县分级统计",
+      "utterance": "把这张卫片按县界切一下，然后按县统计每个县多少平方公里",
+      "preconditions": {
+        "datasets": ["sentinel2-2024Q2.tif", "counties.shp"],
+        "state": "影像跨多个县；县界为矢量；两者 CRS 一致（EPSG:32631）",
+        "crs": "EPSG:32631"
+      },
+      "expected": {
+        "ops": [
+          { "op": "dataset.open", "params": { "targets": ["dataset://sentinel2-2024Q2.tif", "dataset://counties.shp"] } },
+          { "op": "raster.clip", "params": { "target": "dataset://sentinel2-2024Q2.tif", "clip": "layer://counties", "mode": "inside" } },
+          { "op": "feature.summarize", "params": { "target": "layer://counties", "groupBy": ["NAME_3"], "aggregates": ["area"], "areaUnit": "km2" } },
+          { "op": "export.report", "params": { "kind": "csv", "target": "layer://counties", "include": ["impact-metrics"], "format": "csv" } }
+        ],
+        "assertions": [
+          { "kind": "impact-report", "mustContain": ["影响像元数", "备份文件名"] },
+          { "kind": "no-self-commit", "expect": true }
+        ]
+      },
+      "traps": [
+        "面积单位必须**显式声明**（km2 / m2 / ha / mu），经纬度下算面积没有意义",
+        "裁切后面积含**nodata**，别把无数据区算进去",
+        "同名县要靠编码区分，不能只按名字分组"
+      ],
+      "proParity": {
+        "level": "L2",
+        "steps": 3,
+        "tools": ["Clip (Analysis)", "Statistics (Analysis)", "Export Table"]
+      }
+    },
+    {
+      "id": "P11",
+      "status": "covered",
+      "category": "export",
+      "title": "按行政区分级渲染后出 300dpi PDF",
+      "utterance": "按区县分类渲染这张图，然后导成 A4 横版、300 dpi 的 PDF",
+      "preconditions": {
+        "datasets": ["landcover.tif", "counties.shp"],
+        "state": "地表覆盖栅格 + 行政边界矢量；分类值在栅格里，行政边界用于叠加",
+        "crs": "EPSG:32631"
+      },
+      "expected": {
+        "ops": [
+          { "op": "dataset.open", "params": { "targets": ["dataset://landcover.tif", "dataset://counties.shp"] } },
+          { "op": "export.image", "params": { "target": "dataset://landcover.tif", "format": "pdf", "dpi": 300 } }
+        ],
+        "assertions": [
+          { "kind": "impact-report", "mustContain": ["备份文件名"] },
+          { "kind": "no-self-commit", "expect": true }
+        ]
+      },
+      "traps": [
+        "**分类渲染是符号化，不是数据修改**——不要生成新栅格",
+        "dpi 决定文件大小：300 dpi 的 A4 PDF 约 5~20 MB",
+        "图面要素（比例尺/图例/指北针/图框/标题栏）缺一个就可能不交差"
+      ],
+      "proParity": {
+        "level": "L2",
+        "steps": 3,
+        "tools": ["Unique Values symbology", "New Layout (A4 landscape)", "Export Layout → PDF 300 dpi"]
+      }
+    },
+    {
+      "id": "P12",
+      "status": "covered",
+      "category": "vector-edit",
+      "title": "河流按行政区裁切",
+      "utterance": "把流经本县的河段单独切出来",
+      "preconditions": {
+        "datasets": ["rivers.shp（线）", "county.shp（面）"],
+        "state": "河流跨多个行政区；两个图层 CRS 一致",
+        "crs": "CGCS2000 / 3 度带"
+      },
+      "expected": {
+        "ops": [
+          { "op": "dataset.open", "params": { "targets": ["dataset://rivers.shp", "dataset://county.shp"] } },
+          { "op": "vector.overlay", "params": { "target": "layer://rivers", "operation": "clip-to-base", "base": "layer://county", "preserveAttributes": true } }
+        ],
+        "assertions": [
+          { "kind": "impact-report", "mustContain": ["影响要素数"] },
+          { "kind": "no-self-commit", "expect": true }
+        ]
+      },
+      "traps": [
+        "裁切后的线**几何被截断**，长度会变——不是原始长度",
+        "属性要跟着带过去（preserveAttributes）",
+        "跨界的河段要按业务口径决定：留整条还是只留本县段"
+      ],
+      "proParity": {
+        "level": "L2",
+        "steps": 2,
+        "tools": ["Clip (Analysis)"]
+      }
+    },
+    {
+      "id": "P13",
+      "status": "covered",
+      "category": "vector-edit",
+      "title": "坐标基准混用：国内边界数据的 GCJ-02 偏移",
+      "utterance": "两个来源的省界叠不上，差了几百米，哪个有问题",
+      "preconditions": {
+        "datasets": ["provinces_datav.geojson（GCJ-02）", "provinces_gadm.json（WGS84）"],
+        "state": "两个同名省界要素位置相差约 100~600 m",
+        "crs": "两边都自称 EPSG:4326，但实际基准不同"
+      },
+      "expected": {
+        "ops": [
+          { "op": "dataset.open", "params": { "targets": ["dataset://provinces_datav.geojson", "dataset://provinces_gadm.json"] } },
+          { "op": "dataset.healthCheck", "params": { "target": "dataset://provinces_datav.geojson" } },
+          { "op": "vector.overlay", "params": { "target": "layer://provinces_datav", "operation": "intersection", "base": "layer://provinces_gadm" } }
+        ],
+        "assertions": [
+          { "kind": "impact-report", "mustContain": ["影响要素数"] },
+          { "kind": "no-self-commit", "expect": true }
+        ]
+      },
+      "traps": [
+        "**两个文件都写着 4326，但一个其实是 GCJ-02**——元数据不会告诉你",
+        "偏移是**系统性**的，不是随机误差：面积会系统性偏大 0.1%~0.5%",
+        "这属于「元数据说谎」，体检规则当前**识别不了**，必须靠用户/常识判断"
+      ],
+      "proParity": {
+        "level": "L3",
+        "steps": 3,
+        "tools": ["Identify", "Intersect", "Measure (Geometry)"],
+        "note": "本条同时是对我们体检规则的**已知盲区**的记录"
+      }
+    },
+    {
+      "id": "P14",
+      "status": "covered",
+      "category": "vector-edit",
+      "title": "真实数据里的自相交与退化几何批量修复",
+      "utterance": "导入后发现有些面自相交、有些是空的，先体检再修，修完告诉我改了哪些",
+      "preconditions": {
+        "datasets": ["natural_earth_admin0.shp（真实数据，177 国 / 168 字段）"],
+        "state": "含少量自相交环与零面积面；字段名混杂大小写与下划线风格",
+        "crs": "EPSG:4326"
+      },
+      "expected": {
+        "ops": [
+          { "op": "dataset.open", "params": { "targets": ["dataset://natural_earth_admin0.shp"] } },
+          { "op": "dataset.healthCheck", "params": { "target": "dataset://natural_earth_admin0.shp" } },
+          { "op": "vector.repairGeometry", "params": { "target": "dataset://natural_earth_admin0.shp", "issues": ["self-intersection", "collapsed-ring", "ring-orientation"] } },
+          { "op": "export.report", "params": { "kind": "health-report", "target": "dataset://natural_earth_admin0.shp", "include": ["impact-metrics", "before-after-image"], "format": "html" } }
+        ],
+        "assertions": [
+          { "kind": "impact-report", "mustContain": ["影响要素数"] },
+          { "kind": "no-self-commit", "expect": true }
+        ]
+      },
+      "traps": [
+        "**修复几何会改变要素**——必须先备份并逐条列出改了哪些",
+        "自相交修复可能**移动顶点**，面积会变；不能悄悄改",
+        "零面积面往往是数据本身无效，应**报告**而不是直接删"
+      ],
+      "proParity": {
+        "level": "L3",
+        "steps": 3,
+        "tools": ["Check Geometry", "Repair Geometry", "Export Report"]
+      }
+    },
+    {
+      "id": "P15",
+      "status": "covered",
+      "category": "raster-edit",
+      "title": "多期影像镶嵌成一张连续底图",
+      "utterance": "这 6 景是连着的，拼成一张能铺满的底图，重叠的地方别出现深色缝",
+      "preconditions": {
+        "datasets": ["scene_01.tif … scene_06.tif（相邻 6 景）"],
+        "state": "相邻且有重叠；重叠处取样不一致，直接拼会出现接缝",
+        "crs": "同为 EPSG:32631"
+      },
+      "expected": {
+        "ops": [
+          { "op": "dataset.open", "params": { "targets": ["dataset://scene_01.tif", "dataset://scene_02.tif", "dataset://scene_03.tif", "dataset://scene_04.tif", "dataset://scene_05.tif", "dataset://scene_06.tif"] } },
+          { "op": "raster.mosaic", "params": { "inputs": ["dataset://scene_01.tif", "dataset://scene_02.tif", "dataset://scene_03.tif", "dataset://scene_04.tif", "dataset://scene_05.tif", "dataset://scene_06.tif"], "overlap": "blend" } }
+        ],
+        "assertions": [
+          { "kind": "impact-report", "mustContain": ["备份文件名"] },
+          { "kind": "no-self-commit", "expect": true }
+        ]
+      },
+      "traps": [
+        "重叠策略 first/last/blend 的结果不同，**blend 可能引入混合像元**",
+        "镶嵌前各景的**分辨率必须一致**，否则会被重采样",
+        "拼完要回读校验，别只看「命令没报错」"
+      ],
+      "proParity": {
+        "level": "L3",
+        "steps": 2,
+        "tools": ["Mosaic (Data Management) / Merge Raster"]
+      }
+    },
+    {
+      "id": "P16",
+      "status": "covered",
+      "category": "export",
+      "title": "把整轮改动整理成交差报告",
+      "utterance": "这次一共改了哪些图、每张改了什么、原始文件在哪，给我一份能附在材料里的说明",
+      "preconditions": {
+        "datasets": ["本次会话的全部操作记录与备份文件"],
+        "state": "一轮操作涉及 3 个数据集、若干次修改",
+        "crs": "不适用"
+      },
+      "expected": {
+        "ops": [
+          { "op": "export.report", "params": { "kind": "change-report", "include": ["op-list", "impact-metrics", "file-hashes", "operator", "timestamps", "backups"], "format": "html" } }
+        ],
+        "assertions": [
+          { "kind": "impact-report", "mustContain": ["备份文件名"] },
+          { "kind": "no-self-commit", "expect": true }
+        ]
+      },
+      "traps": [
+        "报告要能**独立成立**：交差的人不会打开我们的软件",
+        "备份路径必须写**绝对路径**，换台机器还能找到",
+        "文件哈希要覆盖**改前与改后**两个版本"
+      ],
+      "proParity": {
+        "level": "L2",
+        "steps": 2,
+        "tools": ["Geoprocessing History（导出为文本/HTML）", "Metadata / 交差说明"]
+      }
+    },
+    {
+      "id": "P17",
+      "status": "covered",
+      "category": "health-check",
+      "title": "Esri 风格影像：.tif + .tfw + .prj 组合的坐标系缺失",
+      "utterance": "这个图打开后不知道是什么坐标系，能不能查一下",
+      "preconditions": {
+        "datasets": ["scan.tff（GTiff 影像）", "scan.tfw（世界文件）", "scan.prj（Esri 风格坐标系）"],
+        "state": "**GTiff 驱动不会自动读同名 .prj**（M0' 已实测确认），世界文件生效但坐标系缺失",
+        "crs": "文件里写着 CGCS2000 / 3 度带，但 GDAL 解析不出来"
+      },
+      "expected": {
+        "ops": [
+          { "op": "dataset.open", "params": { "targets": ["dataset://scan.tff"] } },
+          { "op": "dataset.healthCheck", "params": { "target": "dataset://scan.tff" } }
+        ],
+        "assertions": [
+          { "kind": "health-report", "mustContain": ["坐标系"] },
+          { "kind": "no-self-commit", "expect": true }
+        ]
+      },
+      "traps": [
+        "「文件旁边有 .prj」**不等于**「GDAL 读得到」——对栅格无效、对 Shapefile 才有效",
+        "缺 CRS 时**面积、长度、叠加、缓冲全部会错，而且用户看不出来**",
+        "修法是把 CRS **内嵌进 GeoTIFF**，同时补写 .tfw 与 .wld 双世界文件"
+      ],
+      "proParity": {
+        "level": "L2",
+        "steps": 2,
+        "tools": ["Define Projection (Data Management) / ArcGIS 投影", "Georeference Raster (世界文件)"]
+      }
+    },
+    {
+      "id": "P18",
+      "status": "covered",
+      "category": "raster-edit",
+      "title": "扫描件偏暗：批量提亮但保留原始",
+      "utterance": "这批扫描件普遍偏暗，整体提亮一点，但别把原来亮的也拉爆",
+      "preconditions": {
+        "datasets": ["scan_01.tff … scan_05.tff"],
+        "state": "整体偏暗；部分图幅本身已经正常",
+        "crs": "CGCS2000 / 3 度带"
+      },
+      "expected": {
+        "ops": [
+          { "op": "dataset.open", "params": { "targets": ["dataset://scan_01.tff", "dataset://scan_02.tff", "dataset://scan_03.tff", "dataset://scan_04.tff", "dataset://scan_05.tff"] } },
+          { "op": "raster.adjustLevels", "params": { "target": "dataset://scan_01.tff", "method": "linear-stretch", "autoDerive": true } },
+          { "op": "raster.adjustLevels", "params": { "target": "dataset://scan_02.tff", "method": "linear-stretch", "autoDerive": true } }
+        ],
+        "assertions": [
+          { "kind": "pixel-diff", "scope": "outside-target", "maxDiffRatio": 0 },
+          { "kind": "impact-report", "mustContain": ["影响像元数", "备份文件名"] },
+          { "kind": "no-self-commit", "expect": true }
+        ]
+      },
+      "traps": [
+        "**autoDerive 为 true 时手填的 brightness/contrast 会被忽略**——两者不能同时给",
+        "已经正常的图幅再拉伸会**把高光截断**（255 饱和）",
+        "原始文件必须备份，提亮是**可回退**的"
+      ],
+      "proParity": {
+        "level": "L2",
+        "steps": 2,
+        "tools": ["Enhance / Histogram Stretch", "Batch (ModelBuilder)"]
+      }
+    },
+    {
+      "id": "P19",
+      "status": "covered",
+      "category": "export",
+      "title": "改动前先留快照，用于前后对比与举证",
+      "utterance": "改之前先把这张图现在的样子存一份，回头我要给领导看改前改后的对比",
+      "preconditions": {
+        "datasets": ["scan.tff（待改）", "markup.shp（待擦除的标注层）"],
+        "state": "尚未做任何修改；需要固定「改动前」的可举证状态",
+        "crs": "CGCS2000 / 3 度带"
+      },
+      "expected": {
+        "ops": [
+          { "op": "dataset.open", "params": { "targets": ["dataset://scan.tff", "dataset://markup.shp"] } },
+          { "op": "dataset.snapshot", "params": { "target": "dataset://scan.tff", "label": "before" } },
+          { "op": "dataset.snapshot", "params": { "target": "dataset://markup.shp", "label": "before" } }
+        ],
+        "assertions": [
+          { "kind": "impact-report", "mustContain": ["备份文件名"] },
+          { "kind": "no-self-commit", "expect": true }
+        ]
+      },
+      "traps": [
+        "快照是**只读**的，不能被后续操作覆盖",
+        "快照要带**哈希**，否则无法证明「这就是改前那份」",
+        "快照本身不该算作一次「修改」——影响报告里不能把它算进影响像元数"
+      ],
+      "proParity": {
+        "level": "L1",
+        "steps": 1,
+        "tools": ["Export 副本 / 归档（Pro 无直接对应，靠版本管理或导出实现）"]
+      }
+    },
+    {
+      "id": "P20",
+      "status": "covered",
+      "category": "export",
+      "title": "交差前出一份兼容性自检报告",
+      "utterance": "改完了，出一份报告给我同事看，他不用装我们的软件就能确认这图在 Pro 里没问题",
+      "preconditions": {
+        "datasets": ["交付图件 scan.tff（或 .shp）", "本次改动的操作记录"],
+        "state": "刚改完；栅格缺内嵌 CRS、属性表是 GBK 编码等隐患尚未处理",
+        "crs": "CGCS2000 / 3 度带（但未内嵌进栅格）"
+      },
+      "expected": {
+        "ops": [
+          { "op": "dataset.open", "params": { "targets": ["dataset://scan.tff"] } },
+          { "op": "dataset.healthCheck", "params": { "target": "dataset://scan.tff" } },
+          { "op": "export.report", "params": { "kind": "compat-report", "target": "dataset://scan.tff", "include": ["crs", "sidecars", "arcgis-notes", "impact-metrics", "backups"], "format": "html" } }
+        ],
+        "assertions": [
+          { "kind": "report-sections", "mustContain": ["文件格式", "坐标系", "几何有效性", "伴随文件", "在 ArcGIS 中打开需要注意", "量化摘要"] },
+          { "kind": "no-self-commit", "expect": true }
+        ]
+      },
+      "traps": [
+        "报告要能**独立成立**：交差的人不会打开我们的软件，所以不能只写内部术语",
+        "**缺失的伴随文件**必须点名（哪个 .prj / .cpg / .tfw 没有）",
+        "「在 ArcGIS 中打开需要注意」要写**具体后果**（如「坐标系未知时量算会错但不报错」），不能只说「建议检查」",
+        "报告本身**不是修改**，不应被算进影响像元数"
+      ],
+      "proParity": {
+        "level": "L2",
+        "steps": 3,
+        "tools": ["Describe (元数据)", "Check Geometry", "手工整理交差说明"],
+        "note": "Pro 侧没有一键生成这样的材料，是我们要**做出来**的东西——这正是「和 Pro 抢用户」的差异点之一"
+      }
+    }
+  ]
+}

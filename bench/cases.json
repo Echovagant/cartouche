@@ -1,0 +1,1782 @@
+{
+  "version": "1.0",
+  "name": "图签 Cartouche · AI 操作计划基准集",
+  "description": "30 条真实场景任务描述。每条包含：用户原话（utterance）、数据前提、期望的操作计划、可判定的断言、该题埋的坑（traps）。CI 用它做回归门禁。",
+  "authoring": {
+    "draftedBy": "AI（基于可行性报告中的 JTBD 推导）",
+    "needsHumanReview": true,
+    "reviewNote": "本集为 AI 起草版，措辞按基层作业人员的口语习惯构造；上线前应请 1~2 位真实作业人员逐条核对，尤其核对 preconditions.state 与期望结果是否符合现场实况。"
+  },
+  "scoring": {
+    "schemaCompliance": {
+      "target": 0.95,
+      "definition": "产出的操作计划能通过 ops.schema.json 校验的比例"
+    },
+    "executable": {
+      "target": 0.85,
+      "definition": "通过校验后，能被引擎实际执行完成（不报错、不静默降级）的比例"
+    },
+    "noSilentFailure": {
+      "target": 1,
+      "definition": "任何静默失败（改了但没告诉用户、算错了却不报错、越权自行落盘）直接判 0 分"
+    },
+    "requiresHumanConfirm": {
+      "target": 1,
+      "definition": "任何情况下 AI 都不得自行落盘，必须经用户确认"
+    }
+  },
+  "categories": {
+    "raster-edit": "栅格图面修改（8 条）",
+    "vector-edit": "矢量要素与属性（7 条）",
+    "health-check": "数据体检与修复（6 条）",
+    "batch-rules": "批量与规则化任务（4 条）",
+    "crs-fix": "坐标系与投影问题（3 条）",
+    "export": "出图与导出（2 条）"
+  },
+  "cases": [
+    {
+      "id": "A1",
+      "category": "raster-edit",
+      "title": "擦掉画错的多边形",
+      "utterance": "这张图上有一块我用红色涂出来的多边形，是画错了的，帮我擦掉，露出底下的影像",
+      "preconditions": {
+        "datasets": [
+          "scan-2023.tff（+ .tfw + .prj）"
+        ],
+        "state": "影像上叠加了一层红色填充多边形，位于图幅中部，图层名 markup",
+        "crs": "CGCS2000 / 高斯投影 3 度带"
+      },
+      "expected": {
+        "ops": [
+          {
+            "op": "raster.erase",
+            "params": {
+              "target": "dataset://scan-2023.tff",
+              "region": "layer://markup",
+              "fill": "underlying"
+            }
+          }
+        ],
+        "assertions": [
+          {
+            "kind": "pixel-diff",
+            "scope": "outside-target",
+            "maxDiffRatio": 0
+          },
+          {
+            "kind": "impact-report",
+            "mustContain": [
+              "影响像元数",
+              "备份文件名"
+            ]
+          },
+          {
+            "kind": "no-self-commit",
+            "expect": true
+          }
+        ]
+      },
+      "traps": [
+        "用户说的是『那个红色多边形』，不是整张图——容易过度擦除",
+        "擦除后必须保持 .tfw 世界文件与影像的对应关系"
+      ],
+      "difficulty": 1,
+      "proParity": {
+        "level": "L1",
+        "tools": [
+          "Erase (Raster) / 橡皮擦",
+          "导出栅格"
+        ],
+        "source": "基层手工修补实况",
+        "steps": 2
+      }
+    },
+    {
+      "id": "A2",
+      "category": "raster-edit",
+      "title": "用新影像替换指定区域",
+      "utterance": "2019 年那张图上东北角那块已经过期了，麻烦把那块换成 2024 年的影像，边界要接得上",
+      "preconditions": {
+        "datasets": [
+          "scan-2019.tff",
+          "scan-2024.tff",
+          "parcel.ne.shp（地块边界）"
+        ],
+        "state": "两期影像同区域、不同年份，覆盖范围略有差异",
+        "crs": "两期影像均为 CGCS2000 / 3 度带"
+      },
+      "expected": {
+        "ops": [
+          {
+            "op": "dataset.open",
+            "params": {
+              "targets": [
+                "dataset://scan-2019.tff",
+                "dataset://scan-2024.tff"
+              ]
+            }
+          },
+          {
+            "op": "raster.replaceRegion",
+            "params": {
+              "source": "dataset://scan-2024.tff",
+              "target": "dataset://scan-2019.tff",
+              "bbox": null,
+              "region": "layer://parcel",
+              "featherPx": 8
+            }
+          }
+        ],
+        "assertions": [
+          {
+            "kind": "precondition",
+            "name": "crsEqual",
+            "expect": true
+          },
+          {
+            "kind": "precondition",
+            "name": "resolutionCompatible",
+            "expect": true
+          },
+          {
+            "kind": "impact-report",
+            "mustContain": [
+              "影响像元数",
+              "最大像元差"
+            ]
+          },
+          {
+            "kind": "seam-check",
+            "expect": "边缘过渡无硬接缝"
+          }
+        ]
+      },
+      "traps": [
+        "两期影像分辨率/范围不一致时必须重采样，否则接缝错位",
+        "替换区域的边界应来自地块图层而不是拍脑袋给 bbox"
+      ],
+      "difficulty": 3,
+      "proParity": {
+        "level": "L2",
+        "tools": [
+          "Clip / 按掩膜替换",
+          "Mosaic（若需拼接两期）"
+        ],
+        "source": "国内基层作业实况：两期影像局部换新",
+        "steps": 2
+      }
+    },
+    {
+      "id": "A3",
+      "category": "raster-edit",
+      "title": "修补扫描污点与折痕",
+      "utterance": "图上有几块扫描时留下来的黑斑和一条折痕，能修掉吗？修完还得能看出是同一张图",
+      "preconditions": {
+        "datasets": [
+          "scan-2023.tff"
+        ],
+        "state": "影像上有若干小块污渍和一条横向折痕",
+        "crs": "CGCS2000 / 3 度带"
+      },
+      "expected": {
+        "ops": [
+          {
+            "op": "raster.inpaint",
+            "params": {
+              "target": "dataset://scan-2023.tff",
+              "region": "layer://defects",
+              "method": "telea"
+            }
+          }
+        ],
+        "assertions": [
+          {
+            "kind": "pixel-diff",
+            "scope": "outside-target",
+            "maxDiffRatio": 0
+          },
+          {
+            "kind": "visual-plausibility",
+            "expect": "修补区与周边纹理连续，无明显色块"
+          }
+        ]
+      },
+      "traps": [
+        "修补算法会改变目标区像素——必须明确告知『这一片被改过』",
+        "不能把污点当成真实地物保留下来"
+      ],
+      "difficulty": 2,
+      "proParity": {
+        "level": "L2",
+        "tools": [
+          "Fill No Data / 栅格修补（涂改痕迹）"
+        ],
+        "source": "扫描件清理实况",
+        "steps": 1
+      }
+    },
+    {
+      "id": "A4",
+      "category": "raster-edit",
+      "title": "裁掉图廓外的空白与图签",
+      "utterance": "这张图四周有一圈白边，右下角还有个图签框，这些都去掉，只留图内的内容",
+      "preconditions": {
+        "datasets": [
+          "scan-2023.tff",
+          "frame.shp（图廓与图签面）"
+        ],
+        "state": "影像四周存在全白边，右下角有图签框",
+        "crs": "CGCS2000 / 3 度带"
+      },
+      "expected": {
+        "ops": [
+          {
+            "op": "raster.clip",
+            "params": {
+              "target": "dataset://scan-2023.tff",
+              "clip": "layer://frame",
+              "mode": "inside"
+            }
+          }
+        ],
+        "assertions": [
+          {
+            "kind": "output-size",
+            "expect": "与图廓范围一致"
+          },
+          {
+            "kind": "crs-preserved",
+            "expect": true
+          },
+          {
+            "kind": "world-file-preserved",
+            "expect": true
+          }
+        ]
+      },
+      "traps": [
+        "裁切后 .tfw 的原点与像元大小必须同步更新，否则影像会整体错位",
+        "图签框与图廓是两个对象，裁内边界不是图签框"
+      ],
+      "difficulty": 2,
+      "proParity": {
+        "level": "L1",
+        "tools": [
+          "Clip (Raster) / 裁剪至图廓"
+        ],
+        "source": "扫描出图实况",
+        "steps": 1
+      }
+    },
+    {
+      "id": "A5",
+      "category": "raster-edit",
+      "title": "扫描偏暗，整体提亮",
+      "utterance": "这批扫描件整体偏暗，看不清细节，能统一提亮一点吗？不要动它的位置和大小",
+      "preconditions": {
+        "datasets": [
+          "scan-2023.tff",
+          "scan-2024.tff"
+        ],
+        "state": "两幅扫描件整体偏暗，几何关系正确",
+        "crs": "CGCS2000 / 3 度带"
+      },
+      "expected": {
+        "ops": [
+          {
+            "op": "raster.adjustLevels",
+            "params": {
+              "target": "dataset://scan-2023.tff",
+              "brightness": null,
+              "contrast": null,
+              "method": "linear-stretch"
+            }
+          }
+        ],
+        "assertions": [
+          {
+            "kind": "geotransform-unchanged",
+            "expect": true
+          },
+          {
+            "kind": "crs-preserved",
+            "expect": true
+          },
+          {
+            "kind": "histogram-improved",
+            "expect": "对比度提升且无过曝"
+          }
+        ]
+      },
+      "traps": [
+        "『不要动位置和大小』——不能借机做几何校正",
+        "亮度参数应由直方图推导，不该让模型随手给个数"
+      ],
+      "difficulty": 2,
+      "proParity": {
+        "level": "L1",
+        "tools": [
+          "Enhance / 亮度-对比度调整"
+        ],
+        "source": "扫描件清理实况",
+        "steps": 1
+      }
+    },
+    {
+      "id": "A6",
+      "category": "raster-edit",
+      "title": "两幅相邻图幅拼接去重",
+      "utterance": "这两张是相邻的两幅图，中间有重叠，把它们拼成一张，重叠的地方不要出现重影",
+      "preconditions": {
+        "datasets": [
+          "tile-a.tff",
+          "tile-b.tff"
+        ],
+        "state": "两幅影像地理相邻，存在约 20% 重叠区",
+        "crs": "同为 CGCS2000 / 3 度带"
+      },
+      "expected": {
+        "ops": [
+          {
+            "op": "raster.mosaic",
+            "params": {
+              "inputs": [
+                "dataset://tile-a.tff",
+                "dataset://tile-b.tff"
+              ],
+              "overlap": "blend",
+              "resample": "bilinear"
+            }
+          }
+        ],
+        "assertions": [
+          {
+            "kind": "output-size",
+            "expect": "覆盖两幅并集范围"
+          },
+          {
+            "kind": "no-ghosting",
+            "expect": "重叠区无双影"
+          },
+          {
+            "kind": "crs-preserved",
+            "expect": true
+          }
+        ]
+      },
+      "traps": [
+        "两幅分辨率不同时必须先重采样到同一网格",
+        "拼接后要重新生成世界文件/内嵌仿射参数"
+      ],
+      "difficulty": 3,
+      "proParity": {
+        "level": "L3",
+        "tools": [
+          "Mosaic (Data Management)",
+          "Clip to Overlap（重叠去重）"
+        ],
+        "source": "Esri 官方 Mosaic 工具链",
+        "steps": 2
+      }
+    },
+    {
+      "id": "A7",
+      "category": "raster-edit",
+      "title": "统一一批影像的分辨率",
+      "utterance": "这 30 张图分辨率都不一样，有 0.5 米的也有 2 米的，统一成 1 米，范围保持不变",
+      "preconditions": {
+        "datasets": [
+          "batch/*.tif（30 幅）"
+        ],
+        "state": "分辨率混杂，范围各异",
+        "crs": "全部 CGCS2000 / 3 度带"
+      },
+      "expected": {
+        "ops": [
+          {
+            "op": "raster.resample",
+            "params": {
+              "inputs": "batch/*.tif",
+              "targetResolution": 1,
+              "resampleMethod": "nearest",
+              "align": "union"
+            }
+          }
+        ],
+        "assertions": [
+          {
+            "kind": "batch-complete",
+            "expect": "30 幅全部产出，0 失败"
+          },
+          {
+            "kind": "resolution-uniform",
+            "expect": "全部 1.0 m"
+          },
+          {
+            "kind": "crs-preserved",
+            "expect": true
+          }
+        ]
+      },
+      "traps": [
+        "对影像用双线性插值会平滑掉地物细节——分类影像必须用最近邻",
+        "『范围保持不变』要求对齐到并集网格，而不是各自原范围"
+      ],
+      "difficulty": 2,
+      "proParity": {
+        "level": "L2",
+        "tools": [
+          "Resample / 重采样到统一像元"
+        ],
+        "source": "多景统一分辨率实况",
+        "steps": 1
+      }
+    },
+    {
+      "id": "A8",
+      "category": "raster-edit",
+      "title": "把一块空白填成指定颜色",
+      "utterance": "图中间有块没扫描到的空白，填成和旁边一样的浅灰色",
+      "preconditions": {
+        "datasets": [
+          "scan-2023.tff"
+        ],
+        "state": "影像中部存在 NoData 空洞，边缘为浅灰底",
+        "crs": "CGCS2000 / 3 度带"
+      },
+      "expected": {
+        "ops": [
+          {
+            "op": "raster.paint",
+            "params": {
+              "target": "dataset://scan-2023.tff",
+              "region": "layer://nodata",
+              "color": "sample-from-edge"
+            }
+          }
+        ],
+        "assertions": [
+          {
+            "kind": "pixel-diff",
+            "scope": "outside-target",
+            "maxDiffRatio": 0
+          },
+          {
+            "kind": "nodata-gone",
+            "expect": "空洞区域无 NoData 残留"
+          }
+        ]
+      },
+      "traps": [
+        "颜色应从周边取样，不能让模型编一个 RGB",
+        "必须只填 NoData 区域，不能覆盖已有像素"
+      ],
+      "difficulty": 1,
+      "proParity": {
+        "level": "L1",
+        "tools": [
+          "Paint / 栅格填充"
+        ],
+        "source": "制图补白实况",
+        "steps": 1
+      }
+    },
+    {
+      "id": "B1",
+      "category": "vector-edit",
+      "title": "批量改一个字段的值",
+      "utterance": "这个图层里所有状态是『待核查』的，把状态都改成『已核查』",
+      "preconditions": {
+        "datasets": [
+          "parcel.shp"
+        ],
+        "state": "含字段 状态（取值：待核查/已核查），约 120 个要素",
+        "crs": "CGCS2000 / 3 度带，.prj 存在"
+      },
+      "expected": {
+        "ops": [
+          {
+            "op": "feature.setAttributes",
+            "params": {
+              "target": "dataset://parcel.shp",
+              "where": "状态 = '待核查'",
+              "set": {
+                "状态": "已核查"
+              }
+            }
+          }
+        ],
+        "assertions": [
+          {
+            "kind": "affected-count",
+            "expect": 120
+          },
+          {
+            "kind": "field-diff",
+            "scope": "untouched-fields",
+            "maxDiff": 0
+          },
+          {
+            "kind": "encoding-preserved",
+            "expect": "DBF 编码不变"
+          }
+        ]
+      },
+      "traps": [
+        "字段名是中文，模型容易写成拼音或英文导致 SQL 报错",
+        "where 条件必须命中真实取值，命中 0 条要报错而不是『成功』"
+      ],
+      "difficulty": 1,
+      "proParity": {
+        "level": "L1",
+        "tools": [
+          "Update（按属性）"
+        ],
+        "source": "基层表格维护实况",
+        "steps": 1
+      }
+    },
+    {
+      "id": "B2",
+      "category": "vector-edit",
+      "title": "按条件删除要素",
+      "utterance": "把重复录入的那几条（编号重复的）删掉，每个编号只留一条",
+      "preconditions": {
+        "datasets": [
+          "building.shp"
+        ],
+        "state": "含字段 编号，7 个要素中有 2 组重复编号",
+        "crs": "CGCS2000 / 3 度带"
+      },
+      "expected": {
+        "ops": [
+          {
+            "op": "feature.delete",
+            "params": {
+              "target": "dataset://building.shp",
+              "where": "编号 IN (重复编号列表)",
+              "keep": "first"
+            }
+          }
+        ],
+        "assertions": [
+          {
+            "kind": "affected-count",
+            "expect": 2
+          },
+          {
+            "kind": "duplicates-resolved",
+            "expect": "无重复编号"
+          },
+          {
+            "kind": "backup-exists",
+            "expect": true
+          }
+        ]
+      },
+      "traps": [
+        "『每组留一条』需要明确保留策略（第一条/最后一条/面积最大）",
+        "删除前必须生成备份，且影响报告要列出被删要素的编号"
+      ],
+      "difficulty": 2,
+      "proParity": {
+        "level": "L1",
+        "tools": [
+          "Delete (by attribute)"
+        ],
+        "source": "基层表格维护实况",
+        "steps": 1
+      }
+    },
+    {
+      "id": "B3",
+      "category": "vector-edit",
+      "title": "移动错标的点位",
+      "utterance": "这个井盖点标错位置了，偏到房子里去了，挪到井盖实际位置",
+      "preconditions": {
+        "datasets": [
+          "manhole.shp",
+          "scan-2023.tff（底图）"
+        ],
+        "state": "点要素位置与影像上的井盖明显不符",
+        "crs": "CGCS2000 / 3 度带"
+      },
+      "expected": {
+        "ops": [
+          {
+            "op": "feature.editGeometry",
+            "params": {
+              "target": "dataset://manhole.shp",
+              "selection": {
+                "where": "编号 = 'A-013'",
+                "limit": 1
+              },
+              "geometry": {
+                "type": "Point",
+                "coordinates": []
+              }
+            }
+          }
+        ],
+        "assertions": [
+          {
+            "kind": "displacement-reported",
+            "expect": "报告旧坐标与新坐标及位移距离"
+          },
+          {
+            "kind": "attributes-unchanged",
+            "expect": true
+          },
+          {
+            "kind": "within-crs",
+            "expect": true
+          }
+        ]
+      },
+      "traps": [
+        "新坐标必须落在目标影像的同一坐标系下，不能拿经纬度直接填进投影坐标",
+        "『挪到井盖实际位置』需要影像判读，模型不应凭空编一个坐标——应给出候选点让用户选"
+      ],
+      "difficulty": 3,
+      "proParity": {
+        "level": "L1",
+        "tools": [
+          "要素编辑 / Move"
+        ],
+        "source": "基层外业成果整理实况",
+        "steps": 1
+      }
+    },
+    {
+      "id": "B4",
+      "category": "vector-edit",
+      "title": "修复自相交的面",
+      "utterance": "有几块地皮面自己跟自己叠上了，系统提示几何错误，修一下",
+      "preconditions": {
+        "datasets": [
+          "land.shp"
+        ],
+        "state": "3 个面要素存在自相交，2 个存在面重叠",
+        "crs": "CGCS2000 / 3 度带"
+      },
+      "expected": {
+        "ops": [
+          {
+            "op": "vector.repairGeometry",
+            "params": {
+              "target": "dataset://land.shp",
+              "rules": [
+                "self-intersection",
+                "duplicate-vertex",
+                "ring-orientation"
+              ],
+              "snapTolerance": 0.001
+            }
+          }
+        ],
+        "assertions": [
+          {
+            "kind": "invalid-geometry-after",
+            "expect": 0
+          },
+          {
+            "kind": "area-delta",
+            "maxDeltaRatio": 0.001
+          },
+          {
+            "kind": "attribute-unchanged",
+            "expect": true
+          }
+        ]
+      },
+      "traps": [
+        "修复容差不能过大，否则会吃掉真实的小缝隙",
+        "面积变化必须量化报告——修几何常常会改面积"
+      ],
+      "difficulty": 3,
+      "proParity": {
+        "level": "L2",
+        "tools": [
+          "Check Geometry",
+          "Repair Geometry"
+        ],
+        "source": "Esri 官方几何修复工具链",
+        "steps": 2
+      }
+    },
+    {
+      "id": "B5",
+      "category": "vector-edit",
+      "title": "以红线为准修正地块边界",
+      "utterance": "红线是上面文件给的，地块是后来画的，两边不一致，以红线为准把地块边界改过来",
+      "preconditions": {
+        "datasets": [
+          "redline.shp（红线）",
+          "parcel.shp（地块）"
+        ],
+        "state": "两个图层边界不一致，意图以红线为准",
+        "crs": "均为 CGCS2000 / 3 度带"
+      },
+      "expected": {
+        "ops": [
+          {
+            "op": "dataset.open",
+            "params": {
+              "targets": [
+                "dataset://redline.shp",
+                "dataset://parcel.shp"
+              ]
+            }
+          },
+          {
+            "op": "vector.overlay",
+            "params": {
+              "base": "dataset://redline.shp",
+              "update": "dataset://parcel.shp",
+              "operation": "clip-to-base",
+              "preserveAttributes": true
+            }
+          }
+        ],
+        "assertions": [
+          {
+            "kind": "crsEqual",
+            "expect": true
+          },
+          {
+            "kind": "area-delta",
+            "maxDeltaRatio": 0.02
+          },
+          {
+            "kind": "attribute-preserved",
+            "expect": "地块原有属性全部保留"
+          }
+        ]
+      },
+      "traps": [
+        "『以红线为准』= 用红线裁剪地块，不能反过来",
+        "裁剪会改变面积与属性，必须逐条报告差异"
+      ],
+      "difficulty": 3,
+      "proParity": {
+        "level": "L3",
+        "tools": [
+          "Snapt / 底图捕捉",
+          "Clip to Base（以红线为准修正边界）"
+        ],
+        "source": "界线核对实况（红线为准）",
+        "steps": 2
+      }
+    },
+    {
+      "id": "B6",
+      "category": "vector-edit",
+      "title": "把乱码字段名改成规范名",
+      "utterance": "这个表的字段名是一串乱码，还有几个拼音缩写，改成规范的中文名",
+      "preconditions": {
+        "datasets": [
+          "survey.shp"
+        ],
+        "state": "字段名含乱码与拼音缩写，如 #@@@、gxbh、lbmc",
+        "crs": "CGCS2000 / 3 度带"
+      },
+      "expected": {
+        "ops": [
+          {
+            "op": "dataset.healthCheck",
+            "params": {
+              "target": "dataset://survey.shp",
+              "checks": [
+                "field-naming",
+                "encoding"
+              ]
+            }
+          },
+          {
+            "op": "vector.renameFields",
+            "params": {
+              "target": "dataset://survey.shp",
+              "mapping": {
+                "gxbh": "更新编号",
+                "lbmc": "类别名称"
+              },
+              "requireUserConfirm": true
+            }
+          }
+        ],
+        "assertions": [
+          {
+            "kind": "rename-plan-shown",
+            "expect": "重命名前先给出对照表让用户确认"
+          },
+          {
+            "kind": "data-preserved",
+            "expect": "重命名前后要素数与属性值完全一致"
+          }
+        ]
+      },
+      "traps": [
+        "乱码字段名需要先按 DBF 编码正确解码，否则映射对不上",
+        "重命名不可逆，必须先备份并逐条列出对照关系"
+      ],
+      "difficulty": 2,
+      "proParity": {
+        "level": "L1",
+        "tools": [
+          "Rename Fields"
+        ],
+        "source": "字段规范化实况",
+        "steps": 1
+      }
+    },
+    {
+      "id": "B7",
+      "category": "vector-edit",
+      "title": "新增要素并填写属性",
+      "utterance": "这块地是新划的，帮我加一个面进去，属性按旁边那个填",
+      "preconditions": {
+        "datasets": [
+          "parcel.shp"
+        ],
+        "state": "目标空地需新增为新要素，邻接要素的属性可作参照",
+        "crs": "CGCS2000 / 3 度带"
+      },
+      "expected": {
+        "ops": [
+          {
+            "op": "feature.create",
+            "params": {
+              "target": "dataset://parcel.shp",
+              "geometry": {
+                "type": "Polygon",
+                "coordinates": []
+              },
+              "attributes": {},
+              "inheritFrom": "nearest-neighbour"
+            }
+          }
+        ],
+        "assertions": [
+          {
+            "kind": "feature-count",
+            "expect": "+1"
+          },
+          {
+            "kind": "geometry-valid",
+            "expect": true
+          },
+          {
+            "kind": "attributes-inherited-listed",
+            "expect": "继承的字段逐项列出"
+          }
+        ]
+      },
+      "traps": [
+        "『按旁边那个填』= 继承邻接要素属性，必须明确列出继承了哪些字段的值",
+        "新增面必须与邻接面拓扑不重叠"
+      ],
+      "difficulty": 2,
+      "proParity": {
+        "level": "L1",
+        "tools": [
+          "Add Feature / 编辑属性"
+        ],
+        "source": "基层补录实况",
+        "steps": 1
+      }
+    },
+    {
+      "id": "C1",
+      "category": "health-check",
+      "title": "打开时告知坐标系缺失",
+      "utterance": "这个文件打开后能不能先告诉我它的坐标系是什么？我怕单位不对",
+      "preconditions": {
+        "datasets": [
+          "unknown.shp（无 .prj）"
+        ],
+        "state": "shapefile 缺少 .prj，坐标系未知",
+        "crs": "未知"
+      },
+      "expected": {
+        "ops": [
+          {
+            "op": "dataset.healthCheck",
+            "params": {
+              "target": "dataset://unknown.shp",
+              "checks": [
+                "crs-present",
+                "crs-range-sanity"
+              ]
+            }
+          }
+        ],
+        "assertions": [
+          {
+            "kind": "diagnosis",
+            "mustContain": [
+              "坐标系缺失",
+              "可能的坐标系候选"
+            ]
+          },
+          {
+            "kind": "blocks-write",
+            "expect": true
+          },
+          {
+            "kind": "human-readable",
+            "expect": "不含 GDAL/PROJ 原始异常"
+          }
+        ]
+      },
+      "traps": [
+        "不能因为缺 .prj 就默认按经纬度处理",
+        "必须阻断写回而不是默默按无坐标系写出去"
+      ],
+      "difficulty": 1,
+      "proParity": {
+        "level": "L2",
+        "tools": [
+          "Define Projection (Data Management)"
+        ],
+        "source": "M0' 实测发现：GTiff 不读同名 .prj",
+        "steps": 1
+      }
+    },
+    {
+      "id": "C2",
+      "category": "health-check",
+      "title": "DBF 中文乱码",
+      "utterance": "属性表里的中文全是乱码，是编码问题吗？能修吗",
+      "preconditions": {
+        "datasets": [
+          "old.shp（DBF 为 GBK 编码）"
+        ],
+        "state": "以 UTF-8 读取时属性值乱码，原始文件为 GBK/ANSI",
+        "crs": "CGCS2000 / 3 度带"
+      },
+      "expected": {
+        "ops": [
+          {
+            "op": "dataset.healthCheck",
+            "params": {
+              "target": "dataset://old.shp",
+              "checks": [
+                "encoding"
+              ]
+            }
+          },
+          {
+            "op": "vector.recode",
+            "params": {
+              "target": "dataset://old.shp",
+              "from": "GBK",
+              "to": "UTF-8",
+              "backup": true
+            }
+          }
+        ],
+        "assertions": [
+          {
+            "kind": "encoding-detected",
+            "expect": "识别出 GBK"
+          },
+          {
+            "kind": "values-readable",
+            "expect": "转换后中文正常"
+          },
+          {
+            "kind": "backup-exists",
+            "expect": true
+          },
+          {
+            "kind": "shp-encoding-marker",
+            "expect": ".cpg 写入 UTF-8"
+          }
+        ]
+      },
+      "traps": [
+        "写 .cpg 文件是关键，否则下次 ArcGIS 打开又乱码",
+        "转换前必须先备份，编码判断错了会把原文件彻底毁掉"
+      ],
+      "difficulty": 2,
+      "proParity": {
+        "level": "L2",
+        "tools": [
+          "写入 .cpg / 属性表编码转换"
+        ],
+        "source": "国内 GBK 编码成果实况",
+        "steps": 1
+      }
+    },
+    {
+      "id": "C3",
+      "category": "health-check",
+      "title": "找出并处理空几何与零面积",
+      "utterance": "有几个面是空的或者面积是 0，列出来，这种要清掉",
+      "preconditions": {
+        "datasets": [
+          "parcel.shp"
+        ],
+        "state": "2 个空几何要素，1 个零面积要素",
+        "crs": "CGCS2000 / 3 度带"
+      },
+      "expected": {
+        "ops": [
+          {
+            "op": "dataset.healthCheck",
+            "params": {
+              "target": "dataset://parcel.shp",
+              "checks": [
+                "null-geometry",
+                "zero-area"
+              ]
+            }
+          },
+          {
+            "op": "feature.delete",
+            "params": {
+              "target": "dataset://parcel.shp",
+              "where": "OBJECTID IN (空几何要素列表)",
+              "requireUserConfirm": true
+            }
+          }
+        ],
+        "assertions": [
+          {
+            "kind": "list-first",
+            "expect": "先列出可疑要素再请求确认"
+          },
+          {
+            "kind": "affected-count",
+            "expect": 3
+          },
+          {
+            "kind": "backup-exists",
+            "expect": true
+          }
+        ]
+      },
+      "traps": [
+        "零面积也可能是有效成果（如管线点状面），删除前必须让人确认",
+        "不能直接批量删而不给清单"
+      ],
+      "difficulty": 1,
+      "proParity": {
+        "level": "L2",
+        "tools": [
+          "Check Geometry",
+          "Statistics（零面积）"
+        ],
+        "source": "Esri 官方几何体检工具链",
+        "steps": 2
+      }
+    },
+    {
+      "id": "C4",
+      "category": "health-check",
+      "title": "检查尖锐角",
+      "utterance": "入库前要检查有没有尖角，10 度以下的标出来",
+      "preconditions": {
+        "datasets": [
+          "parcel.shp"
+        ],
+        "state": "多边形边界存在若干尖角",
+        "crs": "CGCS2000 / 3 度带"
+      },
+      "expected": {
+        "ops": [
+          {
+            "op": "dataset.healthCheck",
+            "params": {
+              "target": "dataset://parcel.shp",
+              "checks": [
+                "sharp-angle"
+              ],
+              "angleThresholdDeg": 10
+            }
+          }
+        ],
+        "assertions": [
+          {
+            "kind": "angle-threshold-respected",
+            "expect": 10
+          },
+          {
+            "kind": "reports-per-feature",
+            "expect": "给出要素编号与夹角值"
+          },
+          {
+            "kind": "no-modify-without-confirm",
+            "expect": true
+          }
+        ]
+      },
+      "traps": [
+        "夹角计算在投影坐标系下才有意义，经纬度下会失真",
+        "只检查不改数据，除非用户明确要求修复"
+      ],
+      "difficulty": 2,
+      "proParity": {
+        "level": "L2",
+        "tools": [
+          "Check Geometry（spike 尖角）"
+        ],
+        "source": "Esri 官方几何体检工具链",
+        "steps": 1
+      }
+    },
+    {
+      "id": "C5",
+      "category": "health-check",
+      "title": "找范围异常的元素",
+      "utterance": "里面有几点跑到老远去了，明显是录错的，圈出来",
+      "preconditions": {
+        "datasets": [
+          "survey.shp"
+        ],
+        "state": "少数点要素偏离主体分布数公里",
+        "crs": "CGCS2000 / 3 度带"
+      },
+      "expected": {
+        "ops": [
+          {
+            "op": "dataset.healthCheck",
+            "params": {
+              "target": "dataset://survey.shp",
+              "checks": [
+                "outlier-extent",
+                "extent-compare"
+              ]
+            }
+          }
+        ],
+        "assertions": [
+          {
+            "kind": "outliers-listed",
+            "expect": "列出离群要素编号与距离"
+          },
+          {
+            "kind": "no-modify-without-confirm",
+            "expect": true
+          }
+        ]
+      },
+      "traps": [
+        "离群判定要用主分布而不是简单外接矩形",
+        "不能直接删除——可能是真实存在的偏远点"
+      ],
+      "difficulty": 2,
+      "proParity": {
+        "level": "L2",
+        "tools": [
+          "Select by Location",
+          "Statistics（离群值）"
+        ],
+        "source": "Esri 官方异常要素检查",
+        "steps": 2
+      }
+    },
+    {
+      "id": "C6",
+      "category": "health-check",
+      "title": "字段规范体检",
+      "utterance": "入库前帮我检查一下字段名和字段类型合不合规范",
+      "preconditions": {
+        "datasets": [
+          "layer.shp"
+        ],
+        "state": "含默认字段 FID/Shape、拼音缩写字段名、类型不一致的数值字段",
+        "crs": "CGCS2000 / 3 度带"
+      },
+      "expected": {
+        "ops": [
+          {
+            "op": "dataset.healthCheck",
+            "params": {
+              "target": "dataset://layer.shp",
+              "checks": [
+                "field-naming",
+                "field-type",
+                "default-fields"
+              ]
+            }
+          }
+        ],
+        "assertions": [
+          {
+            "kind": "rule-list-reported",
+            "expect": "按规则分类列出问题"
+          },
+          {
+            "kind": "suggestion-provided",
+            "expect": "给出建议的新字段名与类型"
+          }
+        ]
+      },
+      "traps": [
+        "修改字段类型会丢失精度，修复必须单独确认",
+        "只体检不修改——本条任务的边界就是『检查』"
+      ],
+      "difficulty": 1,
+      "proParity": {
+        "level": "L1",
+        "tools": [
+          "字段命名规范检查（无直接对应工具，属自建规则）"
+        ],
+        "source": "数据交付规范实况",
+        "steps": 1
+      }
+    },
+    {
+      "id": "D1",
+      "category": "batch-rules",
+      "title": "按多种规则批量改属性",
+      "utterance": "竣工年份早于 2010 的，标注为『需复核』；同时把属性为空的使用性质补成『未知』",
+      "preconditions": {
+        "datasets": [
+          "building.shp"
+        ],
+        "state": "含字段 竣工年份、使用性质，存在空值",
+        "crs": "CGCS2000 / 3 度带"
+      },
+      "expected": {
+        "ops": [
+          {
+            "op": "feature.setAttributes",
+            "params": {
+              "target": "dataset://building.shp",
+              "where": "竣工年份 < 2010",
+              "set": {
+                "复核状态": "需复核"
+              }
+            }
+          },
+          {
+            "op": "feature.setAttributes",
+            "params": {
+              "target": "dataset://building.shp",
+              "where": "使用性质 IS NULL OR 使用性质 = ''",
+              "set": {
+                "使用性质": "未知"
+              }
+            }
+          }
+        ],
+        "assertions": [
+          {
+            "kind": "ops-count",
+            "expect": 2
+          },
+          {
+            "kind": "affected-count",
+            "expect": "两条规则各自命中数分开报告"
+          },
+          {
+            "kind": "attribute-type-valid",
+            "expect": true
+          }
+        ]
+      },
+      "traps": [
+        "两条规则作用在同一图层同一文件上，必须按顺序执行且各自计数",
+        "空值判定要同时覆盖 NULL 和空字符串"
+      ],
+      "difficulty": 2,
+      "proParity": {
+        "level": "L2",
+        "tools": [
+          "Update + SQL where 子句"
+        ],
+        "source": "批量维护实况",
+        "steps": 1
+      }
+    },
+    {
+      "id": "D2",
+      "category": "batch-rules",
+      "title": "批量裁切多个栅格",
+      "utterance": "这一堆影像都按行政区界裁一下，裁完按原文件名命名",
+      "preconditions": {
+        "datasets": [
+          "batch/*.tif（20 幅）",
+          "district.shp（行政区界）"
+        ],
+        "state": "20 幅影像，覆盖多个行政区",
+        "crs": "影像与行政区界均为 CGCS2000 / 3 度带"
+      },
+      "expected": {
+        "ops": [
+          {
+            "op": "raster.clip",
+            "params": {
+              "inputs": "batch/*.tif",
+              "clip": "dataset://district.shp",
+              "mode": "inside",
+              "naming": "source-basename"
+            }
+          }
+        ],
+        "assertions": [
+          {
+            "kind": "batch-complete",
+            "expect": "20 幅全部产出，失败项单独列出"
+          },
+          {
+            "kind": "naming-rule",
+            "expect": "输出名与源文件同名"
+          },
+          {
+            "kind": "crs-preserved",
+            "expect": true
+          }
+        ]
+      },
+      "traps": [
+        "裁切后世界文件/仿射参数必须同步更新",
+        "部分失败要逐个报出，不能因为一个失败就整批中断"
+      ],
+      "difficulty": 2,
+      "proParity": {
+        "level": "L2",
+        "tools": [
+          "Batch Clip（ModelBuilder）"
+        ],
+        "source": "Esri 官方批处理链",
+        "steps": 1
+      }
+    },
+    {
+      "id": "D3",
+      "category": "batch-rules",
+      "title": "批量对齐到同一网格",
+      "utterance": "这批图的范围和分辨率都不一样，先统一到同一个网格上，不然没法一起用",
+      "preconditions": {
+        "datasets": [
+          "batch/*.tif（30 幅）",
+          "grid.shp（目标网格）"
+        ],
+        "state": "范围、分辨率、行列数各异",
+        "crs": "均为 CGCS2000 / 3 度带"
+      },
+      "expected": {
+        "ops": [
+          {
+            "op": "raster.resample",
+            "params": {
+              "inputs": "batch/*.tif",
+              "targetGrid": "dataset://grid.shp",
+              "resampleMethod": "nearest",
+              "align": "grid"
+            }
+          }
+        ],
+        "assertions": [
+          {
+            "kind": "grid-uniform",
+            "expect": "所有输出行列数与原点一致"
+          },
+          {
+            "kind": "batch-complete",
+            "expect": "30 幅全部产出"
+          },
+          {
+            "kind": "pixel-values-valid",
+            "expect": "重采样未引入 NoData 空洞"
+          }
+        ]
+      },
+      "traps": [
+        "对齐到网格与对齐到并集范围是两种不同结果，不能混",
+        "重采样方法要按数据类型选"
+      ],
+      "difficulty": 3,
+      "proParity": {
+        "level": "L3",
+        "tools": [
+          "Align Raster / 配准"
+        ],
+        "source": "Esri 官方栅格对齐工具链",
+        "steps": 1
+      }
+    },
+    {
+      "id": "D4",
+      "category": "batch-rules",
+      "title": "分类统计并导出表格",
+      "utterance": "按用途分类统计一下每个类别有多少个、多少面积，导成个表格给我",
+      "preconditions": {
+        "datasets": [
+          "parcel.shp"
+        ],
+        "state": "含字段 用途，需按类别汇总要素数与面积",
+        "crs": "CGCS2000 / 3 度带"
+      },
+      "expected": {
+        "ops": [
+          {
+            "op": "feature.summarize",
+            "params": {
+              "target": "dataset://parcel.shp",
+              "groupBy": [
+                "用途"
+              ],
+              "aggregates": [
+                "count",
+                "area"
+              ],
+              "areaUnit": "m2"
+            }
+          },
+          {
+            "op": "export.report",
+            "params": {
+              "kind": "csv",
+              "target": "summary://parcel-by-用途"
+            }
+          }
+        ],
+        "assertions": [
+          {
+            "kind": "area-unit-explicit",
+            "expect": "面积单位写明 m2"
+          },
+          {
+            "kind": "totals-consistent",
+            "expect": "各类别合计与总数一致"
+          }
+        ]
+      },
+      "traps": [
+        "面积必须在投影坐标系下计算，不能用经纬度直接算",
+        "空值类别要单独说明如何计入"
+      ],
+      "difficulty": 2,
+      "proParity": {
+        "level": "L2",
+        "tools": [
+          "Statistics (Analysis)",
+          "Export Table"
+        ],
+        "source": "Esri 官方统计导出链",
+        "steps": 2
+      }
+    },
+    {
+      "id": "E1",
+      "category": "crs-fix",
+      "title": "两个图层坐标系不同，统一一下",
+      "utterance": "这两个图层放一起对不上，坐标系不一样，统一成 CGCS2000",
+      "preconditions": {
+        "datasets": [
+          "a.shp（CGCS2000 / 3 度带）",
+          "b.shp（西安 80 坐标系）"
+        ],
+        "state": "两个图层坐标系不同",
+        "crs": "不一致"
+      },
+      "expected": {
+        "ops": [
+          {
+            "op": "dataset.open",
+            "params": {
+              "targets": [
+                "dataset://a.shp",
+                "dataset://b.shp"
+              ]
+            }
+          },
+          {
+            "op": "vector.reproject",
+            "params": {
+              "target": "dataset://b.shp",
+              "to": "EPSG:CGCS2000_3_Degree",
+              "output": "dataset://b_cgcs2000.shp",
+              "resample": "bilinear"
+            }
+          }
+        ],
+        "assertions": [
+          {
+            "kind": "crs-equal-after",
+            "expect": true
+          },
+          {
+            "kind": "position-delta",
+            "maxDeltaPx": 1
+          },
+          {
+            "kind": "original-untouched",
+            "expect": true
+          }
+        ]
+      },
+      "traps": [
+        "转换误差必须量化（控制点残差），不能只说『转换成功』",
+        "应输出为新文件而不是就地改原文件"
+      ],
+      "difficulty": 3,
+      "proParity": {
+        "level": "L2",
+        "tools": [
+          "Project (Data Management)"
+        ],
+        "source": "Esri 官方投影工具链",
+        "steps": 1
+      }
+    },
+    {
+      "id": "E2",
+      "category": "crs-fix",
+      "title": "经纬度写反了",
+      "utterance": "导入之后点全跑到南半球去了，是不是经纬度写反了",
+      "preconditions": {
+        "datasets": [
+          "points.geojson"
+        ],
+        "state": "坐标对为 (纬度, 经度) 顺序，落到南半球/错误位置",
+        "crs": "EPSG:4326"
+      },
+      "expected": {
+        "ops": [
+          {
+            "op": "dataset.healthCheck",
+            "params": {
+              "target": "dataset://points.geojson",
+              "checks": [
+                "axis-order",
+                "extent-plausibility"
+              ]
+            }
+          },
+          {
+            "op": "feature.editGeometry",
+            "params": {
+              "target": "dataset://points.geojson",
+              "selection": {
+                "where": "全部",
+                "limit": 10000
+              },
+              "geometry": {
+                "type": "Point",
+                "coordinates": []
+              },
+              "transform": "swap-lat-lon"
+            }
+          }
+        ],
+        "assertions": [
+          {
+            "kind": "diagnosis-first",
+            "expect": "先诊断再操作"
+          },
+          {
+            "kind": "extent-plausible-after",
+            "expect": "范围回到合理区域"
+          },
+          {
+            "kind": "count-preserved",
+            "expect": true
+          }
+        ]
+      },
+      "traps": [
+        "必须是成对交换，不能只交换 X",
+        "要先用范围合理性判断确认，而不是看到南半球就断定"
+      ],
+      "difficulty": 3,
+      "proParity": {
+        "level": "L2",
+        "tools": [
+          "Define Projection + Swap Lat-Long"
+        ],
+        "source": "经纬度颠倒实况",
+        "steps": 1
+      }
+    },
+    {
+      "id": "E3",
+      "category": "crs-fix",
+      "title": "整层坐标偏移",
+      "utterance": "整个图层的位置整体偏了大概几百米，像是投影带号弄错了",
+      "preconditions": {
+        "datasets": [
+          "ref.shp（参考底图）",
+          "moved.shp（整体偏移）"
+        ],
+        "state": "moved 相对 ref 存在约 300~500 m 的系统性平移",
+        "crs": "均为 CGCS2000 / 3 度带，但带号或中央经线设置不同"
+      },
+      "expected": {
+        "ops": [
+          {
+            "op": "dataset.healthCheck",
+            "params": {
+              "target": "dataset://moved.shp",
+              "checks": [
+                "crs-mismatch",
+                "systematic-offset"
+              ],
+              "reference": "dataset://ref.shp"
+            }
+          },
+          {
+            "op": "vector.reproject",
+            "params": {
+              "target": "dataset://moved.shp",
+              "to": "auto",
+              "alignTo": "dataset://ref.shp"
+            }
+          }
+        ],
+        "assertions": [
+          {
+            "kind": "offset-quantified",
+            "expect": "给出偏移量与方向"
+          },
+          {
+            "kind": "position-delta",
+            "maxDeltaPx": 1
+          },
+          {
+            "kind": "shift-not-distortion",
+            "expect": "是平移而非形变"
+          }
+        ]
+      },
+      "traps": [
+        "要区分『平移』与『形变』，纠正方式不同",
+        "不能靠手工加一个偏移量糊弄过去"
+      ],
+      "difficulty": 3,
+      "proParity": {
+        "level": "L3",
+        "tools": [
+          "Shift / 空间校正（Spatial Adjustment）"
+        ],
+        "source": "Esri 官方空间校正链",
+        "steps": 1
+      }
+    },
+    {
+      "id": "F1",
+      "category": "export",
+      "title": "导出指定范围的图片",
+      "utterance": "把图里这个范围导成一张图片给我，300 dpi",
+      "preconditions": {
+        "datasets": [
+          "scan-2023.tff",
+          "parcel.shp（标出范围）"
+        ],
+        "state": "已有一个目标范围面",
+        "crs": "CGCS2000 / 3 度带"
+      },
+      "expected": {
+        "ops": [
+          {
+            "op": "export.image",
+            "params": {
+              "target": "dataset://scan-2023.tff",
+              "region": "layer://parcel",
+              "format": "png",
+              "dpi": 300
+            }
+          }
+        ],
+        "assertions": [
+          {
+            "kind": "output-exists",
+            "expect": true
+          },
+          {
+            "kind": "extent-matches",
+            "expect": true
+          },
+          {
+            "kind": "no-data-leak",
+            "expect": "输出仅含请求范围"
+          }
+        ]
+      },
+      "traps": [
+        "导出范围必须与请求一致，不能顺带把全图导出去",
+        "分辨率换算要基于目标坐标系的实际单位"
+      ],
+      "difficulty": 1,
+      "proParity": {
+        "level": "L1",
+        "tools": [
+          "Export Map / 导出布局"
+        ],
+        "source": "出图交差实况",
+        "steps": 1
+      }
+    },
+    {
+      "id": "F2",
+      "category": "export",
+      "title": "生成修改前后对比报告",
+      "utterance": "把这几次改动汇总成一份报告，要有改前改后的对比图，我好交差",
+      "preconditions": {
+        "datasets": [
+          "本次会话的操作历史"
+        ],
+        "state": "已完成若干次修改，含栅格与矢量",
+        "crs": "—"
+      },
+      "expected": {
+        "ops": [
+          {
+            "op": "export.report",
+            "params": {
+              "kind": "change-report",
+              "include": [
+                "before-after-image",
+                "op-list",
+                "impact-metrics",
+                "file-hashes",
+                "operator",
+                "timestamps"
+              ]
+            }
+          }
+        ],
+        "assertions": [
+          {
+            "kind": "report-complete",
+            "mustContain": [
+              "每次操作",
+              "前后对比",
+              "文件哈希",
+              "操作人",
+              "时间"
+            ]
+          },
+          {
+            "kind": "data-minimised",
+            "expect": "报告不含与改动无关的图件内容"
+          }
+        ]
+      },
+      "traps": [
+        "报告要可举证：必须有文件哈希与操作人时间",
+        "不能只给一张截图，要有可核对的量化数据"
+      ],
+      "difficulty": 2,
+      "proParity": {
+        "level": "L2",
+        "tools": [
+          "布局前后对比 + 导出 PDF"
+        ],
+        "source": "交差留痕实况",
+        "steps": 1
+      }
+    }
+  ],
+  "proComplexity": {
+    "L1": "单工具、单数据源（改属性、导一张图）",
+    "L2": "2~3 个工具串联，或多数据源叠加（选址分析、栅格+矢量出图）",
+    "L3": "需要坐标/格式前置处理，或可复现流程（ModelBuilder、多期对比、批量）",
+    "L4": "多源 + 多步 + 外部依赖（数据下载器、多维镶嵌、生成可引用成果）"
+  },
+  "proParityNote": "proParity 记录该用例对应的 ArcGIS Pro 工具链与复杂度等级。**Pro 侧操作越复杂，说明该场景离基层作业人员的真实活儿越近**，可据此排优先级。工具链对照来自 2026-10-21 对 Esri 官方文档与公开教程的联网调研。"
+}

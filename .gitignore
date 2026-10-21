@@ -1,0 +1,68 @@
+# 依赖与构建产物
+node_modules/
+dist/
+build/
+.next/
+out/
+*.tsbuildinfo
+web/.next/
+web/out/
+server/dist/
+
+# 环境与密钥（绝不提交）
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# 从 node_modules 复制的 MapLibre worker（每次构建由 scripts/copy-maplibre-worker.mjs 重新生成）
+web/public/maplibre-gl-worker.mjs
+
+# 密钥密文与本地密钥材料（正常应位于 %LOCALAPPDATA%\cartouche，出现在仓库内即视为放错位置）
+llm-key.txt
+*.dpapi
+secrets/
+keys/
+
+# 本地工具与日志
+scripts/*.log
+scripts/*.err.log
+tools/
+vendor/gdal/
+.conda/
+
+# 内部工作稿（可行性分析、计划书、路线图）——属于过程材料，不随公开仓库发布，
+# 归档到仓库外即可；仓库内只保留面向使用者的 README 与 NOTICE。
+docs/
+
+# 界面截图（验收/交付用）。放在仓库根而不是 web/out/，
+# 因为 `next build` 会**清空 web/out/**，放在那儿每次构建都被冲掉。
+shots/
+
+# 生成的样本与中间产物（可由 npm run fixture 重建）
+fixtures/*.asc
+fixtures/*.pnm
+fixtures/*.tff
+fixtures/*.tfw
+fixtures/*.prj
+fixtures/*.shp
+fixtures/*.dbf
+fixtures/*.shx
+fixtures/*.gdb/
+fixtures/roundtrip.*
+
+# 公开真实数据样本（体积大、按需下载，不入库；清单与说明入库）
+samples/*
+!samples/manifest.json
+!samples/README.md
+
+# 工作区（用户实际操作的图件所在目录；由 scripts\seed-workspace.mjs 播种）
+workspace/
+
+# 操作系统与编辑器
+Thumbs.db
+.DS_Store
+.idea/
+.vscode/
+*.swp

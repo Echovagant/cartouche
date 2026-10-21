@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- 图签：一个框 + 一根墨线（工程制图的图签框） -->
+  <rect width="64" height="64" rx="14" fill="#141210" />
+  <rect x="10" y="14" width="44" height="36" rx="3" fill="none" stroke="#f4f1ea" stroke-width="2.4" />
+  <path d="M10 40h44" stroke="#f4f1ea" stroke-width="2.4" />
+  <path d="M38 40v10" stroke="#f4f1ea" stroke-width="2.4" />
+  <circle cx="24" cy="28" r="7" fill="none" stroke="#2f6f5e" stroke-width="3" />
+  <path d="M24 21v7l5 3" fill="none" stroke="#2f6f5e" stroke-width="3" stroke-linecap="round" />
+</svg>

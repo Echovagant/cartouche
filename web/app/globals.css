@@ -1,0 +1,337 @@
+@import 'tailwindcss';
+
+/**
+ * 设计系统 —— 图签 Cartouche
+ *
+ * 基调是"制图台"：暖中性纸面 + 墨色 + 一个测绘墨绿强调色。
+ * 颜色全部落在暖色轴上（不冷不暖混用），强调色饱和度远低于 80%，
+ * 避免界面发出"AI 蓝紫"的塑料感。
+ *
+ * 字体：Geist（正文/标题）+ Geist Mono（所有数字、代码、路径），
+ * 通过 next/font/local 自托管，**构建不依赖网络**（本工具的离线承诺
+ * 也包括构建过程）。
+ */
+
+/**
+ * 画布（制图台）的运行时色阶。
+ *
+ * 放在 @theme 之外，是因为要支持**浅色/暗色切换**：
+ * Tailwind 的 @theme 在构建期就把值定死了，而主题切换是运行时的。
+ * 所以 @theme 里只放"指向变量"的指针（见 --color-studio-*），
+ * 真正的值在这里，由 <html data-theme="..."> 决定。
+ *
+ *   暗色（默认）：近黑暖灰台面 + 暖光文字，地图那张纸自己最亮。
+ *   浅色：纸面台面 + 墨色文字，地图那张纸靠边框与投影从背景里"浮"出来。
+ */
+:root {
+  --studio-bg: #141210;
+  --studio-panel: #1d1a16;
+  --studio-raised: #272320;
+  --studio-line: #38322a;
+  --studio-ink: #f3eee4;
+  --studio-ink-2: #b5ada0;
+  --studio-ink-3: #857d70;
+
+  /* 图纸周边氛围：暗角、颗粒、投影都随主题换 */
+  --studio-vignette: 10 9 8;
+  --studio-vignette-strength: 0.55;
+  --studio-grain-opacity: 0.045;
+  --studio-grain-blend: overlay;
+  --studio-stage-shadow: 0 30px 80px -40px rgb(0 0 0 / 0.95);
+  --studio-panel-shadow: -18px 0 50px rgb(0 0 0 / 0.6);
+}
+
+[data-theme='light'] {
+  --studio-bg: #f4f1ea;
+  --studio-panel: #fcfaf5;
+  --studio-raised: #ffffff;
+  --studio-line: #e2dbcb;
+  --studio-ink: #1c1a16;
+  --studio-ink-2: #4a463d;
+  --studio-ink-3: #7c7668;
+
+  --studio-vignette: 90 80 62;
+  --studio-vignette-strength: 0.16;
+  --studio-grain-opacity: 0.03;
+  --studio-grain-blend: multiply;
+  --studio-stage-shadow: 0 24px 60px -34px rgb(28 26 22 / 0.35);
+  --studio-panel-shadow: -18px 0 50px rgb(28 26 22 / 0.22);
+}
+
+@theme {
+  --color-paper: #f4f1ea;
+  --color-paper-deep: #e9e4d7;
+  --color-surface: #fcfaf5;
+  --color-surface-raised: #ffffff;
+
+  --color-ink: #1c1a16;
+  --color-ink-2: #4a463d;
+  --color-ink-3: #7c7668;
+  --color-ink-4: #a49d8c;
+
+  --color-line: #e2dbcb;
+  --color-line-2: #cfc6b1;
+
+  --color-accent: #2f6f5e;
+  --color-accent-deep: #245549;
+  --color-accent-soft: #e7efec;
+
+  --color-warn: #a6552f;
+  --color-warn-soft: #fbeee8;
+  --color-amber: #a8874f;
+
+  /* 制图室的**运行时**色阶：画布（canvas）用。
+     之所以不放成静态 token，是因为要支持浅色/暗色切换——
+     Tailwind 的 @theme 值在构建期就固定了，所以这里让它指向一组
+     可在运行时被 [data-theme] 覆盖的 CSS 变量。 */
+  --color-studio: var(--studio-bg);
+  --color-studio-2: var(--studio-panel);
+  --color-studio-3: var(--studio-raised);
+  --color-studio-line: var(--studio-line);
+  --color-studio-ink: var(--studio-ink);
+  --color-studio-ink-2: var(--studio-ink-2);
+  --color-studio-ink-3: var(--studio-ink-3);
+
+  --font-display: var(--font-satoshi), ui-sans-serif, system-ui, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-sans: var(--font-geist), ui-sans-serif, system-ui, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, 'SFMono-Regular', 'JetBrains Mono', monospace;
+
+  --radius-panel: 1.25rem;
+
+  --shadow-diffuse: 0 20px 40px -15px rgb(28 26 22 / 0.08);
+  --shadow-lift: 0 2px 10px -2px rgb(28 26 22 / 0.10), 0 1px 2px -1px rgb(28 26 22 / 0.06);
+
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+
+  --animate-shimmer: shimmer 1.8s linear infinite;
+  --animate-breathe: breathe 3.2s ease-in-out infinite;
+  --animate-sweep: sweep 5.5s var(--ease-out-expo) infinite;
+}
+
+@keyframes shimmer {
+  0% { background-position: -140% 0; }
+  100% { background-position: 240% 0; }
+}
+
+@keyframes breathe {
+  0%, 100% { opacity: 0.35; transform: scale(1); }
+  50% { opacity: 0.9; transform: scale(1.35); }
+}
+
+@keyframes sweep {
+  0% { transform: translateY(-12%); opacity: 0; }
+  18% { opacity: 1; }
+  82% { opacity: 1; }
+  100% { transform: translateY(112%); opacity: 0; }
+}
+
+/* Hero 图幅上的扫描线：纯 CSS 循环，比 JS 循环省电 */
+@keyframes cartouche-sweep {
+  0% { transform: translateY(0); opacity: 0; }
+  8% { opacity: 0.9; }
+  88% { opacity: 0.55; }
+  100% { transform: translateY(636px); opacity: 0; }
+}
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    background-color: var(--color-paper);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    font-feature-settings: 'cv11', 'ss01';
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* 数字、路径、代码一律等宽 —— 图签产出的是要拿去对账的东西 */
+  code,
+  kbd,
+  samp,
+  pre {
+    font-family: var(--font-mono);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+
+  ::selection {
+    background: var(--color-accent);
+    color: #fff;
+  }
+
+  /* 细滚动条，避免打断纸面 */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-line-2) transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 9px;
+    height: 9px;
+  }
+  *::-webkit-scrollbar-thumb {
+    background: var(--color-line-2);
+    border-radius: 99px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    background: var(--color-ink-4);
+    background-clip: content-box;
+  }
+}
+
+@layer components {
+  /* 液态玻璃面板：backdrop-blur 之外还要有 1px 内描边和内阴影才像真的玻璃 */
+  .glass {
+    background: color-mix(in srgb, var(--color-surface) 72%, transparent);
+    backdrop-filter: blur(14px) saturate(1.25);
+    -webkit-backdrop-filter: blur(14px) saturate(1.25);
+    border: 1px solid rgb(255 255 255 / 0.55);
+    box-shadow:
+      inset 0 1px 0 rgb(255 255 255 / 0.75),
+      0 18px 40px -24px rgb(28 26 22 / 0.35);
+  }
+
+  /* 纸纹：固定的、不接收指针事件的伪元素层，绝不放在滚动容器里 */
+  .grain::after {
+    content: '';
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    pointer-events: none;
+    opacity: 0.035;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+
+  /* 顶部高光描边：给深色块一点"被光打到"的质感 */
+  .rim-light {
+    position: relative;
+  }
+  .rim-light::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    padding: 1px;
+    background: linear-gradient(160deg, rgb(255 255 255 / 0.55), transparent 42%);
+    -webkit-mask:
+      linear-gradient(#000 0 0) content-box,
+      linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+    pointer-events: none;
+  }
+
+  /* 骨架屏：按真实布局尺寸出，不用转圈 */
+  .skeleton {
+    background: linear-gradient(
+      100deg,
+      var(--color-paper-deep) 30%,
+      color-mix(in srgb, var(--color-paper-deep) 55%, #fff) 50%,
+      var(--color-paper-deep) 70%
+    );
+    background-size: 220% 100%;
+    animation: var(--animate-shimmer);
+  }
+
+  .cartouche-sweep {
+    animation: cartouche-sweep 9s var(--ease-out-expo) infinite;
+    will-change: transform, opacity;
+  }
+
+  /* 画布的胶片颗粒：固定层、pointer-events:none，绝不放在滚动容器里 */
+  .film-grain::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    z-index: 40;
+    pointer-events: none;
+    opacity: var(--studio-grain-opacity);
+    mix-blend-mode: var(--studio-grain-blend);
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4'/%3E%3C/filter%3E%3Crect width='180' height='180' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+
+  /* 暗角：把视线压向图纸中心 */
+  .vignette::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    z-index: 39;
+    pointer-events: none;
+    background: radial-gradient(
+      118% 92% at 50% 46%,
+      transparent 42%,
+      rgb(var(--studio-vignette) / calc(var(--studio-vignette-strength) * 0.5)) 78%,
+      rgb(var(--studio-vignette) / var(--studio-vignette-strength)) 100%
+    );
+  }
+
+  /* 图幅角标：像真正的图框裁切线 */
+  .crop-marks::after {
+    content: '';
+    position: absolute;
+    inset: 10px;
+    pointer-events: none;
+    background:
+      linear-gradient(var(--color-studio-ink-3) 0 0) 0 0 / 14px 1px no-repeat,
+      linear-gradient(var(--color-studio-ink-3) 0 0) 0 0 / 1px 14px no-repeat,
+      linear-gradient(var(--color-studio-ink-3) 0 0) 100% 0 / 14px 1px no-repeat,
+      linear-gradient(var(--color-studio-ink-3) 0 0) 100% 0 / 1px 14px no-repeat,
+      linear-gradient(var(--color-studio-ink-3) 0 0) 0 100% / 14px 1px no-repeat,
+      linear-gradient(var(--color-studio-ink-3) 0 0) 0 100% / 1px 14px no-repeat,
+      linear-gradient(var(--color-studio-ink-3) 0 0) 100% 100% / 14px 1px no-repeat,
+      linear-gradient(var(--color-studio-ink-3) 0 0) 100% 100% / 1px 14px no-repeat;
+    opacity: 0.5;
+  }
+
+  /**
+   * 主题切换的一次性过渡。
+   *
+   * 切换那一瞬间挂上这个 class，让所有颜色**平滑过渡**而不是"啪"地换掉；
+   * 过渡结束后立刻摘掉——否则这层 transition 会一直挂在每个元素上，
+   * 拖慢后续所有交互（尤其是 hover 动效）。
+   */
+  .theme-shift,
+  .theme-shift *,
+  .theme-shift *::before,
+  .theme-shift *::after {
+    transition:
+      background-color 0.42s var(--ease-out-expo),
+      border-color 0.42s var(--ease-out-expo),
+      color 0.3s var(--ease-out-expo),
+      box-shadow 0.42s var(--ease-out-expo) !important;
+  }
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+  .text-pretty {
+    text-wrap: pretty;
+  }
+  /* 等宽数字：表格与标尺里的数字不能跳动 */
+  .tnum {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+/* 尊重系统的"减少动态效果"设置 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}

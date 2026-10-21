@@ -1,0 +1,435 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cartouche.dev/schemas/operation-plan.v1.json",
+  "title": "操作计划 (Operation Plan)",
+  "description": "AI 提议、确定性引擎执行的唯一契约。LLM 的唯一合法产物是一份符合本 Schema 的计划；引擎逐条校验后执行，并强制输出量化影响报告。基准集见 bench/cases.json。",
+  "type": "object",
+  "required": ["version", "ops"],
+  "additionalProperties": false,
+  "properties": {
+    "version": { "const": "1.0" },
+    "intent": {
+      "type": "string",
+      "maxLength": 500,
+      "description": "用户原话或规整后的意图描述，用于审计与复现"
+    },
+    "ops": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 50,
+      "items": { "$ref": "#/$defs/operation" }
+    }
+  },
+  "$defs": {
+    "bbox": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": { "type": "number" },
+      "description": "[minX, minY, maxX, maxY]，坐标系必须与目标图层一致"
+    },
+    "layerRef": {
+      "type": "string",
+      "pattern": "^(layer|dataset|summary)://.+",
+      "description": "图层引用，如 layer://2024_basemap、dataset://current.tff"
+    },
+    "operation": {
+      "type": "object",
+      "required": ["op", "params"],
+      "additionalProperties": false,
+      "properties": {
+        "op": {
+          "type": "string",
+          "enum": [
+            "dataset.open",
+            "dataset.healthCheck",
+            "dataset.snapshot",
+            "raster.replaceRegion",
+            "raster.erase",
+            "raster.inpaint",
+            "raster.clip",
+            "raster.mosaic",
+            "raster.resample",
+            "raster.adjustLevels",
+            "raster.paint",
+            "feature.setAttributes",
+            "feature.delete",
+            "feature.editGeometry",
+            "feature.create",
+            "feature.summarize",
+            "vector.repairGeometry",
+            "vector.renameFields",
+            "vector.recode",
+            "vector.reproject",
+            "vector.overlay",
+            "export.image",
+            "export.report"
+          ]
+        },
+        "params": { "type": "object" },
+        "preconditions": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "crsEqual": { "type": "boolean" },
+            "sourceExists": { "type": "boolean" },
+            "resolutionCompatible": { "type": "boolean" },
+            "maxAffectedPixels": { "type": "integer", "minimum": 0 },
+            "maxAffectedFeatures": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "expect": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "maxDelta": { "type": "number", "minimum": 0 },
+            "maxAffectedPixels": { "type": "integer", "minimum": 0 },
+            "maxAffectedFeatures": { "type": "integer", "minimum": 0 }
+          },
+          "description": "执行前的预期上限；超出则中止并报告，不静默继续"
+        },
+        "requireUserConfirm": {
+          "type": "boolean",
+          "default": true,
+          "description": "涉及删除、重命名、批量修改时必须为 true——这些操作不可逆，必须人工确认"
+        }
+      },
+      "allOf": [
+        { "if": { "properties": { "op": { "const": "dataset.open" } }, "required": ["op"] }, "then": { "properties": { "params": { "$ref": "#/$defs/params.dataset.open" } } } },
+        { "if": { "properties": { "op": { "const": "dataset.healthCheck" } }, "required": ["op"] }, "then": { "properties": { "params": { "$ref": "#/$defs/params.dataset.healthCheck" } } } },
+        { "if": { "properties": { "op": { "const": "dataset.snapshot" } }, "required": ["op"] }, "then": { "properties": { "params": { "$ref": "#/$defs/params.dataset.snapshot" } } } },
+        { "if": { "properties": { "op": { "const": "raster.replaceRegion" } }, "required": ["op"] }, "then": { "properties": { "params": { "$ref": "#/$defs/params.raster.replaceRegion" } } } },
+        { "if": { "properties": { "op": { "const": "raster.erase" } }, "required": ["op"] }, "then": { "properties": { "params": { "$ref": "#/$defs/params.raster.erase" } } } },
+        { "if": { "properties": { "op": { "const": "raster.inpaint" } }, "required": ["op"] }, "then": { "properties": { "params": { "$ref": "#/$defs/params.raster.inpaint" } } } },
+        { "if": { "properties": { "op": { "const": "raster.clip" } }, "required": ["op"] }, "then": { "properties": { "params": { "$ref": "#/$defs/params.raster.clip" } } } },
+        { "if": { "properties": { "op": { "const": "raster.mosaic" } }, "required": ["op"] }, "then": { "properties": { "params": { "$ref": "#/$defs/params.raster.mosaic" } } } },
+        { "if": { "properties": { "op": { "const": "raster.resample" } }, "required": ["op"] }, "then": { "properties": { "params": { "$ref": "#/$defs/params.raster.resample" } } } },
+        { "if": { "properties": { "op": { "const": "raster.adjustLevels" } }, "required": ["op"] }, "then": { "properties": { "params": { "$ref": "#/$defs/params.raster.adjustLevels" } } } },
+        { "if": { "properties": { "op": { "const": "raster.paint" } }, "required": ["op"] }, "then": { "properties": { "params": { "$ref": "#/$defs/params.raster.paint" } } } },
+        { "if": { "properties": { "op": { "const": "feature.setAttributes" } }, "required": ["op"] }, "then": { "properties": { "params": { "$ref": "#/$defs/params.feature.setAttributes" } } } },
+        { "if": { "properties": { "op": { "const": "feature.delete" } }, "required": ["op"] }, "then": { "properties": { "params": { "$ref": "#/$defs/params.feature.delete" } } } },
+        { "if": { "properties": { "op": { "const": "feature.editGeometry" } }, "required": ["op"] }, "then": { "properties": { "params": { "$ref": "#/$defs/params.feature.editGeometry" } } } },
+        { "if": { "properties": { "op": { "const": "feature.create" } }, "required": ["op"] }, "then": { "properties": { "params": { "$ref": "#/$defs/params.feature.create" } } } },
+        { "if": { "properties": { "op": { "const": "feature.summarize" } }, "required": ["op"] }, "then": { "properties": { "params": { "$ref": "#/$defs/params.feature.summarize" } } } },
+        { "if": { "properties": { "op": { "const": "vector.repairGeometry" } }, "required": ["op"] }, "then": { "properties": { "params": { "$ref": "#/$defs/params.vector.repairGeometry" } } } },
+        { "if": { "properties": { "op": { "const": "vector.renameFields" } }, "required": ["op"] }, "then": { "properties": { "params": { "$ref": "#/$defs/params.vector.renameFields" } } } },
+        { "if": { "properties": { "op": { "const": "vector.recode" } }, "required": ["op"] }, "then": { "properties": { "params": { "$ref": "#/$defs/params.vector.recode" } } } },
+        { "if": { "properties": { "op": { "const": "vector.reproject" } }, "required": ["op"] }, "then": { "properties": { "params": { "$ref": "#/$defs/params.vector.reproject" } } } },
+        { "if": { "properties": { "op": { "const": "vector.overlay" } }, "required": ["op"] }, "then": { "properties": { "params": { "$ref": "#/$defs/params.vector.overlay" } } } },
+        { "if": { "properties": { "op": { "const": "export.image" } }, "required": ["op"] }, "then": { "properties": { "params": { "$ref": "#/$defs/params.export.image" } } } },
+        { "if": { "properties": { "op": { "const": "export.report" } }, "required": ["op"] }, "then": { "properties": { "params": { "$ref": "#/$defs/params.export.report" } } } }
+      ]
+    },
+
+    "params.dataset.open": {
+      "type": "object",
+      "required": ["targets"],
+      "additionalProperties": false,
+      "properties": {
+        "targets": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/layerRef" } },
+        "purpose": { "type": "string", "maxLength": 200 }
+      }
+    },
+    "params.dataset.healthCheck": {
+      "type": "object",
+      "required": ["target", "checks"],
+      "additionalProperties": false,
+      "properties": {
+        "target": { "$ref": "#/$defs/layerRef" },
+        "checks": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "enum": [
+              "crs-present", "crs-mismatch", "crs-range-sanity", "axis-order", "extent-plausibility",
+              "systematic-offset", "encoding", "field-naming", "field-type", "default-fields",
+              "null-geometry", "zero-area", "sharp-angle", "outlier-extent", "extent-compare"
+            ]
+          }
+        },
+        "angleThresholdDeg": { "type": "number", "exclusiveMinimum": 0, "maximum": 180 },
+        "reference": { "$ref": "#/$defs/layerRef" },
+        "encoding": { "type": "string", "enum": ["GBK", "UTF-8", "LATIN1", "auto"] }
+      }
+    },
+    "params.dataset.snapshot": {
+      "type": "object",
+      "required": ["target"],
+      "additionalProperties": false,
+      "properties": {
+        "target": { "$ref": "#/$defs/layerRef" },
+        "label": { "type": "string", "maxLength": 100 },
+        "includeSidecars": { "type": "boolean", "default": true, "description": "是否连同 .tfw/.prj/.cpg 等伴随文件一起快照" }
+      }
+    },
+    "params.raster.replaceRegion": {
+      "type": "object",
+      "required": ["source", "target"],
+      "additionalProperties": false,
+      "properties": {
+        "source": { "$ref": "#/$defs/layerRef" },
+        "target": { "$ref": "#/$defs/layerRef" },
+        "bbox": { "$ref": "#/$defs/bbox" },
+        "region": { "$ref": "#/$defs/layerRef" },
+        "featherPx": { "type": "integer", "minimum": 0, "maximum": 200, "default": 0 },
+        "resample": { "type": "string", "enum": ["nearest", "bilinear", "cubic"], "default": "bilinear" }
+      },
+      "description": "source/target 必填；bbox 与 region 至少给一个"
+    },
+    "params.raster.erase": {
+      "type": "object",
+      "required": ["target", "region"],
+      "additionalProperties": false,
+      "properties": {
+        "target": { "$ref": "#/$defs/layerRef" },
+        "region": { "$ref": "#/$defs/layerRef" },
+        "bbox": { "$ref": "#/$defs/bbox" },
+        "fill": { "type": "string", "enum": ["underlying", "transparent", "color"], "default": "underlying" },
+        "color": { "type": "array", "minItems": 3, "maxItems": 4, "items": { "type": "integer", "minimum": 0, "maximum": 255 } }
+      }
+    },
+    "params.raster.inpaint": {
+      "type": "object",
+      "required": ["target", "region"],
+      "additionalProperties": false,
+      "properties": {
+        "target": { "$ref": "#/$defs/layerRef" },
+        "region": { "$ref": "#/$defs/layerRef" },
+        "bbox": { "$ref": "#/$defs/bbox" },
+        "method": { "type": "string", "enum": ["telea", "navier-stokes", "nearest-fill"], "default": "telea" },
+        "radiusPx": { "type": "integer", "minimum": 1, "maximum": 100, "default": 5 }
+      }
+    },
+    "params.raster.clip": {
+      "type": "object",
+      "required": ["clip"],
+      "additionalProperties": false,
+      "properties": {
+        "target": { "$ref": "#/$defs/layerRef" },
+        "inputs": { "type": "string", "description": "批量模式下的通配路径，如 batch/*.tif" },
+        "clip": { "$ref": "#/$defs/layerRef" },
+        "mode": { "type": "string", "enum": ["inside", "outside"], "default": "inside" },
+        "naming": { "type": "string", "enum": ["source-basename", "source-basename-index"], "default": "source-basename" }
+      }
+    },
+    "params.raster.mosaic": {
+      "type": "object",
+      "required": ["inputs"],
+      "additionalProperties": false,
+      "properties": {
+        "inputs": { "type": "array", "minItems": 2, "items": { "$ref": "#/$defs/layerRef" } },
+        "overlap": { "type": "string", "enum": ["first", "last", "blend"], "default": "blend" },
+        "resample": { "type": "string", "enum": ["nearest", "bilinear", "cubic"], "default": "bilinear" },
+        "output": { "$ref": "#/$defs/layerRef" }
+      }
+    },
+    "params.raster.resample": {
+      "type": "object",
+      "required": ["inputs", "resampleMethod"],
+      "additionalProperties": false,
+      "properties": {
+        "inputs": { "type": "string", "description": "通配路径或单数据集引用" },
+        "targetResolution": { "type": "number", "exclusiveMinimum": 0 },
+        "targetGrid": { "$ref": "#/$defs/layerRef" },
+        "resampleMethod": { "type": "string", "enum": ["nearest", "bilinear", "cubic", "average"] },
+        "align": { "type": "string", "enum": ["union", "grid", "each"], "default": "union" }
+      }
+    },
+    "params.raster.adjustLevels": {
+      "type": "object",
+      "required": ["target"],
+      "additionalProperties": false,
+      "properties": {
+        "target": { "$ref": "#/$defs/layerRef" },
+        "brightness": { "type": "number", "minimum": -1, "maximum": 1 },
+        "contrast": { "type": "number", "minimum": 0, "maximum": 4 },
+        "method": { "type": "string", "enum": ["linear-stretch", "gamma", "manual"], "default": "linear-stretch" },
+        "autoDerive": { "type": "boolean", "default": true, "description": "为 true 时由直方图推导参数，忽略手填的 brightness/contrast" }
+      }
+    },
+    "params.raster.paint": {
+      "type": "object",
+      "required": ["target", "region"],
+      "additionalProperties": false,
+      "properties": {
+        "target": { "$ref": "#/$defs/layerRef" },
+        "region": { "$ref": "#/$defs/layerRef" },
+        "color": { "type": "string", "description": "#RRGGBB，或 sample-from-edge 表示从周边取样" }
+      }
+    },
+    "params.feature.setAttributes": {
+      "type": "object",
+      "required": ["target", "where", "set"],
+      "additionalProperties": false,
+      "properties": {
+        "target": { "$ref": "#/$defs/layerRef" },
+        "where": { "type": "string", "description": "SQL where 子句，字段名必须来自目标图层 schema" },
+        "set": { "type": "object", "description": "字段名 → 新值" }
+      }
+    },
+    "params.feature.delete": {
+      "type": "object",
+      "required": ["target", "where"],
+      "additionalProperties": false,
+      "properties": {
+        "target": { "$ref": "#/$defs/layerRef" },
+        "where": { "type": "string" },
+        "keep": { "type": "string", "enum": ["none", "first", "last", "largest"], "default": "none" }
+      }
+    },
+    "params.feature.editGeometry": {
+      "type": "object",
+      "required": ["target", "selection", "geometry"],
+      "additionalProperties": false,
+      "properties": {
+        "target": { "$ref": "#/$defs/layerRef" },
+        "selection": {
+          "type": "object",
+          "required": ["where"],
+          "additionalProperties": false,
+          "properties": {
+            "where": { "type": "string" },
+            "limit": { "type": "integer", "minimum": 1, "maximum": 10000 }
+          }
+        },
+        "geometry": {
+          "type": "object",
+          "required": ["type", "coordinates"],
+          "additionalProperties": false,
+          "properties": {
+            "type": { "enum": ["Point", "LineString", "Polygon", "MultiPolygon"] },
+            "coordinates": { "type": "array" }
+          }
+        },
+        "transform": { "type": "string", "enum": ["none", "swap-lat-lon", "translate", "snap-to-target"], "default": "none" }
+      }
+    },
+    "params.feature.create": {
+      "type": "object",
+      "required": ["target", "geometry"],
+      "additionalProperties": false,
+      "properties": {
+        "target": { "$ref": "#/$defs/layerRef" },
+        "geometry": {
+          "type": "object",
+          "required": ["type", "coordinates"],
+          "additionalProperties": false,
+          "properties": {
+            "type": { "enum": ["Point", "LineString", "Polygon", "MultiPolygon"] },
+            "coordinates": { "type": "array" }
+          }
+        },
+        "attributes": { "type": "object" },
+        "inheritFrom": { "type": "string", "enum": ["none", "nearest-neighbour", "template"], "default": "none" }
+      }
+    },
+    "params.feature.summarize": {
+      "type": "object",
+      "required": ["target", "groupBy", "aggregates"],
+      "additionalProperties": false,
+      "properties": {
+        "target": { "$ref": "#/$defs/layerRef" },
+        "groupBy": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+        "aggregates": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "enum": ["count", "area", "length", "sum", "mean", "min", "max", "distinct"] }
+        },
+        "areaUnit": { "type": "string", "enum": ["m2", "ha", "mu", "km2"], "description": "面积单位必须显式声明——经纬度下算面积无意义" }
+      }
+    },
+    "params.vector.repairGeometry": {
+      "type": "object",
+      "required": ["target"],
+      "additionalProperties": false,
+      "properties": {
+        "target": { "$ref": "#/$defs/layerRef" },
+        "rules": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "enum": ["self-intersection", "duplicate-vertex", "ring-orientation", "unclosed-ring", "spike", "collapsed-ring"] }
+        },
+        "snapTolerance": { "type": "number", "minimum": 0, "description": "容差过大会吃掉真实小缝隙，默认 0" }
+      }
+    },
+    "params.vector.renameFields": {
+      "type": "object",
+      "required": ["target", "mapping"],
+      "additionalProperties": false,
+      "properties": {
+        "target": { "$ref": "#/$defs/layerRef" },
+        "mapping": { "type": "object", "description": "旧字段名 → 新字段名" }
+      }
+    },
+    "params.vector.recode": {
+      "type": "object",
+      "required": ["target", "to"],
+      "additionalProperties": false,
+      "properties": {
+        "target": { "$ref": "#/$defs/layerRef" },
+        "from": { "type": "string", "enum": ["GBK", "UTF-8", "LATIN1", "auto"], "default": "auto" },
+        "to": { "type": "string", "enum": ["GBK", "UTF-8", "LATIN1"] },
+        "writeEncodingMarker": { "type": "boolean", "default": true, "description": "写 .cpg 文件，Shapefile 必须有它否则下次打开又乱码" }
+      }
+    },
+    "params.vector.reproject": {
+      "type": "object",
+      "required": ["target", "to"],
+      "additionalProperties": false,
+      "properties": {
+        "target": { "$ref": "#/$defs/layerRef" },
+        "to": { "type": "string", "description": "目标 CRS，如 EPSG:CGCS2000_3_Degree；写 auto 表示由 alignTo 推导" },
+        "output": { "$ref": "#/$defs/layerRef" },
+        "alignTo": { "$ref": "#/$defs/layerRef" },
+        "resample": { "type": "string", "enum": ["nearest", "bilinear", "cubic"], "default": "bilinear" },
+        "maxResidualPx": { "type": "number", "minimum": 0, "description": "转换后允许的最大残差（像素），超出即中止" }
+      }
+    },
+    "params.vector.overlay": {
+      "type": "object",
+      "required": ["base", "update", "operation"],
+      "additionalProperties": false,
+      "properties": {
+        "base": { "$ref": "#/$defs/layerRef" },
+        "update": { "$ref": "#/$defs/layerRef" },
+        "operation": { "enum": ["clip-to-base", "difference", "union", "intersection", "snap-to-base"] },
+        "preserveAttributes": { "type": "boolean", "default": true }
+      }
+    },
+    "params.export.image": {
+      "type": "object",
+      "required": ["target", "format"],
+      "additionalProperties": false,
+      "properties": {
+        "target": { "$ref": "#/$defs/layerRef" },
+        "region": { "$ref": "#/$defs/layerRef" },
+        "bbox": { "$ref": "#/$defs/bbox" },
+        "format": { "enum": ["png", "jpeg", "pdf", "tif"] },
+        "dpi": { "type": "integer", "minimum": 72, "maximum": 1200 },
+        "layers": { "type": "array", "items": { "$ref": "#/$defs/layerRef" } }
+      }
+    },
+    "params.export.report": {
+      "type": "object",
+      "required": ["kind"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": ["csv", "change-report", "health-report", "audit-log", "compat-report"],
+          "description": "compat-report = 兼容性自检报告（交差用）：文件格式 / 坐标系 / 几何有效性 / 伴随文件 / 在 ArcGIS 中打开需要注意什么 / 本次改动的量化摘要"
+        },
+        "target": { "$ref": "#/$defs/layerRef" },
+        "include": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "before-after-image", "op-list", "impact-metrics", "file-hashes", "operator",
+              "timestamps", "backups", "crs", "sidecars", "arcgis-notes"
+            ]
+          }
+        },
+        "format": { "enum": ["csv", "html", "pdf", "json"], "default": "html" }
+      }
+    }
+  }
+}

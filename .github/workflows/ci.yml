@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# 取消同一分支上更早的未完成构建
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: 契约 / 基准 / 许可 / 构建
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 安装 GDAL（conda-forge）
+        # GDAL 是系统级预编译二进制，不走 npm；CI 必须真的装上，
+        # 否则样本生成与引擎冒烟测试会变成"永远绿"的假验证。
+        run: |
+          conda create -y -n gdal -c conda-forge gdal proj geos
+          echo "GDAL_BIN=$CONDA_PREFIX/Library/bin" >> "$GITHUB_ENV"
+          echo "GDAL_BIN=$CONDA_PREFIX/Library/bin" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 类型检查
+        run: npm run typecheck
+
+      - name: 单元测试
+        env:
+          PATH: ${{ env.GDAL_BIN }}:${{ env.PATH }}
+        # 串行执行：并行跑多个测试文件会同时拉起十几个 GDAL 子进程，
+        # 在 Windows 上偶发文件锁/扫描竞争（实测 5 轮里偶发 1 次失败）。
+        # 本地开发可用 `npm test`（并行，快），CI 用这个确定性的串行档。
+        run: npm run test:ci
+
+      - name: 契约自检（操作计划 Schema）
+        run: npm run check:schema
+
+      - name: 基准集自检（30 条 AI 用例）
+        run: npm run check:bench
+
+      - name: 依赖许可门禁
+        run: node scripts/check-licenses.mjs
+
+      - name: 密钥扫描门禁（防 API Key 误提交）
+        # 本项目规定 API Key 不进仓库、不以明文保存；
+        # 这一步是最后一道防线，防止有人把 key 粘进源码/文档后推上去。
+        run: npm run check:secrets
+
+      - name: 编码污染扫描（UTF-8 被按 GBK 解码后又存回）
+        run: npm run scan:encoding
+
+      - name: 引擎冒烟测试
+        env:
+          PATH: ${{ env.GDAL_BIN }}:${{ env.PATH }}
+        run: npm run smoke:engine
+
+      - name: 样本生成与写回往返校验
+        env:
+          PATH: ${{ env.GDAL_BIN }}:${{ env.PATH }}
+        run: npm run fixture
+
+      - name: 构建前端静态站点
+        run: npm run build:web
+
+      - name: 构建引擎与服务端
+        run: npm run build:server
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-static
+          path: web/out
+          retention-days: 7

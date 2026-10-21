@@ -1,0 +1,200 @@
+{
+  "version": "1.0",
+  "note": "公开、免费、免登录的地理数据源清单。全部用于压测本项目的引擎能力，不是产品数据。下载到 samples/（已在 .gitignore 中），不入库。",
+  "selection": "优先选：① 免登录可直连 ② 许可允许商用 ③ 能触发我们已知的薄弱点（非 Byte 类型、缺 CRS、nodata、超大、超多字段、中文字段）",
+  "samples": [
+    {
+      "id": "naturalearth-admin0",
+      "title": "Natural Earth 110m 国界（177 国）",
+      "kind": "vector",
+      "url": "https://naciscdn.org/naturalearth/110m/cultural/ne_110m_admin_0_countries.zip",
+      "file": "ne_110m_admin_0_countries.zip",
+      "unpack": "ne110m",
+      "expect": {
+        "driver": "ESRI Shapefile",
+        "features": 177,
+        "crs": "EPSG:4326",
+        "entry": "ne110m/ne_110m_admin_0_countries.shp"
+      },
+      "license": "Public Domain（Natural Earth 声明为公共领域，可自由使用）",
+      "attribution": "Natural Earth — naturalearthdata.com",
+      "focus": [
+        "多字段属性表（featurecla/scalerank/LABELRANK/SOVEREIGNT…）",
+        "复杂多边形几何（含跨经线、极区）",
+        "UTF-8 编码 + .cpg 侧车（应通过 V-ENC-001）",
+        ".prj 侧车提供 CRS（应通过 V-CRS-001）"
+      ]
+    },
+    {
+      "id": "datav-china-provinces",
+      "title": "阿里云 DataV 中国省级行政区边界（GeoJSON）",
+      "kind": "vector",
+      "url": "https://geo.datav.aliyun.com/areas_v3/bound/100000_full.json",
+      "file": "datav_china_100000_full.json",
+      "expect": {
+        "driver": "GeoJSON",
+        "crs": "none",
+        "entry": "datav_china_100000_full.json"
+      },
+      "license": "阿里云 DataV.GeoAtlas 公开接口数据",
+      "attribution": "DataV.GeoAtlas (阿里云)",
+      "focus": [
+        "中文字段名（name/adcode/…）→ 考察中文编码与字段名处理",
+        "GeoJSON **不声明 CRS** → 应触发 CRS 相关规则",
+        "非 ASCII 属性值 → 考察 DBF/GeoJSON 写出编码"
+      ]
+    },
+    {
+      "id": "sentinel2-l3-b04",
+      "title": "Sentinel-2 L3 季度无云镶嵌 单波段 COG（2024 Q2，UTM 31N）",
+      "kind": "raster",
+      "remote": true,
+      "url": "https://data.source.coop/tge-labs/sentinel-2-quarterly-cloudless-mosaics/2024/Q2/31UFU_0_0/B04.tif",
+      "vsicurl": "/vsicurl/https://data.source.coop/tge-labs/sentinel-2-quarterly-cloudless-mosaics/2024/Q2/31UFU_0_0/B04.tif",
+      "expect": {
+        "driver": "GTiff/GeoTIFF",
+        "width": 10008,
+        "height": 10008,
+        "bands": 1,
+        "crs": "EPSG:32631",
+        "dataType": "Int16",
+        "nodata": -32768
+      },
+      "license": "Copernicus Sentinel 数据使用条款（允许免费、完整、开放使用，含商用）",
+      "attribution": "Copernicus Sentinel data 2017–2025 (via Taylor Geospatial on Source Cooperative)",
+      "focus": [
+        "**int16 数据类型** —— 我们目前只按 Byte 处理，这会直接暴露实现缺口",
+        "**缩放因子 0.0001 未写入文件** —— 反射率语义无处可查",
+        "nodata = -32768（不是 0）",
+        "10008×10008（约 200 MB/波段）—— 超大栅格",
+        "COG 内部分块 + 5 级金字塔 —— 可走 /vsicurl/ 范围读，不必整文件下载"
+      ]
+    },
+    {
+      "id": "ftw-field-2024",
+      "title": "Fields of the World 2e 农田边界概率 COG（2024，2.5 m）",
+      "kind": "raster",
+      "remote": true,
+      "url": "https://data.source.coop/ftw/global-data-2e/raster/2024/zone=31/gzd=31U/31UFU_0_0/31UFU_0_0.tif",
+      "vsicurl": "/vsicurl/https://data.source.coop/ftw/global-data-2e/raster/2024/zone=31/gzd=31U/31UFU_0_0/31UFU_0_0.tif",
+      "expect": {
+        "driver": "GTiff/GeoTIFF",
+        "width": 40032,
+        "height": 40032,
+        "bands": 2,
+        "dataType": "UInt8"
+      },
+      "license": "CC-BY-4.0",
+      "attribution": "Fields of the World (FTW) 2nd Edition",
+      "focus": [
+        "双波段（field/boundary 概率）",
+        "2.5 m 分辨率、40032×40032 的单块 → 极端超大（约 611 MB）",
+        "概率值 0~255 需要 1/255 缩放"
+      ]
+    },
+    {
+      "id": "naturalearth-ne1-raster",
+      "title": "Natural Earth 10m  shaded relief 栅格 NE1（Esri 风格 .tif+.prj 组合）",
+      "kind": "raster",
+      "url": "https://naciscdn.org/naturalearth/10m/raster/NE1_HR_LC_SR_W.zip",
+      "file": "NE1_HR_LC_SR_W.zip",
+      "unpack": "ne1",
+      "expect": {
+        "driver": "GTiff/GeoTIFF",
+        "entry": "ne1/NE1_HR_LC_SR_W.tif",
+        "width": 21600,
+        "height": 10800,
+        "bands": 3,
+        "crs": "embedded",
+        "bytesApprox": 699970010
+      },
+      "license": "Public Domain（Natural Earth）",
+      "attribution": "Natural Earth — naturalearthdata.com",
+      "focus": [
+        "**真实世界栅格**（不是合成样本）：21600×10800×3，约 700 MB",
+        "⚠️ **实测修正**：它的 CRS 是**内嵌**在 GeoTIFF 里的，同名 .prj 只是 Esri 习惯留下的冗余副本 —— 所以 R-CRS-001 **不触发是正确的**",
+        "这恰好验证了我们的设计原则：**「有没有坐标系」以 GDAL 实际解析结果为准，而不是看文件存不存在**",
+        "3 波段 RGB 影像（不是单波段灰度）→ 多波段路径",
+        "带 .tfw 世界文件，仿射参数可被 GDAL 自动关联"
+      ]
+    },
+    {
+      "id": "naturalearth-rivers",
+      "title": "Natural Earth 10m 河流与湖泊中心线（线 + 面混合）",
+      "kind": "vector",
+      "url": "https://naciscdn.org/naturalearth/10m/physical/ne_10m_rivers_lake_centerlines.zip",
+      "file": "ne_10m_rivers_lake_centerlines.zip",
+      "unpack": "nerivers",
+      "expect": {
+        "driver": "ESRI Shapefile",
+        "entry": "nerivers/ne_10m_rivers_lake_centerlines.shp",
+        "crs": "EPSG:4326"
+      },
+      "license": "Public Domain（Natural Earth）",
+      "attribution": "Natural Earth — naturalearthdata.com",
+      "focus": [
+        "**几何类型混合**（LineString + Polygon 同层）→ 属性表与几何体检",
+        "河道是极细长的多段线 → 尖角/退化几何检查的天然素材",
+        "带 .prj（CRS 正常）与 .cpg（UTF-8）"
+      ]
+    },
+    {
+      "id": "gadm-china-l1",
+      "title": "GADM 4.1 中国一级行政区（GeoJSON）",
+      "kind": "vector",
+      "url": "https://geodata.ucdavis.edu/gadm/gadm4.1/json/gadm41_CHN_1.json.zip",
+      "file": "gadm41_CHN_1.json.zip",
+      "unpack": "gadmchn1",
+      "expect": {
+        "driver": "GeoJSON",
+        "entry": "gadmchn1/gadm41_CHN_1.json",
+        "crs": "EPSG:4326"
+      },
+      "license": "GADM 4.1 —— 自由使用（非商业），需署名",
+      "attribution": "GADM (gadm.org)",
+      "focus": [
+        "中国省级边界 → 与 DataV 版本**交叉验证**（两者边界不一致处即为真实争议）",
+        "属性表含 GID_1 / NAME_1 / TYPE_1 等，字段名规范但含义需业务解释",
+        "**GCJ-02 / WGS84 / CGCS2000 混用陷阱**：国内数据源坐标基准不统一，面积会系统性偏大"
+      ]
+    },
+    {
+      "id": "gbk-shapefile",
+      "title": "GBK 编码 Shapefile（合成，国内成果常见怪癖）",
+      "kind": "vector",
+      "base": "fixtures",
+      "url": null,
+      "file": null,
+      "expect": {
+        "driver": "ESRI Shapefile",
+        "entry": "gbk_sample.shp",
+        "encoding": "GBK"
+      },
+      "license": "项目自造（npm run fixture 生成）",
+      "attribution": "本项目",
+      "focus": [
+        "**DBF 编码是 GBK**（.cpg 声明 GBK）→ 应当触发体检规则 **V-ENC-001**",
+        "属性值是中文 → 不指定编码时读出来是乱码"
+      ]
+    },
+    {
+      "id": "chinese-filename-shp",
+      "title": "中文文件名 + 中文属性（合成）",
+      "kind": "vector",
+      "base": "fixtures",
+      "url": null,
+      "file": null,
+      "expect": {
+        "driver": "ESRI Shapefile",
+        "entry": "中文样本.shp",
+        "encoding": "UTF-8"
+      },
+      "license": "项目自造（npm run fixture 生成）",
+      "attribution": "本项目",
+      "focus": [
+        "**文件名本身是中文** → 路径处理、.prj 侧车关联、备份名生成都不能因此出错",
+        "UTF-8 + .cpg → 应当**不**触发 V-ENC-001"
+      ]
+    }
+  ]
+}
