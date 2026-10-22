@@ -47,7 +47,7 @@ const shp = join(fixDir, 'sample.shp');
 const gdb = join(fixDir, 'sample.gdb');
 const roundtrip = join(fixDir, 'roundtrip.tff');
 
-const info = (f, extra = []) => runTool(gdalBin, 'gdalinfo.exe', [...extra, f]);
+const info = (f, extra = []) => runTool(gdalBin, 'gdalinfo', [...extra, f]);
 const hasCrsSection = (text) => /Coordinate System is:/.test(text);
 const checksums = (text) => (text.match(/Checksum=(\d+)/g) || []).map((s) => s.split('=')[1]);
 
@@ -65,7 +65,7 @@ for (let y = 0; y < H; y++) {
 writeFileSync(pnm, Buffer.concat([Buffer.from(`P6\n${W} ${H}\n255\n`, 'ascii'), pixels]));
 
 // 2) 不带任何地理信息地转成 GTiff（强制走"外部世界文件"路径）
-runTool(gdalBin, 'gdal_translate.exe', ['-of', 'GTiff', pnm, tff]);
+runTool(gdalBin, 'gdal_translate', ['-of', 'GTiff', pnm, tff]);
 
 // 3) 写 Esri 风格世界文件与坐标系
 const XMIN = 120.3, YMAX = 30.54, CELL = 0.001;
@@ -85,7 +85,7 @@ writeFileSync(prj, [
 ].join('\n'));
 
 // 4) 写回模板：CRS 内嵌的 GeoTIFF（仍用 .tff 扩展名）
-runTool(gdalBin, 'gdal_translate.exe', ['-of', 'GTiff', '-a_srs', 'EPSG:4326', tff, embedded]);
+runTool(gdalBin, 'gdal_translate', ['-of', 'GTiff', '-a_srs', 'EPSG:4326', tff, embedded]);
 
 const infoTff = info(tff);
 const infoEmbedded = info(embedded);
@@ -96,7 +96,7 @@ const px = infoTff.match(/Pixel Size = \(([-\d.eE+]+),([-\d.eE+]+)\)/);
 const listsSidecar = /worldref\.tfw/.test(infoTff);
 
 const ck1 = checksums(info(tff, ['-checksum']));
-runTool(gdalBin, 'gdal_translate.exe', ['-of', 'GTiff', tff, roundtrip]);
+runTool(gdalBin, 'gdal_translate', ['-of', 'GTiff', tff, roundtrip]);
 const ck2 = checksums(info(roundtrip, ['-checksum']));
 
 const report = (name, ok, detail) =>
@@ -129,9 +129,9 @@ writeFileSync(geojson, JSON.stringify({
 }));
 let shpOk = false, shpCrs = false, shpDetail = '';
 try {
-  runTool(gdalBin, 'ogr2ogr.exe', ['-f', 'ESRI Shapefile', '-lco', 'ENCODING=UTF-8', shp, geojson]);
+  runTool(gdalBin, 'ogr2ogr', ['-f', 'ESRI Shapefile', '-lco', 'ENCODING=UTF-8', shp, geojson]);
   shpOk = existsSync(shp) && existsSync(join(fixDir, 'sample.dbf'));
-  const shpInfo = runTool(gdalBin, 'ogrinfo.exe', ['-so', '-al', shp]);
+  const shpInfo = runTool(gdalBin, 'ogrinfo', ['-so', '-al', shp]);
   shpCrs = /Layer SRS WKT:/.test(shpInfo);
   shpDetail = shpCrs ? 'Layer SRS WKT 存在（.prj 对矢量有效）' : '未读到 SRS';
 } catch (e) {
@@ -146,7 +146,7 @@ const cnShp = join(fixDir, '中文样本.shp');
 let gbkOk = false;
 let gbkDetail = '未执行';
 try {
-  runTool(gdalBin, 'ogr2ogr.exe', ['-f', 'ESRI Shapefile', '-lco', 'ENCODING=GBK', gbkShp, geojson]);
+  runTool(gdalBin, 'ogr2ogr', ['-f', 'ESRI Shapefile', '-lco', 'ENCODING=GBK', gbkShp, geojson]);
   const cpgPath = join(fixDir, 'gbk_sample.cpg');
   const cpgText = existsSync(cpgPath) ? readFileSync(cpgPath, 'utf8').trim() : '(无 .cpg)';
   gbkOk = existsSync(gbkShp) && existsSync(join(fixDir, 'gbk_sample.dbf'));
@@ -160,8 +160,8 @@ report('GBK 编码 Shapefile（暴露 V-ENC-001）', gbkOk, gbkDetail);
 let cnOk = false;
 let cnDetail = '未执行';
 try {
-  runTool(gdalBin, 'ogr2ogr.exe', ['-f', 'ESRI Shapefile', '-lco', 'ENCODING=UTF-8', cnShp, geojson]);
-  const info2 = runTool(gdalBin, 'ogrinfo.exe', ['-so', '-al', cnShp]);
+  runTool(gdalBin, 'ogr2ogr', ['-f', 'ESRI Shapefile', '-lco', 'ENCODING=UTF-8', cnShp, geojson]);
+  const info2 = runTool(gdalBin, 'ogrinfo', ['-so', '-al', cnShp]);
   cnOk = /Layer SRS WKT:/.test(info2);
   cnDetail = cnOk ? '中文文件名下 .prj 仍被正确读取' : '中文文件名下未读到 SRS';
 } catch (e) {
@@ -171,7 +171,7 @@ report('中文文件名 + 中文属性（路径与编码）', cnOk, cnDetail);
 
 let gdbOk = false, gdbDetail = '未执行';
 try {
-  runTool(gdalBin, 'ogr2ogr.exe', ['-f', 'OpenFileGDB', gdb, shp]);
+  runTool(gdalBin, 'ogr2ogr', ['-f', 'OpenFileGDB', gdb, shp]);
   gdbOk = existsSync(gdb);
   gdbDetail = gdbOk ? 'sample.gdb 已生成（OpenFileGDB 内置驱动，无需 Esri SDK）' : '未生成';
 } catch (e) {
