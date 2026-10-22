@@ -8,6 +8,155 @@
 /** 图层种类：栅格底图 / 矢量要素层 */
 export type LayerKind = 'raster' | 'vector';
 
+/* ───────── 栅格编辑（③a-2） ───────── */
+
+/** 画布上的编辑工具：查看 / 画笔 / 框选 / 调色（四者互斥） */
+export type EditTool = 'view' | 'brush' | 'box' | 'levels';
+
+/** 屏幕点：地图容器内的 CSS 像素 */
+export interface ScreenPoint {
+  readonly x: number;
+  readonly y: number;
+}
+
+/** 带地理坐标的屏幕点（地图自己算好的 4326 经纬度） */
+export interface GeoScreenPoint extends ScreenPoint {
+  readonly lng: number;
+  readonly lat: number;
+}
+
+/** 当前视口快照：笔迹的屏幕宽度 → 原生像元宽度要用它换算 */
+export interface ViewportSnapshot {
+  /** EPSG:4326 的 [minX, minY, maxX, maxY] */
+  readonly bbox: readonly [number, number, number, number];
+  /** 地图画布的 CSS 像素尺寸 */
+  readonly width: number;
+  readonly height: number;
+}
+
+/** 编辑手势：地图把原始指针事件交给上层 */
+export interface EditGesture {
+  readonly phase: 'down' | 'move' | 'up';
+  readonly x: number;
+  readonly y: number;
+  readonly lng: number;
+  readonly lat: number;
+}
+
+/** 画布上正在进行的编辑预览（只用于画在覆盖层上） */
+export interface EditPreview {
+  readonly kind: 'brush' | 'box';
+  readonly points: readonly ScreenPoint[];
+  /** 画笔笔宽（屏幕像素） */
+  readonly brushWidth?: number;
+}
+
+/**
+ * 栅格坐标系的判定结果（引擎给的结论）。
+ *
+ * `is4326` 是**引擎判定的**，前端直接采信：
+ * GDAL 对同一个文件有时只给 WKT 不给 EPSG 代码，
+ * 按字符串在前端猜会漏判（漏判 = 把经纬度当成米去换算 = 画到天边去）。
+ */
+export interface RasterCrs {
+  /** 有没有坐标系信息 */
+  readonly present: boolean;
+  readonly epsg: number | null;
+  /** 如 EPSG:4326 */
+  readonly authority: string | null;
+  /** embedded / sidecar / none */
+  readonly source: string;
+  readonly wkt: string | null;
+  /** 坐标能不能直接当经纬度用 */
+  readonly is4326: boolean;
+}
+
+/** 目标栅格的原生像元网格（引擎按 GDAL 给出） */
+export interface RasterGrid {
+  readonly width: number;
+  readonly height: number;
+  /** 波段数（引擎给出，前端只用于展示与排错） */
+  readonly bandCount?: number;
+  /** GDAL 六元仿射：[originX, pixelWidth, rotX, originY, rotY, pixelHeight] */
+  readonly geotransform: readonly [number, number, number, number, number, number];
+  /** 坐标系的判定结果 */
+  readonly crs: RasterCrs;
+  /** 兼容字段（EPSG 码，可能为 null） */
+  readonly epsg?: number | null;
+}
+
+/** 原生像元矩形（左上原点，maxX / maxY 不含） */
+export interface PixelRegion {
+  readonly minX: number;
+  readonly minY: number;
+  readonly maxX: number;
+  readonly maxY: number;
+}
+
+/** 画笔遮罩：width×height 的不透明度字节（0 不着色 / 255 完全着色），base64 */
+export interface BrushMask {
+  readonly width: number;
+  readonly height: number;
+  readonly data: string;
+}
+
+/** 一条待执行的编辑操作 */
+export interface EditOp {
+  /** 操作名（raster.paint / raster.erase / raster.adjustLevels） */
+  readonly op: string;
+  readonly params: Record<string, unknown>;
+  /** 界面上的中文名（涂色 / 擦除 / 亮度对比度调整） */
+  readonly label: string;
+}
+
+/** 预演结果：只算影响面，不落盘 */
+export interface OpPreview {
+  readonly op: string;
+  readonly target: string;
+  readonly affectedPixels: number;
+  readonly totalPixels: number;
+  readonly affectedRatio: number;
+  readonly backupPath: string | null;
+  /**
+   * 备份文件名的样式（如 `底图.tff.bak.<yyyyMMdd-HHmmss>`）。
+   *
+   * 预演阶段还没有真的备份，但**叫什么名字是定死的**——
+   * 提前说出来，用户改完就知道去哪儿找原件。
+   */
+  readonly backupNamePattern?: string | null;
+  readonly verified: boolean;
+}
+
+/** 单条操作的执行结果 */
+export interface OpResult {
+  readonly index: number;
+  readonly op: string;
+  readonly ok: boolean;
+  readonly target?: string;
+  readonly unimplemented?: boolean;
+  readonly impact?: Readonly<Record<string, unknown>>;
+  readonly error?: string;
+}
+
+/** 一次执行的整体结果 */
+export interface OpExecuteResult {
+  readonly ok: boolean;
+  readonly results: readonly OpResult[];
+  /** 成功条数 */
+  readonly completed: number;
+  /** 失败条目的下标 */
+  readonly failedAt?: number;
+}
+
+/** 亮度 / 对比度参数 */
+export interface LevelsParams {
+  readonly method: 'linear-stretch' | 'gamma' | 'manual';
+  /** -1 ~ 1 */
+  readonly brightness: number;
+  /** 0 ~ 4 */
+  readonly contrast: number;
+}
+
 export interface MapLayer {
   /** 稳定 id：拼成 MapLibre 的 source / layer 名 */
   readonly id: string;

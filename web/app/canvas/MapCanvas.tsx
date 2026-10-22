@@ -35,7 +35,14 @@ import {
   type MapOptions,
 } from 'maplibre-gl';
 import { drawSheet, metersPerPixelAt, pdfScaleDenominator, type SheetLegendItem } from './sheet';
-import type { MapLayer, SelectedFeature } from './types';
+import type {
+  EditGesture,
+  EditPreview,
+  EditTool,
+  MapLayer,
+  SelectedFeature,
+  ViewportSnapshot,
+} from './types';
 
 /**
  * 空底图样式。
@@ -73,6 +80,44 @@ const HIGHLIGHT_SOURCE = 'src-selected';
 const HIGHLIGHT_FILL_LAYER = 'lyr-selected-fill';
 const HIGHLIGHT_LINE_LAYER = 'lyr-selected-line';
 
+/**
+ * 载入一张图片（带 CORS）。
+ *
+ * 必须带 crossOrigin：不带的话画布会被污染，
+ * 随后导出时的 toDataURL 会抛 SecurityError——而且报错发生在导出那一刻，
+ * 离真正的原因（这里少了 crossOrigin）十万八千里。
+ */
+function loadImageElement(url: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.crossOrigin = 'anonymous';
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error('栅格重新出图失败'));
+    image.src = url;
+  });
+}
+
+/**
+ * 等地图画完这一帧。
+ *
+ * 超时兜底：地图已经空闲时不会再触发 idle，等下去就是白等。
+ */
+function waitForIdle(map: MlMap, timeoutMs = 4000): Promise<void> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (): void => {
+      if (settled) return;
+      settled = true;
+      map.off('idle', finish);
+      window.clearTimeout(timer);
+      resolve();
+    };
+    const timer = window.setTimeout(finish, timeoutMs);
+    map.on('idle', finish);
+    map.triggerRepaint();
+  });
+}
+
 export interface MapCanvasHandle {
   /**
    * 把当前视口导出为 JPEG（data URL）。
@@ -93,6 +138,20 @@ export interface MapCanvasHandle {
    * 而视角只有地图自己知道（前端拿不到 MapLibre 的内部状态）。
    */
   getView: () => { center: [number, number]; zoom: number } | null;
+  /**
+   * 重新出图：重新请求当前视口的栅格 PNG 并等它贴到画布上。
+   *
+   * 改完栅格后必须调它，否则地图上还是旧图——用户会以为操作没生效。
+   * resolve 的时机是"新图已经画上去了"，这样紧接着导出的 PDF 才是改后的画面。
+   */
+  refresh: () => Promise<void>;
+  /**
+   * 当前视口快照（4326 的 bbox + 画布尺寸）。
+   *
+   * 笔迹的屏幕宽度要靠它换算成原生像元宽度——
+   * 前端不知道栅格的分辨率，只能从"这一屏多大"倒推。
+   */
+  getViewport: () => ViewportSnapshot | null;
 }
 
 export interface MapCanvasProps {
@@ -150,6 +209,17 @@ export interface MapCanvasProps {
   preserveViewLayerIds?: readonly string[];
   /** 点击地图上的要素时回调 */
   onSelectFeatures: (features: SelectedFeature[]) => void;
+  /**
+   * 当前编辑工具。
+   *
+   * 不是「查看」时，地图的拖拽手势交给工具（画笔 / 框选），
+   * 地图本身的平移、框选缩放、双击缩放都要让出来。
+   */
+  editTool?: EditTool;
+  /** 编辑手势回调（屏幕坐标 + 地图算好的经纬度） */
+  onEditGesture?: (gesture: EditGesture) => void;
+  /** 正在进行的编辑预览（画在覆盖层上，让用户看得见自己画到哪了） */
+  editPreview?: EditPreview | null;
 }
 
 /**
@@ -244,6 +314,9 @@ export default function MapCanvas({
   initialView,
   preserveViewLayerIds,
   onSelectFeatures,
+  editTool = 'view',
+  onEditGesture,
+  editPreview = null,
 }: MapCanvasProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const overlayRef = useRef<HTMLCanvasElement | null>(null);
@@ -270,6 +343,19 @@ export default function MapCanvas({
   const onSelectRef = useRef(onSelectFeatures);
   onSelectRef.current = onSelectFeatures;
 
+  /**
+   * 编辑相关的最新值。
+   *
+   * 地图只建一次，事件回调要读的是**那一刻**的 props，
+   * 直接用 props 会把回调重建进 map 的监听里（每次渲染都重新解绑重绑）。
+   */
+  const editToolRef = useRef(editTool);
+  editToolRef.current = editTool;
+  const onEditGestureRef = useRef(onEditGesture);
+  onEditGestureRef.current = onEditGesture;
+  const editPreviewRef = useRef(editPreview);
+  editPreviewRef.current = editPreview;
+
   /** 当前视口对应的 EPSG:4326 bbox（[minX, minY, maxX, maxY]） */
   const currentBBox = useCallback((map: MlMap): [number, number, number, number] => {
     const bounds = map.getBounds();
@@ -287,7 +373,7 @@ export default function MapCanvas({
   }, []);
 
   /** 把图面要素画到覆盖层（屏幕坐标，按 CSS 像素绘制） */
-  const drawOverlay = useCallback(() => {
+  const drawSheetOverlay = useCallback(() => {
     const map = mapRef.current;
     const overlay = overlayRef.current;
     if (!map || !overlay) return;
@@ -312,6 +398,70 @@ export default function MapCanvas({
       legend: legend(),
     });
   }, [legend]);
+
+  /**
+   * 把编辑预览画到覆盖层（笔迹 / 框选）。
+   *
+   * 画在覆盖层而不是画布里：覆盖层本来就是"贴在地图上的图面要素"，
+   * 编辑预览和它是同一类东西（临时叠加，不进数据）。
+   * 而且覆盖层是 2D 画布，画笔预览可以随手改，不必等地图重新出图。
+   */
+  const drawEditOverlay = useCallback(() => {
+    const overlay = overlayRef.current;
+    const preview = editPreviewRef.current;
+    if (!overlay) return;
+    const ctx = overlay.getContext('2d');
+    if (!ctx) return;
+    if (!preview || preview.points.length === 0) return;
+
+    const dpr = window.devicePixelRatio || 1;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.save();
+    ctx.strokeStyle = '#d9480f';
+    ctx.fillStyle = 'rgba(217, 72, 15, 0.16)';
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+
+    if (preview.kind === 'box') {
+      const a = preview.points[0];
+      const b = preview.points[preview.points.length - 1];
+      if (!a || !b) {
+        ctx.restore();
+        return;
+      }
+      const x = Math.min(a.x, b.x);
+      const y = Math.min(a.y, b.y);
+      const w = Math.abs(a.x - b.x);
+      const h = Math.abs(a.y - b.y);
+      ctx.lineWidth = 1.5;
+      ctx.fillRect(x, y, w, h);
+      ctx.strokeRect(x, y, w, h);
+    } else {
+      // 笔迹：线宽就是笔宽，所见即所得
+      ctx.lineWidth = Math.max(1, preview.brushWidth ?? 6);
+      ctx.beginPath();
+      const first = preview.points[0];
+      if (!first) {
+        ctx.restore();
+        return;
+      }
+      ctx.moveTo(first.x, first.y);
+      for (const p of preview.points.slice(1)) ctx.lineTo(p.x, p.y);
+      if (preview.points.length === 1) ctx.lineTo(first.x + 0.01, first.y);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }, []);
+
+  /**
+   * 覆盖层的统一入口：先画图面要素，再画编辑预览。
+   *
+   * 顺序不能反：图面要素会清空整块画布，画在它后面的编辑预览会被抹掉。
+   */
+  const paintOverlay = useCallback(() => {
+    drawSheetOverlay();
+    drawEditOverlay();
+  }, [drawSheetOverlay, drawEditOverlay]);
 
   /** 覆盖层尺寸跟随地图容器（含设备像素比） */
   const syncOverlaySize = useCallback(() => {
@@ -541,7 +691,7 @@ export default function MapCanvas({
     const onMoveEnd = () => {
       refreshRaster();
       syncOverlaySize();
-      drawOverlay();
+      paintOverlay();
     };
     map.on('moveend', onMoveEnd);
 
@@ -572,26 +722,100 @@ export default function MapCanvas({
     };
     map.on('click', onClick);
 
+    /**
+     * 编辑手势：画笔 / 框选要用。
+     *
+     * 事件里已经带着地图算好的经纬度（event.lngLat），
+     * 前端不用再自己反投影——自己算的话，缩放级别、投影细节都要重新对一遍，
+     * 差一点点就会画到隔壁格子去。
+     *
+     * 「查看」工具下完全不上报：地图的拖拽、点选行为必须和今天一模一样。
+     */
+    const onMouseDown = (event: MapMouseEvent) => {
+      if (editToolRef.current === 'view') return;
+      onEditGestureRef.current?.({
+        phase: 'down',
+        x: event.point.x,
+        y: event.point.y,
+        lng: event.lngLat.lng,
+        lat: event.lngLat.lat,
+      });
+    };
+    const onMouseMove = (event: MapMouseEvent) => {
+      if (editToolRef.current === 'view') return;
+      onEditGestureRef.current?.({
+        phase: 'move',
+        x: event.point.x,
+        y: event.point.y,
+        lng: event.lngLat.lng,
+        lat: event.lngLat.lat,
+      });
+    };
+    const onMouseUp = (event: MapMouseEvent) => {
+      if (editToolRef.current === 'view') return;
+      onEditGestureRef.current?.({
+        phase: 'up',
+        x: event.point.x,
+        y: event.point.y,
+        lng: event.lngLat.lng,
+        lat: event.lngLat.lat,
+      });
+    };
+    map.on('mousedown', onMouseDown);
+    map.on('mousemove', onMouseMove);
+    map.on('mouseup', onMouseUp);
+
     const observer = new ResizeObserver(() => {
       syncOverlaySize();
-      drawOverlay();
+      paintOverlay();
     });
     observer.observe(container);
 
     return () => {
       observer.disconnect();
+      map.off('mousedown', onMouseDown);
+      map.off('mousemove', onMouseMove);
+      map.off('mouseup', onMouseUp);
       map.remove();
       mapRef.current = null;
     };
-  }, [drawOverlay, refreshRaster, syncOverlaySize]);
+  }, [paintOverlay, refreshRaster, syncOverlaySize]);
 
   // 图层变化 → 同步 source / layer
   useEffect(() => {
     if (!styleReady) return;
     syncLayers();
     syncOverlaySize();
-    drawOverlay();
-  }, [styleReady, layers, syncLayers, syncOverlaySize, drawOverlay]);
+    paintOverlay();
+  }, [styleReady, layers, syncLayers, syncOverlaySize, paintOverlay]);
+
+  /**
+   * 编辑工具接管地图手势。
+   *
+   * 平移、框选缩放（Shift + 拖）、双击缩放这三个都要让出来：
+   * 不让的话，画笔一按下去地图就在动，笔迹会画到别的地方去。
+   *
+   * 滚轮缩放保留——用户常常要先把地图放大到能看清再动手。
+   */
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const editing = editTool !== 'view';
+    if (editing) {
+      map.dragPan.disable();
+      map.boxZoom.disable();
+      map.doubleClickZoom.disable();
+    } else {
+      map.dragPan.enable();
+      map.boxZoom.enable();
+      map.doubleClickZoom.enable();
+    }
+  }, [editTool]);
+
+  // 编辑预览变了 → 重画覆盖层
+  useEffect(() => {
+    drawEditOverlay();
+  }, [editPreview, drawEditOverlay]);
 
   // 矢量数据到货 → 灌进 geojson source
   useEffect(() => {
@@ -693,8 +917,8 @@ export default function MapCanvas({
 
   // 标题栏信息变了，图面要素要重画
   useEffect(() => {
-    drawOverlay();
-  }, [sheetMeta, drawOverlay]);
+    paintOverlay();
+  }, [sheetMeta, paintOverlay]);
 
   /**
    * 导出当前视口。
@@ -752,8 +976,48 @@ export default function MapCanvas({
         const center = map.getCenter();
         return { center: [center.lng, center.lat], zoom: map.getZoom() };
       },
+      refresh: async () => {
+        const map = mapRef.current;
+        if (!map) return;
+        const bbox = currentBBox(map);
+        const { width, height } = rasterSize(map);
+        const rasters = layersRef.current.filter((layer) => layer.kind === 'raster' && layer.visible);
+        await Promise.all(
+          rasters.map(async (layer) => {
+            const source = map.getSource(`src-${layer.id}`);
+            if (!source) return;
+            // 时间戳绕开浏览器缓存：不加的话拿到的还是改动前那张图
+            const url = buildRasterUrl(layer.path, {
+              width,
+              height,
+              bbox,
+              cacheBust: Date.now(),
+            });
+            const image = await loadImageElement(url);
+            const coordinates: Coordinates = [
+              [bbox[0], bbox[3]],
+              [bbox[2], bbox[3]],
+              [bbox[2], bbox[1]],
+              [bbox[0], bbox[1]],
+            ];
+            (source as ImageSource).updateImage({ image, coordinates });
+          }),
+        );
+        await waitForIdle(map);
+      },
+      getViewport: () => {
+        const map = mapRef.current;
+        if (!map) return null;
+        const bounds = map.getBounds();
+        const canvas = map.getCanvas();
+        return {
+          bbox: [bounds.getWest(), bounds.getSouth(), bounds.getEast(), bounds.getNorth()] as const,
+          width: canvas.clientWidth,
+          height: canvas.clientHeight,
+        };
+      },
     }),
-    [legend],
+    [legend, buildRasterUrl, currentBBox, rasterSize],
   );
 
   return (
