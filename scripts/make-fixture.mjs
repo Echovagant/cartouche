@@ -20,6 +20,7 @@ import { mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveGdalBin, runTool } from './lib/env.mjs';
+import { createChecklist } from './lib/checks.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const fixDir = join(root, 'fixtures');
@@ -99,8 +100,16 @@ const ck1 = checksums(info(tff, ['-checksum']));
 runTool(gdalBin, 'gdal_translate', ['-of', 'GTiff', tff, roundtrip]);
 const ck2 = checksums(info(roundtrip, ['-checksum']));
 
-const report = (name, ok, detail) =>
-  console.log(`  ${ok ? OK : BAD} ${name.padEnd(36, ' ')}${DIM}${detail}${RESET}`);
+// 校验清单：检查项逐条记录，最后由 checklist.finish() 统一决定退出码。
+// 以前这里只打印、不影响退出码，等于没有门禁（2026-10-22 修）。
+const checklist = createChecklist({
+  title: '样本生成与写回往返校验',
+  okMark: OK,
+  badMark: BAD,
+  dim: DIM,
+  reset: RESET,
+});
+const report = (name, ok, detail) => checklist.add(name, ok, detail);
 
 console.log(`\n${BOLD}样本生成与往返校验${RESET}  ${DIM}${fixDir}${RESET}\n`);
 console.log(`${BOLD}A. Esri 原始组合（.tff + .tfw + .wld + .prj）${RESET}`);
@@ -183,3 +192,6 @@ console.log(`\n  ${NOTE}关键结论：Esri 的 ".prj" 侧车对**栅格**无效
 console.log(`  ${DIM}因此写回栅格时必须把 CRS 内嵌进 GeoTIFF，并额外落一份 .prj 供 ArcGIS 使用；`);
 console.log(`  ${DIM}同时"数据体检"必须把"栅格缺少内嵌 CRS"列为阻断项——否则面积、长度、叠加全部会错。${RESET}`);
 console.log(`  ${DIM}下一步：把 fixtures/ 下这几个样本拷到装有 ArcGIS Pro 的机器上打开，确认 ArcGIS 侧也正常。${RESET}\n`);
+
+// 门禁收口：有任何一项没通过，退出码就是 1，CI 这一步直接红。
+checklist.finish();

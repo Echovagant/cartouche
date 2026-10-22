@@ -35,6 +35,8 @@ export interface ResolveGdalOptions {
   readonly pathSeparator?: string;
   /** 目标平台，默认当前平台 */
   readonly platform?: NodeJS.Platform;
+  /** 显式指定 GDAL 的 bin 目录；默认取环境变量 GDAL_BIN */
+  readonly gdalBin?: string;
 }
 
 /** 已知安装位置（按优先级） */
@@ -71,6 +73,10 @@ export function resolveGdal(options: ResolveGdalOptions = {}): GdalLocation | nu
   const separator = options.pathSeparator ?? delimiter;
   const pathValue = options.pathValue ?? process.env.PATH ?? '';
   const platform = options.platform ?? process.platform;
+  const explicit = options.gdalBin ?? process.env.GDAL_BIN ?? '';
+
+  // 显式指定（GDAL_BIN）优先：CI 里已经把它指向 conda 环境的 bin
+  if (explicit && isGdalBin(explicit)) return buildLocation(explicit, platform);
 
   const pathDirs = pathValue.split(separator).filter(Boolean);
   for (const dir of pathDirs) {

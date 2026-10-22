@@ -145,6 +145,36 @@ test('scripts/lib/env.mjs：工具名带 .exe 也能解析（Windows 写法不�
   assert.equal(resolveToolPath(bin, 'gdalinfo'), join(bin, 'gdalinfo.exe'), '基础名要能回退到 .exe');
 });
 
+test('engine：显式指定的 GDAL_BIN 优先于 PATH', () => {
+  const base = tempDir();
+  const bin = fakeLinuxGdalBin(base);
+  const relBin = asPosixShaped(bin);
+
+  const loc = resolveGdal({
+    gdalBin: relBin,
+    pathValue: '/usr/bin',
+    pathSeparator: ':',
+    platform: 'linux',
+  });
+
+  assert.equal(loc.binDir, relBin, '显式指定必须赢过 PATH 里的其它目录');
+});
+
+test('scripts/lib/env.mjs：显式指定的 GDAL_BIN 同样优先', () => {
+  const base = tempDir();
+  const bin = fakeLinuxGdalBin(base);
+  const relBin = asPosixShaped(bin);
+
+  const found = resolveGdalBin({
+    gdalBin: relBin,
+    pathValue: '/usr/bin',
+    pathSeparator: ':',
+    platform: 'linux',
+  });
+
+  assert.equal(found, relBin);
+});
+
 // ── CI 工作流本身的门禁 ───────────────────────────────────────
 
 /** 只看有效配置行，忽略注释（注释里会提到被禁用的写法本身） */
