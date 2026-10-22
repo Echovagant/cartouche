@@ -3,9 +3,9 @@
 /**
  * AI 接入页与引擎之间的全部对话。
  *
- * 为什么单独一个文件：这个页面要说的东西**只有三件** ——
- * 密钥从哪来、能用哪个模型、能不能连通。
- * 把这三件事的请求都收在一个 hook 里，页面组件就只剩界面，
+ * 为什么单独一个文件：这个页面要说的东西**只有四件** ——
+ * 密钥从哪来、能用哪个模型、能不能连通、**一句话能不能变成一份操作计划**。
+ * 把这些请求都收在一个 hook 里，页面组件就只剩界面，
  * 不会一边排版一边操心请求的成败形态。
  *
  * 密钥的三条铁律在这一层就守死：
@@ -82,6 +82,142 @@ async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
   return (await res.json()) as T;
 }
 
+/* ───────── AI 提议层（一句话 → 操作计划） ───────── */
+
+/** 一条被提议的操作 */
+export interface PlanOp {
+  readonly op: string;
+  readonly params: Record<string, unknown>;
+  readonly preconditions?: Record<string, unknown>;
+  readonly expect?: Record<string, unknown>;
+  readonly requireUserConfirm?: boolean;
+}
+
+/** 一份操作计划（与引擎的 PlanDocument 同形） */
+export interface PlanDocument {
+  readonly version: string;
+  readonly intent?: string;
+  readonly ops: readonly PlanOp[];
+}
+
+/** 闸门①：Schema 校验的问题 */
+export interface PlanSchemaIssue {
+  readonly opIndex: number | null;
+  readonly op: string | null;
+  readonly message: string;
+}
+
+/** 闸门②：引擎还没实现的 op */
+export interface UnsupportedOp {
+  readonly opIndex: number;
+  readonly op: string;
+  readonly message: string;
+}
+
+/** 闸门②：引擎前置校验的逐条结论 */
+export type PrecheckStatus = 'pass' | 'fail' | 'unimplemented' | 'unpreviewable';
+
+export interface PrecheckEntry {
+  readonly opIndex: number;
+  readonly op: string;
+  readonly status: PrecheckStatus;
+  readonly message: string | null;
+}
+
+/** 「本次将发送什么」的预览 */
+export interface ContextPreview {
+  readonly context: unknown;
+  readonly prompt: string;
+  readonly bytes: number;
+  readonly model: string | null;
+  readonly effort: string | null;
+}
+
+/** 提议层的一次返回 */
+export interface PlanPayload {
+  readonly ok: boolean;
+  /** 错误类别：llm_not_configured / llm_unauthorized / llm_unreachable / plan_schema_invalid / op_not_supported … */
+  readonly error: string | null;
+  /** 官方错误码（如 1004 = authorized_error） */
+  readonly code: number | null;
+  readonly message: string | null;
+  readonly model: string | null;
+  readonly effort: string | null;
+  readonly elapsedMs: number | null;
+  readonly plan: PlanDocument | null;
+  readonly schemaIssues: readonly PlanSchemaIssue[];
+  readonly unsupported: readonly UnsupportedOp[];
+  readonly precheck: readonly PrecheckEntry[];
+  readonly context: ContextPreview | null;
+}
+
+/**
+ * 失败的**类别**。
+ *
+ * 「连不上 MiniMax」与「密钥不对」必须分开说：前者查网络，后者换密钥，
+ * 混成一句"出错了"等于让用户自己猜。
+ */
+export type PlanFailureKind =
+  | 'not_configured'
+  | 'key'
+  | 'network'
+  | 'bad_plan'
+  | 'unsupported'
+  | 'unknown';
+
+export interface PlanFailure {
+  readonly kind: PlanFailureKind;
+  readonly message: string;
+  /** 官方错误码（如 1004） */
+  readonly code: number | null;
+}
+
+/** 把引擎返回的错误翻译成"该怎么办" */
+export function classifyPlanFailure(payload: PlanPayload): PlanFailure {
+  const message = payload.message ?? '提议失败';
+  const code = payload.code ?? null;
+  switch (payload.error) {
+    case 'llm_not_configured':
+      return { kind: 'not_configured', message, code };
+    case 'llm_unauthorized':
+      return { kind: 'key', message, code };
+    case 'llm_unreachable':
+      return { kind: 'network', message, code };
+    case 'plan_schema_invalid':
+    case 'plan_not_json':
+      return { kind: 'bad_plan', message, code };
+    case 'op_not_supported':
+      return { kind: 'unsupported', message, code };
+    default:
+      // 官方把"密钥无效"报成 1004 / authorized_error，即便类别没对上也要认出来
+      if (code === 1004 || /authorized_error|invalid api key/i.test(message)) {
+        return { kind: 'key', message, code };
+      }
+      return { kind: 'unknown', message, code };
+  }
+}
+
+/** 统一的取 JSON（失败时也要把响应体带出来：分类要看 body.error） */
+async function postJson<T>(url: string, body: unknown): Promise<{ status: number; body: T | null }> {
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    throw new Error(
+      `无法连接引擎服务 ${ENGINE_BASE}（请确认已运行 npm run dev:server）：${(err as Error).message}`,
+    );
+  }
+  try {
+    return { status: res.status, body: (await res.json()) as T };
+  } catch {
+    return { status: res.status, body: null };
+  }
+}
+
 export interface LlmApi {
   readonly status: LlmStatus | null;
   readonly statusError: string | null;
@@ -103,6 +239,28 @@ export interface LlmApi {
     readonly model: string;
     readonly effort: string;
   }) => Promise<LlmResult<LlmTestPayload>>;
+  /* ── 提议层 ── */
+  /** 最近一次提议的结果 */
+  readonly plan: PlanPayload | null;
+  /** 最近一次提议的失败（分类过，界面据此给不同的提示） */
+  readonly planFailure: PlanFailure | null;
+  /** 正在向模型要计划 */
+  readonly planBusy: boolean;
+  /** 要一份操作计划（只提议，不执行） */
+  readonly requestPlan: (options: {
+    readonly prompt: string;
+    readonly model: string;
+    readonly effort: string;
+    /** 项目根（绝对路径）；给了才会带上图层清单 */
+    readonly root?: string | null;
+  }) => Promise<PlanPayload | null>;
+  /** 「本次将发送什么」的预览（不发请求给模型） */
+  readonly fetchContextPreview: (options: {
+    readonly prompt?: string;
+    readonly model?: string;
+    readonly effort?: string;
+    readonly root?: string | null;
+  }) => Promise<ContextPreview | null>;
 }
 
 export function useLlm(): LlmApi {
@@ -112,6 +270,9 @@ export function useLlm(): LlmApi {
   const [testResult, setTestResult] = useState<LlmTestPayload | null>(null);
   const [busy, setBusy] = useState<Record<string, boolean>>({});
   const [error, setError] = useState<string | null>(null);
+  const [plan, setPlan] = useState<PlanPayload | null>(null);
+  const [planFailure, setPlanFailure] = useState<PlanFailure | null>(null);
+  const [planBusy, setPlanBusy] = useState(false);
 
   const isBusy = useCallback((key: string) => Boolean(busy[key]), [busy]);
 
@@ -203,6 +364,70 @@ export function useLlm(): LlmApi {
     [run],
   );
 
+  const requestPlan = useCallback(
+    async (options: {
+      readonly prompt: string;
+      readonly model: string;
+      readonly effort: string;
+      readonly root?: string | null;
+    }): Promise<PlanPayload | null> => {
+      setPlanBusy(true);
+      setPlanFailure(null);
+      try {
+        const { status, body } = await postJson<PlanPayload>(`${ENGINE_BASE}/api/llm/plan`, {
+          prompt: options.prompt,
+          model: options.model,
+          effort: options.effort,
+          ...(options.root ? { root: options.root } : {}),
+        });
+        if (!body) {
+          setPlanFailure({
+            kind: 'unknown',
+            message: `引擎返回了意料之外的内容（HTTP ${status}）`,
+            code: null,
+          });
+          return null;
+        }
+        setPlan(body);
+        if (!body.ok) setPlanFailure(classifyPlanFailure(body));
+        return body;
+      } catch (err) {
+        setPlanFailure({
+          kind: 'network',
+          message: (err as Error).message,
+          code: null,
+        });
+        return null;
+      } finally {
+        setPlanBusy(false);
+      }
+    },
+    [],
+  );
+
+  const fetchContextPreview = useCallback(
+    async (options: {
+      readonly prompt?: string;
+      readonly model?: string;
+      readonly effort?: string;
+      readonly root?: string | null;
+    }): Promise<ContextPreview | null> => {
+      try {
+        const { body } = await postJson<ContextPreview>(`${ENGINE_BASE}/api/llm/context-preview`, {
+          ...(options.prompt !== undefined ? { prompt: options.prompt } : {}),
+          ...(options.model !== undefined ? { model: options.model } : {}),
+          ...(options.effort !== undefined ? { effort: options.effort } : {}),
+          ...(options.root ? { root: options.root } : {}),
+        });
+        return body ?? null;
+      } catch {
+        // 预览拿不到不是致命错误：真正发送时服务端还会再裁剪一次
+        return null;
+      }
+    },
+    [],
+  );
+
   return {
     status,
     statusError,
@@ -216,5 +441,10 @@ export function useLlm(): LlmApi {
     clearKey,
     pullModels,
     testConnection,
+    plan,
+    planFailure,
+    planBusy,
+    requestPlan,
+    fetchContextPreview,
   };
 }
