@@ -1,5 +1,5 @@
 /**
- * 操作计划调度的公开 API（③a-2）。
+ * 操作计划调度的公开 API。
  */
 export {
   executePlan,

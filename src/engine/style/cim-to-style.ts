@@ -1,5 +1,5 @@
 /**
- * T32：CIM → MapLibre 渲染描述转换器。
+ * CIM → MapLibre 渲染描述转换器。
  *
  * 用途：会话转移把 ArcGIS Pro 的 `.lyrx` / `.mapx`（CIM JSON）带进来之后，
  * 用户期望"迁过来的图看起来一样"。本模块把 CIM 的三类渲染器翻译成

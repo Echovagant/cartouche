@@ -549,7 +549,7 @@
       "utterance": "这个图打开后不知道是什么坐标系，能不能查一下",
       "preconditions": {
         "datasets": ["scan.tff（GTiff 影像）", "scan.tfw（世界文件）", "scan.prj（Esri 风格坐标系）"],
-        "state": "**GTiff 驱动不会自动读同名 .prj**（M0' 已实测确认），世界文件生效但坐标系缺失",
+        "state": "**GTiff 驱动不会自动读同名 .prj**（已实测确认），世界文件生效但坐标系缺失",
         "crs": "文件里写着 CGCS2000 / 3 度带，但 GDAL 解析不出来"
       },
       "expected": {

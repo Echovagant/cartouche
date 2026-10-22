@@ -16,7 +16,7 @@ export type { HttpProjectStoreOptions } from './workspace/http-store.ts';
 export { FileHandleStore } from './workspace/file-handle-store.ts';
 export type { FileHandleStoreOptions, FileSystemAccessLike } from './workspace/file-handle-store.ts';
 
-/* ── ③a-1：项目清单（源数据原地 + .cartouche/ 旁挂目录） ── */
+/* ── 项目清单（源数据原地 + .cartouche/ 旁挂目录） ── */
 
 export {
   PROJECT_MANIFEST_VERSION,
@@ -37,7 +37,7 @@ export type {
 export { ProjectStore, PROJECT_DIR_NAME } from './project/index.ts';
 export type { ProjectOutput, ProjectHistoryEntry } from './project/index.ts';
 
-/* ── ③a-2：操作计划调度（逐条执行 · 量化影响 · 失败不回滚） ── */
+/* ── 操作计划调度（逐条执行 · 量化影响 · 失败不回滚） ── */
 
 export {
   executePlan,
@@ -114,7 +114,7 @@ export type {
   CredentialReader,
 } from './key-provider.ts';
 
-/* ── ④ AI 接入页：官方接口的最小客户端 ── */
+/* ── AI 接入页：官方接口的最小客户端 ── */
 
 export {
   listModelIds,

@@ -57,11 +57,11 @@ export interface EngineInfo {
 export const WORKSPACE_ROOT = process.env.ENGINE_WORKSPACE_ROOT ?? join(repoRoot, 'workspace');
 const store = new LocalFolderStore(WORKSPACE_ROOT);
 
-/* ── ③a-1：已登记根（默认根内置 + 用户登记的其它目录） ── */
+/* ── 已登记根（默认根内置 + 用户登记的其它目录） ── */
 const roots = new RootRegistry(WORKSPACE_ROOT);
 loadRegisteredRoots(roots);
 
-/* ── ③a-1：项目存储（清单 / 留痕 / 产出物） ── */
+/* ── 项目存储（清单 / 留痕 / 产出物） ── */
 const projects = new ProjectStore(roots);
 
 /** GDAL 运行时位置（找不到会在调用时给出可读错误） */
@@ -635,7 +635,7 @@ export function createEngineServer(): Server {
       return;
     }
 
-    /* ───────── ③a-1：已登记根与项目 ───────── */
+    /* ───────── 已登记根与项目 ───────── */
 
     if (url.pathname === '/api/workspace/roots' && req.method === 'GET') {
       json(200, { roots: roots.list() });
@@ -790,7 +790,7 @@ export function createEngineServer(): Server {
       return;
     }
 
-    /* ───────── ③a-2：操作计划调度（栅格编辑闭环） ───────── */
+    /* ───────── 操作计划调度（栅格编辑闭环） ───────── */
 
     if (url.pathname === '/api/raster/grid' && req.method === 'GET') {
       void (async () => {

@@ -44,7 +44,7 @@ const check = (name, ok, detail) => {
   if (!ok) failed = true;
 };
 
-// ③a-1 冒烟用到的临时目录（结束时清掉）
+// 冒烟用到的临时目录（结束时清掉）
 let extraRoot = null;
 let tmpProject = null;
 
@@ -274,7 +274,7 @@ try {
     void jpegRes;
   }
 
-  /* ── ③a-1：已登记根与项目清单 ── */
+  /* ── 已登记根与项目清单 ── */
   const rootsRes = await fetch(`${BASE}/api/workspace/roots`);
   const rootsJson = await rootsRes.json();
   check(
@@ -388,7 +388,7 @@ try {
     `HTTP ${outEscape.status}`,
   );
 
-  /* ── ③a-2：操作计划调度（栅格编辑闭环） ── */
+  /* ── 操作计划调度（栅格编辑闭环） ── */
   if (existsSync(fixtureRaster)) {
     const opRaster = `smoke-op-${Date.now()}.tif`;
     await copyFile(fixtureRaster, join(wsRoot, opRaster));
@@ -497,10 +497,10 @@ try {
       JSON.stringify(execJson).slice(0, 200),
     );
 
-    // 留痕要落进项目（③a-2 的"可交差"靠它）
+    // 留痕要落进项目（"可交差"靠它）
     const histAfter = await fetch(`${BASE}/api/project/history?path=${encodeURIComponent(tmpProject)}`);
     const histAfterJson = await histAfter.json();
-    // 按目标找那一条：项目里可能已经有别的 op 留下的留痕（上面 ③a-1 那条）
+    // 按目标找那一条：项目里可能已经有别的 op 留下的留痕（上面那条）
     const painted = (histAfterJson.entries ?? []).find(
       (e) => e.op === 'raster.paint' && e.target === opRaster,
     );
@@ -537,7 +537,7 @@ try {
     await rm(join(wsRoot, opRaster), { force: true });
   }
 
-  /* ── ④：AI 接入页的端点（不配密钥时的行为） ── */
+  /* ── AI 接入页的端点（不配密钥时的行为） ── */
   const llmStatus = await fetch(`${BASE}/api/llm/status`);
   const llmStatusJson = await llmStatus.json();
   check(
@@ -575,7 +575,7 @@ try {
   console.error(`  ${BAD} 冒烟测试异常: ${err.message}`);
   failed = true;
 } finally {
-  // ③a-1 的临时目录清掉，别把垃圾留在工作区与临时目录里
+  // 临时目录清掉，别把垃圾留在工作区与临时目录里
   if (tmpProject) await rm(tmpProject, { recursive: true, force: true });
   if (extraRoot) await rm(extraRoot, { recursive: true, force: true });
   await rm(smokeConfigDir, { recursive: true, force: true });

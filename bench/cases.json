@@ -938,7 +938,7 @@
         "tools": [
           "Define Projection (Data Management)"
         ],
-        "source": "M0' 实测发现：GTiff 不读同名 .prj",
+        "source": "实测发现：GTiff 不读同名 .prj",
         "steps": 1
       }
     },

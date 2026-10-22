@@ -8,7 +8,7 @@
  *   fixtures/sample.shp     Shapefile（含 UTF-8 DBF + .prj）
  *   fixtures/sample.gdb     FileGDB（OpenFileGDB 驱动）
  *
- * 本脚本同时固化 M0' V1 的实测结论：
+ * 本脚本同时固化 实测结论：
  *   1) GDAL 按内容识别 .tff（Driver=GTiff/GeoTIFF），与扩展名无关
  *   2) 同名 .tfw 世界文件会被自动关联并生效
  *   3) 同名 .prj 对**栅格无效**（.tif/.tff 均无效），但**对 Shapefile 有效**

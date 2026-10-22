@@ -12,7 +12,7 @@
  * 状态都收在这里，是为了让"屏幕上看到的"和"导出的 PDF 里的"必然一致——
  * 两边各存一份状态，是这类工具最容易出现的 bug 来源。
  *
- * ③a-1：**两态**。
+ * **两态**。
  *   - 没打开项目（projectPath === null）：只显示项目列表，不列文件、不请求路径接口；
  *   - 打开了项目：画布里的一切路径都相对**项目根**，清单自动保存，关掉再开能恢复。
  */
@@ -93,7 +93,7 @@ function downloadBlob(blob: Blob, filename: string): void {
 }
 
 export default function CanvasWorkbench() {
-  // ③a-1：项目根。
+  // 项目根。
   // **必须声明在 useEngine 之前**——useEngine 要拿它当 root（hook 调用顺序不能变）。
   const [projectPath, setProjectPath] = useState<string | null>(null);
   const [manifest, setManifest] = useState<ProjectManifest | null>(null);
@@ -500,7 +500,7 @@ export default function CanvasWorkbench() {
     setBanner(null);
   }, [activeLayer, fetchCompatReport]);
 
-  /* ───────── 栅格编辑（③a-2） ───────── */
+  /* ───────── 栅格编辑 ───────── */
 
   /**
    * 被编辑的那张栅格。
