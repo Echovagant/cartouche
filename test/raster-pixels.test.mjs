@@ -177,3 +177,121 @@ test('提亮：整幅同值（max === min）时 brightness 同样生效', () => 
   const out = adjustLevels(px, { method: 'linear-stretch', brightness: 0.2 });
   assert.ok(out[0][0] > 100, '没有值域可拉时，亮度也要能加上去');
 });
+
+/* ─────────── 16 位运算（SP-0A2：运算层按像素类型算） ─────────── */
+
+test('混合：16 位按 0..65535 算，不被压成 255', () => {
+  const base = [new Uint16Array([0, 60000])];
+  const overlay = [new Uint16Array([60000, 60000])];
+  const alpha = new Float32Array([0.5, 0.5]);
+  const out = blendBands(base, overlay, alpha, 1);
+  assert.ok(out[0] instanceof Uint16Array, '结果带必须仍是 Uint16Array，不能变成 Uint8Array');
+  assert.deepEqual([...out[0]], [30000, 60000], '16 位混合要按 0..65535 的口径算');
+});
+
+test('混合：显式指定 pixelType 时按指定类型出带', () => {
+  const base = [new Uint16Array([0])];
+  const overlay = [new Uint16Array([60000])];
+  const out = blendBands(base, overlay, new Float32Array([0.5]), 1, 'UInt16');
+  assert.ok(out[0] instanceof Uint16Array);
+  assert.equal(out[0][0], 30000);
+});
+
+test('修补：16 位的拷贝与填补都不截断', () => {
+  // 2×2 单波段，第 2 个像元（索引 1）是洞。
+  // 它的 4 邻域里已填充的是索引 0（100）与索引 3（60000），均值 30050。
+  const px = [new Uint16Array([100, 60000, 200, 60000])];
+  const out = inpaintRegion(px, 2, 2, 1, { minX: 1, minY: 0, maxX: 2, maxY: 1 }, 1);
+  assert.ok(out[0] instanceof Uint16Array, '结果带必须仍是 Uint16Array');
+  assert.equal(out[0][1], 30050, '洞里应是邻居均值 30050，不能是被截断的数');
+  assert.deepEqual([...out[0]], [100, 30050, 200, 60000], '区域外的像元要原样保留');
+});
+
+test('调色：16 位线性拉伸铺满 0..65535', () => {
+  const px = [new Uint16Array([800, 3200])];
+  const out = adjustLevels(px, { method: 'linear-stretch' });
+  assert.ok(out[0] instanceof Uint16Array, '结果带必须仍是 Uint16Array');
+  assert.deepEqual([...out[0]], [0, 65535], '拉伸要铺满 16 位的值域');
+});
+
+test('调色：16 位的 gamma 查找表覆盖整个值域', () => {
+  const px = [new Uint16Array([0, 32768, 65535])];
+  const out = adjustLevels(px, { method: 'gamma', gamma: 2.0 });
+  assert.ok(out[0] instanceof Uint16Array);
+  assert.equal(out[0][0], 0, '0 仍是 0');
+  assert.ok(out[0][1] < 32768, 'gamma>1 应压暗中间调');
+  assert.equal(out[0][2], 65535, '满值仍是满值');
+});
+
+test('类型对不上时报错（不静默截断）', () => {
+  const px = [new Uint8Array([1, 2, 3, 4])];
+  assert.throws(
+    () => inpaintRegion(px, 2, 2, 1, { minX: 0, minY: 0, maxX: 1, maxY: 1 }, 1, 'UInt16'),
+    (err) => /Byte/.test(err.message) && /UInt16/.test(err.message),
+    '错误信息里要同时出现期望类型与实际类型',
+  );
+});
+
+test('类型对不上时混合与调色也要报错', () => {
+  const b8 = [new Uint8Array([10, 20])];
+  assert.throws(
+    () => blendBands(b8, [new Uint16Array([60000, 60000])], new Float32Array([0.5, 0.5]), 1, 'UInt16'),
+    (err) => /Byte/.test(err.message) && /UInt16/.test(err.message),
+    '混合的底图/覆盖图类型必须与目标类型一致',
+  );
+  assert.throws(
+    () => adjustLevels(b8, { method: 'linear-stretch' }, 'UInt16'),
+    (err) => /Byte/.test(err.message) && /UInt16/.test(err.message),
+    '调色的波段类型必须与目标类型一致',
+  );
+});
+
+/* ─────────── 8 位行为不变（基准值取自改动前的实现） ─────────── */
+
+test('8 位混合：逐值与改动前一致', () => {
+  // 基准值来自 git HEAD 的 8 位实现，8 位链路一个像元都不许变
+  const b1 = blendBands(
+    [new Uint8Array([10, 20, 30])],
+    [new Uint8Array([200, 210, 220])],
+    new Float32Array([0, 1, 0]),
+    1,
+  );
+  assert.ok(b1[0] instanceof Uint8Array, '8 位结果带仍应是 Uint8Array');
+  assert.deepEqual([...b1[0]], [10, 210, 30]);
+
+  const b2 = blendBands([new Uint8Array([0])], [new Uint8Array([100])], new Float32Array([0.25]), 1);
+  assert.deepEqual([...b2[0]], [25]);
+
+  const b3 = blendBands([new Uint8Array([10, 20, 30])], [new Uint8Array([200, 210, 220])], new Float32Array([0.25, 0.25, 0.25]), 1);
+  assert.deepEqual([...b3[0]], [58, 68, 78]);
+});
+
+test('8 位调色：逐值与改动前一致（含对比度）', () => {
+  const cases = [
+    [[new Uint8Array([100, 110, 120, 130])], { method: 'linear-stretch' }, [0, 85, 170, 255]],
+    [[new Uint8Array([64, 128, 192])], { method: 'gamma', gamma: 2.0 }, [16, 64, 145]],
+    [[new Uint8Array([200, 250])], { method: 'linear-stretch', brightness: 1 }, [255, 255]],
+    [[new Uint8Array([0, 64, 128, 255])], { method: 'linear-stretch', brightness: 0.2 }, [51, 115, 179, 255]],
+    [[new Uint8Array([100, 100, 100])], { method: 'linear-stretch', brightness: 0.2 }, [151, 151, 151]],
+    // 带对比度这一条能验出"中心点"：改动前是 128，改动后必须仍是 128
+    [[new Uint8Array([10, 120, 200])], { method: 'linear-stretch', contrast: 1.5, brightness: 0.1 }, [0, 184, 255]],
+    [[new Uint8Array([50, 128, 200])], { method: 'manual', brightness: 0.2 }, [101, 179, 251]],
+    [[new Uint8Array([0, 32, 64, 96, 128, 160, 192, 224, 255])], { method: 'gamma', gamma: 1.8, brightness: 0.05, contrast: 1.2 }, [0, 0, 12, 40, 76, 119, 171, 230, 255]],
+    [[new Uint8Array([7, 7, 7])], { method: 'linear-stretch', contrast: 2 }, [0, 0, 0]],
+  ];
+  for (const [px, opts, expect] of cases) {
+    const out = adjustLevels(px, opts);
+    assert.ok(out[0] instanceof Uint8Array, '8 位结果带仍应是 Uint8Array');
+    assert.deepEqual([...out[0]], expect, `8 位结果不能变：${JSON.stringify(opts)}`);
+  }
+});
+
+test('8 位修补：逐值与改动前一致', () => {
+  const w = 6, h = 6;
+  const px = [new Uint8Array(w * h)];
+  px[0].fill(100);
+  for (let y = 2; y < 4; y++) for (let x = 2; x < 4; x++) px[0][y * w + x] = 0;
+  const out = inpaintRegion(px, w, h, 1, { minX: 2, minY: 2, maxX: 4, maxY: 4 }, 3);
+  assert.ok(out[0] instanceof Uint8Array, '8 位结果带仍应是 Uint8Array');
+  assert.deepEqual([...out[0]], new Array(w * h).fill(100), '8 位修补结果不能变');
+});
