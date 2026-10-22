@@ -169,6 +169,11 @@ export interface MapCanvasProps {
       height: number;
       bbox: [number, number, number, number];
       cacheBust?: number;
+      /**
+       * 栅格显示的拉伸档位。
+       * 不给 = 自动（引擎按源类型决定：8 位按原样、16 位按实际亮度）。
+       */
+      stretch?: 'auto' | 'none';
     },
   ) => string;
   /** 当前图层列表（数组顺序即叠放次序，末尾在最上） */
@@ -220,6 +225,13 @@ export interface MapCanvasProps {
   onEditGesture?: (gesture: EditGesture) => void;
   /** 正在进行的编辑预览（画在覆盖层上，让用户看得见自己画到哪了） */
   editPreview?: EditPreview | null;
+  /**
+   * 栅格显示的拉伸档位。
+   *
+   * undefined = 自动（不发参数，引擎按源类型决定）。
+   * 变了必须立刻重新出图 —— 否则用户切了档却要等平移一下才看到变化。
+   */
+  stretch?: 'auto' | 'none';
 }
 
 /**
@@ -317,6 +329,7 @@ export default function MapCanvas({
   editTool = 'view',
   onEditGesture,
   editPreview = null,
+  stretch,
 }: MapCanvasProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const overlayRef = useRef<HTMLCanvasElement | null>(null);
@@ -355,6 +368,16 @@ export default function MapCanvas({
   onEditGestureRef.current = onEditGesture;
   const editPreviewRef = useRef(editPreview);
   editPreviewRef.current = editPreview;
+
+  /**
+   * 拉伸档位的最新值。
+   *
+   * 为什么用 ref 而不是直接进 refreshRaster 的依赖数组：
+   * refreshRaster 被**建图 effect**依赖着，它的身份一变，那张地图就会被拆掉重建
+   * （白闪一次、图层重来）。档位切换必须只是换一张底图，不能动地图本身。
+   */
+  const stretchRef = useRef(stretch);
+  stretchRef.current = stretch;
 
   /** 当前视口对应的 EPSG:4326 bbox（[minX, minY, maxX, maxY]） */
   const currentBBox = useCallback((map: MlMap): [number, number, number, number] => {
@@ -511,7 +534,13 @@ export default function MapCanvas({
       if (layer.kind !== 'raster') continue;
       const source = map.getSource(`src-${layer.id}`);
       if (!source) continue;
-      const url = buildRasterUrl(layer.path, { width, height, bbox, cacheBust: Date.now() });
+      const url = buildRasterUrl(layer.path, {
+        width,
+        height,
+        bbox,
+        cacheBust: Date.now(),
+        stretch: stretchRef.current,
+      });
       const imageSource = source as ImageSource;
       // image source 的坐标约定：**从左上角开始、顺时针**（NW → NE → SE → SW）。
       // 写成 SW 开头会变成逆时针，图像会被上下颠倒。
@@ -543,7 +572,13 @@ export default function MapCanvas({
       if (layer.kind === 'raster') {
         const bbox = currentBBox(map);
         const { width, height } = rasterSize(map);
-        const url = buildRasterUrl(layer.path, { width, height, bbox, cacheBust: Date.now() });
+        const url = buildRasterUrl(layer.path, {
+          width,
+          height,
+          bbox,
+          cacheBust: Date.now(),
+          stretch: stretchRef.current,
+        });
         const coordinates: Coordinates = [
           [bbox[0], bbox[3]],
           [bbox[2], bbox[3]],
@@ -790,6 +825,17 @@ export default function MapCanvas({
   }, [styleReady, layers, syncLayers, syncOverlaySize, paintOverlay]);
 
   /**
+   * 拉伸档位变了 → 重新出图。
+   *
+   * 为什么必须在这里主动重出：栅格底图是按视口缓存成 image source 的，
+   * 不重新请求的话，用户切了档却什么都没变 —— 得平移一下才看得出差别，
+   * 很容易被当成"这个开关没用"。
+   */
+  useEffect(() => {
+    refreshRaster();
+  }, [stretch, refreshRaster]);
+
+  /**
    * 编辑工具接管地图手势。
    *
    * 平移、框选缩放（Shift + 拖）、双击缩放这三个都要让出来：
@@ -992,6 +1038,7 @@ export default function MapCanvas({
               height,
               bbox,
               cacheBust: Date.now(),
+              stretch: stretchRef.current,
             });
             const image = await loadImageElement(url);
             const coordinates: Coordinates = [

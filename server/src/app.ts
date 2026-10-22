@@ -617,12 +617,24 @@ export function createEngineServer(): Server {
           // 默认出 EPSG:4326 的图：前端 MapLibre 的 image source 是**按经纬度角点**贴图的，
           // 所以 PNG 必须是 4326 的，否则投影坐标系的栅格会与 bbox 对不上位（错开一块）。
           const targetCrs = url.searchParams.get('targetCrs') ?? 'EPSG:4326';
+          // 拉伸档位只认 auto / none。非法值必须 400，不能默默忽略 ——
+          // 默默忽略等于用户以为切了档、其实没切，是最难查的那种"静默失败"。
+          const stretchParam = url.searchParams.get('stretch');
+          if (stretchParam !== null && stretchParam !== 'auto' && stretchParam !== 'none') {
+            json(400, {
+              error: 'bad_request',
+              message: `stretch 参数只能是 auto 或 none，收到：${stretchParam}`,
+            });
+            return;
+          }
           const res = await renderRasterPng(gdalLoc, {
             path: resolveWorkspacePath(root, rel),
             width,
             height,
             targetCrs,
             ...(bbox ? { bbox } : {}),
+            // 不给 stretch 时引擎按源类型决定：8 位按原样、16 位按实际亮度。
+            ...(stretchParam ? { stretch: stretchParam as 'auto' | 'none' } : {}),
           });
           binary(200, Buffer.from(res.png));
         } catch (err) {

@@ -193,6 +193,17 @@ try {
     );
     check('非法 bbox 返回 400', badBox.status === 400, `HTTP ${badBox.status}`);
 
+    // stretch 非法值必须 400（默默忽略 = 用户以为切了档、其实没切）
+    const badStretch = await fetch(
+      `${BASE}/api/render/raster.png?path=${encodeURIComponent(rasterName)}&width=100&height=100&stretch=bogus`,
+    );
+    check('非法 stretch 返回 400', badStretch.status === 400, `HTTP ${badStretch.status}`);
+
+    const okStretch = await fetch(
+      `${BASE}/api/render/raster.png?path=${encodeURIComponent(rasterName)}&width=100&height=100&stretch=auto`,
+    );
+    check('stretch=auto 正常出图', okStretch.ok, `HTTP ${okStretch.status}`);
+
     // 兼容性自检报告
     const reportRes = await fetch(`${BASE}/api/report/compat`, {
       method: 'POST',

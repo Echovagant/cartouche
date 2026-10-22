@@ -83,6 +83,14 @@ export interface RasterUrlOptions {
   readonly bbox?: readonly [number, number, number, number];
   /** 传时间戳绕开浏览器缓存（同一视口重复出图时用） */
   readonly cacheBust?: number;
+  /**
+   * 栅格显示的拉伸档位。
+   *
+   * 不给（undefined）= 自动：引擎按源类型决定 —— 8 位按原样、16 位按实际亮度。
+   * 必须是 undefined 而不是 'auto'：直接发 auto 会把 8 位影像的显示行为也改掉
+   * （8 位现在是不拉伸的，那是既有行为，不该被这个开关顺手改掉）。
+   */
+  readonly stretch?: 'auto' | 'none';
 }
 
 export interface PdfPayload {
@@ -246,6 +254,9 @@ export function useEngine(root?: string | null): EngineApi {
         params.set('bbox', options.bbox.map((n) => n.toFixed(8)).join(','));
       }
       if (options.cacheBust !== undefined) params.set('t', String(options.cacheBust));
+      // 只在用户手动切过档时才带这个参数：「自动」态不发，
+      // 发 stretch=auto 会把 8 位影像的显示行为也改掉（既有的不拉伸）。
+      if (options.stretch) params.set('stretch', options.stretch);
       // root 必须进查询串（不是 body）：这张图是 MapLibre 用 <img> 直接拉的
       if (root) params.set('root', root);
       return `${ENGINE_BASE}/api/render/raster.png?${params.toString()}`;
