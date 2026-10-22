@@ -58,8 +58,8 @@ const EXE_SUFFIX = process.platform === 'win32' ? '.exe' : '';
 /**
  * 造一张 40x30 的 GTiff：每个像元值 = x*100 + y，便于断言。
  *
- * map info 的参考像元是 1 基的（ENVI 约定），所以参考像元取 (1.0, 1.0)、
- * 参考坐标取 (0, 30)：GDAL 读进来后整图原点正好落在 (0, 30)、像元 1x1，
+ * map info 的参考点是 1 基的像元号（ENVI 约定），所以参考点取 (1.0, 1.0)、
+ * 参考像元的位置取 (0, 30)：GDAL 读进来后整图原点正好落在 (0, 30)、像元 1x1，
  * 也就是这张图铺满 [0,40]×[0,30]。
  */
 function makeRaster(file, valueAt) {
@@ -69,7 +69,7 @@ function makeRaster(file, valueAt) {
   const bin = file.replace(/\.tif$/, '.img');
   writeFileSync(bin, data);
   writeFileSync(file.replace(/\.tif$/, '.hdr'),
-    ['ENVI','samples = 1','bands = 1','header offset = 0','file type = ENVI Standard',
+    ['ENVI','bands = 1','header offset = 0','file type = ENVI Standard',
      'data type = 1','interleave = bsq','byte order = 0',`lines = ${h}`,`samples = ${w}`,
      'header size = 0','pixel size = 1.0000000000e+000',
      'map info = {Geographic Lat/Lon, 1.0, 1.0, 0.0, 30.0, 1.0, 1.0, units=degrees}',''].join('\n'),
@@ -121,6 +121,66 @@ test('窗口读取：窗口越出整图范围时报错，不静默返回', async
       () => readRasterWindow(loc, tif, { x: 30, y: 0, w: 20, h: 10 }),
       /窗口越出栅格范围/,
     );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/* ────────── 局部覆盖合成 ────────── */
+
+/**
+ * 造一个与原图**同一像元网格**的窗口文件（北向上）。
+ *
+ * cornerX/cornerY 是窗口左上角的地理坐标；ENVI 的 map info 里
+ * 参考点取 (1,1)、像元大小 1.0，读进来后原点正好落在 (cornerX, cornerY)。
+ *
+ * ⚠️ 千万别改用 -a_ullr：那会让输出变成南向上，gdalbuildvrt 会直接拒绝。
+ */
+function makeWindowFile(file, w, h, cornerX, cornerY, value) {
+  const data = Buffer.alloc(w * h, value);
+  const bin = file.replace(/\.tif$/, '.img');
+  writeFileSync(bin, data);
+  writeFileSync(file.replace(/\.tif$/, '.hdr'),
+    ['ENVI', `samples = ${w}`, 'bands = 1', 'header offset = 0', 'file type = ENVI Standard',
+     'data type = 1', 'interleave = bsq', 'byte order = 0', `lines = ${h}`,
+     'header size = 0', 'pixel size = 1.0000000000e+000',
+     `map info = {Geographic Lat/Lon, 1.0, 1.0, ${cornerX}.0, ${cornerY}.0, 1.0, 1.0, units=degrees}`, ''].join('\n'),
+    'latin1');
+  execFileSync(gdalBin(`gdal_translate${EXE_SUFFIX}`), ['-of', 'GTiff', bin, file], { stdio: 'ignore' });
+}
+
+/** 按地理坐标探一个像元的值（-geoloc：默认是像元/行坐标，不是地理坐标） */
+function probeGeo(file, x, y) {
+  const out = execFileSync(gdalBin(`gdallocationinfo${EXE_SUFFIX}`), ['-valonly', '-geoloc', file, String(x), String(y)], { encoding: 'utf8' });
+  return out.trim().split('\n').pop();
+}
+
+test('局部覆盖：尺寸不变、窗口内被覆盖、窗口外逐像素原样', async () => {
+  const { resolveGdal } = await import(pathToFileURL(join(root, 'src', 'engine', 'gdal', 'env.ts')).href);
+  const { overlayWindowOntoRaster } = await import(eng('overlay.ts'));
+  const loc = resolveGdal();
+  assert.ok(loc, '本机需装好 GDAL');
+
+  const dir = mkdtempSync(join(tmpdir(), 'cartouche-ovl-'));
+  try {
+    // 原图：40x30，铺满 geo [0,40]x[0,30]，值 10
+    const full = join(dir, 'full.tif');
+    makeRaster(full, () => 10);
+    // 窗口：8x6，盖住 geo [4,12]x[6,12]，值 99
+    const winFile = join(dir, 'win.tif');
+    makeWindowFile(winFile, 8, 6, 4, 12, 99);
+
+    const out = join(dir, 'out.tif');
+    await overlayWindowOntoRaster(loc, full, winFile, out);
+
+    // 尺寸不变
+    const info = execFileSync(gdalBin(`gdalinfo${EXE_SUFFIX}`), ['-nomd', '-noct', out], { encoding: 'utf8' });
+    assert.match(info, /Size is 40, 30/, '输出尺寸必须与原图一致');
+
+    // 窗口内 = 99，窗口外 = 10
+    assert.equal(probeGeo(out, 6, 8), '99', '窗口内应被覆盖');
+    assert.equal(probeGeo(out, 30, 25), '10', '窗口外应原样搬运');
+    assert.equal(probeGeo(out, 2, 2), '10', '窗口外应原样搬运');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
