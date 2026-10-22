@@ -93,6 +93,40 @@ function findSidecars(path: string): {
   };
 }
 
+/**
+ * 判断这个数据集的坐标是不是**经纬度**（4326 口径）。
+ *
+ * 为什么需要这个判断：出图时引擎把栅格重投影到 4326，而 geotransform
+ * 始终是**源坐标系**的。两边不在同一个空间时，前端拿着经纬度去按
+ * geotransform 反算原生像元，位置一定是错的 —— 而且错得很像对的。
+ *
+ * 判据按可靠性从高到低：
+ *   1. EPSG 代码就是 4326；
+ *   2. WKT 里认得出 WGS 84（WKT1 的 GEOGCS["WGS 84"]、WKT2 的 GEOGCRS["WGS 84"]、
+ *      以及 "WGS_1984" 这类别名）；
+ *   3. **完全没有 CRS**：这时看 geotransform 说话 —— 像元步长是"度"量级
+ *      （小于 1）且原点落在经纬度范围内，就按 4326 处理。
+ *
+ * 第 3 条是启发式，但它和引擎出图时的约定一致（无投影就当 4326 用），
+ * 而且这类文件本来就会被体检规则 V-RCS 判为"缺坐标系"的阻断项 ——
+ * 宁可在这里按 4326 给出可用的编辑能力，也不能让工具直接瘫掉。
+ */
+export function isLongitudeLatitude(crs: CrsInfo, geotransform: readonly number[] | null): boolean {
+  if (crs.epsg === 4326) return true;
+  if (crs.authority && /^EPSG:4326$/i.test(crs.authority)) return true;
+  if (crs.wkt && /WGS[ _]?84|WGS_1984/i.test(crs.wkt)) return true;
+
+  if (crs.present) return false; // 有 CRS 但不是 4326 → 不能按经纬度换算
+
+  // 没有 CRS：按 geotransform 的形状推断
+  if (!geotransform) return false;
+  const [ox, pw, , oy] = geotransform;
+  if (ox === undefined || pw === undefined || oy === undefined) return false;
+  if (!Number.isFinite(ox) || !Number.isFinite(pw) || !Number.isFinite(oy)) return false;
+  if (Math.abs(pw) >= 1) return false; // 像元有 1 度那么大？那不是经纬度口径
+  return ox >= -180 && ox <= 180 && oy >= -90 && oy <= 90;
+}
+
 function parseCrs(raw: unknown, source: CrsInfo['source']): CrsInfo {
   if (!raw || typeof raw !== 'object') return { present: false, source: 'none' };
   const obj = raw as Record<string, unknown>;
