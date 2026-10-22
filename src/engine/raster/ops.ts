@@ -209,6 +209,10 @@ export class RasterEditor {
       width: before.width,
       height: before.height,
       bands: newBands,
+      // 类型与颜色解释都从原图带过来：写回链路要按原类型落盘，
+      // 颜色解释也必须保住，否则叠回原图时 gdalbuildvrt 会判异构而跳过窗口。
+      pixelType: before.pixelType,
+      colorInterpretation: before.colorInterpretation,
       geotransform: before.geotransform,
       crs: before.crs,
     });
@@ -445,9 +449,12 @@ function sameGeotransform(a: number[] | null, b: number[] | null): boolean {
 /**
  * 像素级编辑只认 8 位带。
  *
- * 16 位源读出来是 Uint16Array，而写回链路（ENVI 中转 + Byte 输出）目前还只支持 8 位：
- * 放行就等于把 16 位**静默截断**成 8 位 —— 数值被改坏了却没有任何提示，比报错更坏。
- * 等写侧支持 16 位（ENVI data type = 12）之后，再把这个闸门放宽。
+ * 16 位源读出来是 Uint16Array，而运算层（blend / inpaint / levels / paint）
+ * 的算法与取值范围都还是 8 位语义：放行就等于把 16 位**静默截断**成 8 位 ——
+ * 数值被改坏了却没有任何提示，比报错更坏。
+ *
+ * 写侧现在支持 16 位了（ENVI data type = 12），但这道闸门**不能跟着撤**：
+ * 要等 SP-0A2 把运算层改成按类型算之后才放宽。
  */
 function requireByteBands(px: RasterPixels): readonly Uint8Array[] {
   return px.bands.map((band) => {

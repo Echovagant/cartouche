@@ -17,9 +17,12 @@ import type { GdalLocation } from '../gdal/env.ts';
 import { windowGeotransform, type RasterFrame, type RasterWindow } from './window.ts';
 import {
   BYTES_PER_SAMPLE,
+  clampSample,
   decodeSample,
   newBand,
   pixelTypeFromGdal,
+  pixelTypeOf,
+  readSample,
   writeSample,
   type PixelBand,
   type PixelType,
@@ -257,6 +260,84 @@ export async function readRasterPixels(
   };
 }
 
+/**
+ * ENVI 头的 `data type` 编号 → 本引擎的像素类型（写侧用）。
+ *
+ * 1 = Byte、12 = UInt16。**2 是 Int16，不是 UInt16** ——
+ * 写错的话 GDAL 会按有符号 16 位解释，值 >= 32768 的像元全变成负数。
+ */
+const ENVI_WRITE_DATA_TYPE: Readonly<Record<PixelType, number>> = Object.freeze({
+  Byte: 1,
+  UInt16: 12,
+});
+
+/**
+ * GDAL 的颜色解释名 → gdal_translate `-colorinterp` 认的值。
+ *
+ * 用白名单而不是原样透传：拼错的值 gdal_translate 会直接报错退出，
+ * 但它的报错只有一句 "Invalid value"，看不出是哪个波段写错了。
+ */
+const COLOR_INTERP_BY_NAME: Readonly<Record<string, string>> = Object.freeze({
+  undefined: 'undefined',
+  gray: 'gray',
+  palette: 'palette',
+  red: 'red',
+  green: 'green',
+  blue: 'blue',
+  alpha: 'alpha',
+  hue: 'hue',
+  saturation: 'saturation',
+  lightness: 'lightness',
+  cyan: 'cyan',
+  magenta: 'magenta',
+  yellow: 'yellow',
+  black: 'black',
+});
+
+/**
+ * 决定要传给 gdal_translate 的颜色解释。
+ *
+ * 为什么必须显式给：ENVI 中转**不带颜色解释**，窗口文件读回来是 Undefined，
+ * 而原图是 Red/Green/Blue —— 两者异构时 gdalbuildvrt 会直接把那个窗口跳过，
+ * 灰度 / RGB 影像于是整个不可用（实测）。
+ *
+ * 单波段还有个坑：`-colorinterp undefined` 在单波段上**不生效**（出来仍是 Gray），
+ * 所以单波段只能显式给 gray，不能靠 undefined。
+ *
+ * 给了却对不上（个数与波段数不符、或名字不认识）一律报错：
+ * 颜色解释错了必须当场炸掉 —— 默默按默认猜一个，等于把调用方的意图丢掉，
+ * 窗口照样会被 gdalbuildvrt 跳过，而现场什么线索都没有。
+ */
+function resolveColorInterp(
+  requested: readonly string[] | undefined,
+  bandCount: number,
+): string[] {
+  // 没给（或给的是空数组）才按波段数猜：1 → gray、3 → rgb。
+  // 猜出来的值必须是 GDAL 真正认的拼写，否则 gdal_translate 会直接失败。
+  if (!requested || requested.length === 0) {
+    return bandCount === 1 ? ['gray'] : (bandCount === 3 ? ['red', 'green', 'blue'] : []);
+  }
+  if (requested.length !== bandCount) {
+    throw new Error(
+      `颜色解释的个数（${requested.length}）与波段数（${bandCount}）对不上：` +
+      `每个波段要一个颜色解释`,
+    );
+  }
+  const out: string[] = [];
+  for (const name of requested) {
+    const key = name.trim().toLowerCase();
+    const mapped = COLOR_INTERP_BY_NAME[key];
+    if (!mapped) {
+      throw new Error(
+        `无法识别的颜色解释「${name}」：gdal_translate 只认 ` +
+        `${Object.keys(COLOR_INTERP_BY_NAME).join(' / ')}`,
+      );
+    }
+    out.push(mapped);
+  }
+  return out;
+}
+
 /** 把原始像素写成 GeoTIFF（保留仿射参数与坐标系） */
 export async function writeRasterPixels(
   loc: GdalLocation,
@@ -264,7 +345,11 @@ export async function writeRasterPixels(
   pixels: {
     readonly width: number;
     readonly height: number;
-    readonly bands: readonly Uint8Array[];
+    readonly bands: readonly PixelBand[];
+    /** 像素类型：8 位还是 16 位。必须与 bands 的实际类型一致 */
+    readonly pixelType: PixelType;
+    /** 每个波段的颜色解释；缺省按波段数猜（1 → gray，3 → rgb） */
+    readonly colorInterpretation?: readonly string[];
     readonly geotransform: readonly number[] | null;
     readonly crs: string | null;
   },
@@ -273,14 +358,32 @@ export async function writeRasterPixels(
   const bandCount = pixels.bands.length;
   if (!bandCount) throw new Error('没有可写入的波段');
 
+  // 类型标签与实际的带必须一致：声明 UInt16 而带其实是 Uint8Array 时，
+  // 按 2 字节宽度写出去的是**错位的数据** —— 读回来是垃圾，而且全程不报错。
+  for (const band of pixels.bands) {
+    const actual = pixelTypeOf(band);
+    if (actual !== pixels.pixelType) {
+      throw new Error(`像素类型与像素带不一致：声明的是 ${pixels.pixelType}，实际拿到的是 ${actual}。`);
+    }
+  }
+
   const tmp = mkdtempSync(join(tmpdir(), 'cartouche-write-'));
   const bin = join(tmp, 'out.bin');
   const hdr = join(tmp, 'out.hdr');
 
-  // 写成 BIP（像元交错），并附 ENVI 头
-  const raw = new Uint8Array(pixels.width * pixels.height * bandCount);
+  // 写成 BIP（像元交错），并附 ENVI 头。
+  // 裸数据按**类型对应的字节宽度**写：16 位就是 16 位交错。
+  // 字节序用小端（byte order = 0），与 GDAL 自己写出来的 ENVI 一致。
+  const bytesPerSample = BYTES_PER_SAMPLE[pixels.pixelType];
+  const raw = new Uint8Array(pixels.width * pixels.height * bandCount * bytesPerSample);
+  const view = new DataView(raw.buffer);
   for (let i = 0; i < pixels.width * pixels.height; i++) {
-    for (let b = 0; b < bandCount; b++) raw[i * bandCount + b] = pixels.bands[b]![i]!;
+    for (let b = 0; b < bandCount; b++) {
+      const v = clampSample(readSample(pixels.bands[b]!, i), pixels.pixelType);
+      const off = (i * bandCount + b) * bytesPerSample;
+      if (bytesPerSample === 2) view.setUint16(off, v, true);
+      else raw[off] = v;
+    }
   }
   writeFileSync(bin, raw);
   writeFileSync(
@@ -292,7 +395,7 @@ export async function writeRasterPixels(
       `bands   = ${bandCount}`,
       'header offset = 0',
       'file type = ENVI Standard',
-      'data type = 1',
+      `data type = ${ENVI_WRITE_DATA_TYPE[pixels.pixelType]}`,
       'interleave = bip',
       'byte order = 0',
       '',
@@ -300,7 +403,17 @@ export async function writeRasterPixels(
     'utf8',
   );
 
-  const args = ['-of', 'GTiff', '-ot', 'Byte'];
+  // -ot 必须按类型给：这一步是整条链路最关键的一处 ——
+  // ENVI 头就算写了 data type = 12，最后这一步 `-ot Byte` 也会把值压成 255
+  // （退出码 0、stderr 空，实测 GDAL 3.13.3）。
+  const args = ['-of', 'GTiff', '-ot', pixels.pixelType === 'UInt16' ? 'UInt16' : 'Byte'];
+  // ENVI 中转不带颜色解释，窗口读回来会是 Undefined，
+  // 与原图的 Red/Green/Blue 异构 -> gdalbuildvrt 直接跳过窗口。
+  // -colorinterp 只能给一次，值用逗号分隔。
+  const ci = resolveColorInterp(pixels.colorInterpretation, bandCount);
+  if (ci.length) {
+    args.push('-colorinterp', ci.join(','));
+  }
   const gt = pixels.geotransform;
   if (gt && gt.length >= 6) {
     const originX = gt[0] ?? 0;

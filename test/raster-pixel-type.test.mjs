@@ -224,8 +224,23 @@ async function loadRaw() {
   const { resolveGdal } = await import(srcEng('gdal/env.ts'));
   const loc = resolveGdal();
   assert.ok(loc, '本机需装好 GDAL');
-  const { readRasterPixels, readRasterWindow, readEnviBands, checksumOf } = await import(eng('raw.ts'));
-  return { loc, readRasterPixels, readRasterWindow, readEnviBands, checksumOf };
+  const { readRasterPixels, readRasterWindow, readEnviBands, checksumOf, writeRasterPixels } =
+    await import(eng('raw.ts'));
+  return { loc, readRasterPixels, readRasterWindow, readEnviBands, checksumOf, writeRasterPixels };
+}
+
+/**
+ * 读 gdalinfo -json 里的波段类型与颜色解释。
+ *
+ * 走 tools(loc).info 而不是自己拼命令行：可执行文件后缀随平台走
+ * （Windows 是 .exe，Linux 没有），写死 .exe 的测试在 CI 的 ubuntu-latest 上会找不到命令。
+ */
+async function bandInfo(loc, file) {
+  const { tools } = await import(srcEng('gdal/runner.ts'));
+  const res = await tools(loc).info(file, ['-json']);
+  assert.ok(res.ok, `gdalinfo 失败：${res.stderr}`);
+  const info = JSON.parse(res.stdout);
+  return info.bands.map((b) => ({ type: b.type, colorInterpretation: b.colorInterpretation }));
 }
 
 test('读 16 位：像素值逐个保真，不被静默压成 255', async () => {
@@ -423,6 +438,206 @@ test('ENVI 字节序：大端（byte order = 1）与小端读出同一个值', a
       const bands = readEnviBands(img, 2, 2, 1);
       assert.deepEqual([...bands[0]], values, `byte order = ${byteOrder} 读出的值不对`);
     }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/* ────────── 写侧保真：16 位写回去还是 16 位，颜色解释也保住 ────────── */
+
+/** 写回用的仿射参数：北向上、像元 1x1 */
+const GT = [0, 1, 0, 2, 0, -1];
+
+test('写 16 位：往返逐个相等，类型不丢成 Byte', async () => {
+  const { loc, readRasterPixels, writeRasterPixels } = await loadRaw();
+  const dir = mkdtempSync(join(tmpdir(), 'cartouche-w16-'));
+  try {
+    const tif = join(dir, 'u16.tif');
+    const values = [60000, 60001, 60002, 60003, 60004, 60005];
+    await writeRasterPixels(loc, tif, {
+      width: 3,
+      height: 2,
+      bands: [Uint16Array.from(values)],
+      pixelType: 'UInt16',
+      geotransform: GT,
+      crs: null,
+    });
+
+    const px = await readRasterPixels(loc, tif);
+    assert.equal(px.pixelType, 'UInt16', '写出去的 16 位必须还是 16 位');
+    assert.ok(px.bands[0] instanceof Uint16Array, '16 位必须读成 Uint16Array');
+    assert.deepEqual([...px.bands[0]], values, '60000 不能在写回时被压成 255');
+
+    const bands = await bandInfo(loc, tif);
+    assert.equal(bands[0].type, 'UInt16', 'gdalinfo 必须报 UInt16');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('写 8 位：往返的校验和与改动前的算法一致', async () => {
+  const { loc, readRasterPixels, writeRasterPixels } = await loadRaw();
+  const dir = mkdtempSync(join(tmpdir(), 'cartouche-w8-'));
+  try {
+    const tif = join(dir, 'u8.tif');
+    const band = Uint8Array.from([10, 20, 30, 40, 50, 60]);
+    await writeRasterPixels(loc, tif, {
+      width: 3,
+      height: 2,
+      bands: [band],
+      pixelType: 'Byte',
+      geotransform: GT,
+      crs: null,
+    });
+
+    const px = await readRasterPixels(loc, tif);
+    assert.equal(px.pixelType, 'Byte');
+    // 改动前的算法：整条带直接进哈希。8 位路径必须得到同一个值
+    const legacy = createHash('sha256').update(band).digest('hex');
+    assert.equal(px.checksum, legacy, '8 位路径的校验和不能变');
+    assert.deepEqual([...px.bands[0]], [...band], '8 位的值也不能变');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('写回：类型标签与实际像素带不一致时报错', async () => {
+  const { loc, writeRasterPixels } = await loadRaw();
+  const dir = mkdtempSync(join(tmpdir(), 'cartouche-wmis-'));
+  try {
+    const tif = join(dir, 'bad.tif');
+    await assert.rejects(
+      () => writeRasterPixels(loc, tif, {
+        width: 2,
+        height: 1,
+        // 声明 16 位，实际给的是 8 位带：按 2 字节宽度写出去就是错位的数据
+        bands: [new Uint8Array([1, 2])],
+        pixelType: 'UInt16',
+        geotransform: GT,
+        crs: null,
+      }),
+      (err) => {
+        assert.match(err.message, /UInt16/, '错误信息要带上声明的类型');
+        assert.match(err.message, /Byte/, '错误信息要带上实际拿到的类型');
+        return true;
+      },
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('写回：3 波段的颜色解释保住 Red/Green/Blue', async () => {
+  const { loc, writeRasterPixels } = await loadRaw();
+  const dir = mkdtempSync(join(tmpdir(), 'cartouche-wci-'));
+  try {
+    const tif = join(dir, 'rgb.tif');
+    await writeRasterPixels(loc, tif, {
+      width: 2,
+      height: 2,
+      bands: [
+        Uint8Array.from([10, 11, 12, 13]),
+        Uint8Array.from([20, 21, 22, 23]),
+        Uint8Array.from([30, 31, 32, 33]),
+      ],
+      pixelType: 'Byte',
+      colorInterpretation: ['Red', 'Green', 'Blue'],
+      geotransform: GT,
+      crs: null,
+    });
+
+    const bands = await bandInfo(loc, tif);
+    assert.deepEqual(
+      bands.map((b) => b.colorInterpretation),
+      ['Red', 'Green', 'Blue'],
+      'ENVI 中转不带颜色解释，不显式给就会丢成 Undefined',
+    );
+
+    // 缺省时按波段数猜：3 波段 → rgb
+    const tif2 = join(dir, 'rgb-default.tif');
+    await writeRasterPixels(loc, tif2, {
+      width: 2,
+      height: 2,
+      bands: [
+        Uint8Array.from([10, 11, 12, 13]),
+        Uint8Array.from([20, 21, 22, 23]),
+        Uint8Array.from([30, 31, 32, 33]),
+      ],
+      pixelType: 'Byte',
+      geotransform: GT,
+      crs: null,
+    });
+    const bands2 = await bandInfo(loc, tif2);
+    assert.deepEqual(
+      bands2.map((b) => b.colorInterpretation),
+      ['Red', 'Green', 'Blue'],
+      '缺省时 3 波段必须猜成 rgb',
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('写回：单波段的颜色解释是 Gray 而不是 Undefined', async () => {
+  const { loc, writeRasterPixels } = await loadRaw();
+  const dir = mkdtempSync(join(tmpdir(), 'cartouche-wgray-'));
+  try {
+    const tif = join(dir, 'gray.tif');
+    await writeRasterPixels(loc, tif, {
+      width: 2,
+      height: 2,
+      bands: [Uint8Array.from([1, 2, 3, 4])],
+      pixelType: 'Byte',
+      geotransform: GT,
+      crs: null,
+    });
+
+    const bands = await bandInfo(loc, tif);
+    assert.equal(bands[0].colorInterpretation, 'Gray', '单波段必须显式给 gray');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('写回：颜色解释拼错或对不上时报错，不默默按默认猜', async () => {
+  const { loc, writeRasterPixels } = await loadRaw();
+  const dir = mkdtempSync(join(tmpdir(), 'cartouche-wci-bad-'));
+  try {
+    const tif = join(dir, 'bad.tif');
+    // 名字不认识
+    await assert.rejects(
+      () => writeRasterPixels(loc, tif, {
+        width: 2,
+        height: 2,
+        bands: [Uint8Array.from([1, 2, 3, 4])],
+        pixelType: 'Byte',
+        colorInterpretation: ['Reddish'],
+        geotransform: GT,
+        crs: null,
+      }),
+      (err) => {
+        assert.match(err.message, /Reddish/, '错误信息要带上拼错的那个名字');
+        return true;
+      },
+    );
+
+    // 个数与波段数对不上：默默按默认猜等于把调用方的意图丢掉
+    await assert.rejects(
+      () => writeRasterPixels(loc, tif, {
+        width: 2,
+        height: 2,
+        bands: [Uint8Array.from([1, 2, 3, 4])],
+        pixelType: 'Byte',
+        colorInterpretation: ['Red', 'Green', 'Blue'],
+        geotransform: GT,
+        crs: null,
+      }),
+      (err) => {
+        assert.match(err.message, /颜色解释/, '错误信息要说明是颜色解释的问题');
+        assert.match(err.message, /波段数/, '错误信息要点明波段数');
+        return true;
+      },
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
