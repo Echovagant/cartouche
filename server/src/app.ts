@@ -40,6 +40,7 @@ import {
   type PlanExecutionResult,
 } from '@cartouche/engine';
 import { llmStatus, llmModels, llmTest, currentApiKey, scrub, setSessionApiKey } from './llm.ts';
+import { buildContextPreview, createPlan } from './llm-plan.ts';
 import { loadRegisteredRoots, registerRoot } from './roots.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -292,6 +293,50 @@ async function recordOperations(
   }
 }
 
+/**
+ * 读项目清单，凑成 AI 提议层的**原始**上下文。
+ *
+ * 清单里只有图层（id / kind / path / visible / opacity）；
+ * 字段名、字段类型、要素数量、坐标系标识由引擎用 GDAL 探查后补齐
+ * （见 `llm-plan.ts` 的 enrichContext）—— 补的是元数据，不是数据本身。
+ *
+ * 读不到清单（根没登记、项目还没建）就当空项目：提议层照常可用，
+ * 只是模型看不到图层而已，不该因此整个请求失败。
+ */
+async function manifestContext(root: string | null): Promise<unknown> {
+  if (!root) return { projectName: '', layers: [] };
+  try {
+    const m = await projects.readManifest(root);
+    if (!m) return { projectName: '', layers: [] };
+    return { projectName: m.name, layers: m.layers };
+  } catch {
+    return { projectName: '', layers: [] };
+  }
+}
+
+/**
+ * 提议层的结果 → HTTP 状态码。
+ *
+ * 业务失败也要带得清楚：密钥没配 / 密钥失效 / 计划不合法 / 操作尚不支持，
+ * 这四件事的处理方式完全不同，不能一律 200 让界面自己猜。
+ */
+function statusForPlan(error: string | null): number {
+  switch (error) {
+    case null:
+      return 200;
+    case 'llm_not_configured':
+      return 400;
+    case 'llm_unauthorized':
+      return 401;
+    case 'plan_schema_invalid':
+    case 'op_not_supported':
+    case 'plan_not_json':
+      return 422;
+    default:
+      return 502;
+  }
+}
+
 export function createEngineServer(): Server {
   return createServer((req, res) => {
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
@@ -465,6 +510,88 @@ export function createEngineServer(): Server {
           json(200, { ok: true, ...result });
         } catch (err) {
           json(502, { error: 'llm_test_failed', message: scrub((err as Error).message) });
+        }
+      })();
+      return;
+    }
+
+    /* ───────── AI 提议层：一句话 → 操作计划（只提议，不执行） ───────── */
+
+    // 「本次将发送什么」的预览：用户按下发送之前就该看到裁剪后的上下文。
+    // 裁剪规则写在 llm-plan.ts 里，这里只是把它算出来的结果端出去。
+    if (url.pathname === '/api/llm/context-preview' && (req.method === 'GET' || req.method === 'POST')) {
+      void (async () => {
+        try {
+          const body = (
+            req.method === 'POST'
+              ? JSON.parse((await readBody(req)).toString('utf8') || '{}')
+              : {}
+          ) as {
+            context?: unknown;
+            prompt?: string;
+            model?: string;
+            effort?: string;
+            root?: string;
+          };
+          const root = body.root ?? url.searchParams.get('root');
+          const context = body.context ?? (await manifestContext(root ?? null));
+          const preview = await buildContextPreview({
+            context,
+            prompt: body.prompt ?? url.searchParams.get('prompt') ?? '',
+            model: body.model ?? url.searchParams.get('model') ?? undefined,
+            effort: body.effort ?? url.searchParams.get('effort') ?? undefined,
+            root: root ?? null,
+          });
+          json(200, preview);
+        } catch (err) {
+          const bad = err instanceof PathEscapeError ? 400 : 500;
+          json(bad, {
+            error: bad === 400 ? 'bad_request' : 'internal',
+            message: scrub((err as Error).message),
+          });
+        }
+      })();
+      return;
+    }
+
+    // 提议一份操作计划：模型只出计划，**这里不执行任何改动**。
+    if (url.pathname === '/api/llm/plan' && req.method === 'POST') {
+      void (async () => {
+        try {
+          const body = JSON.parse((await readBody(req)).toString('utf8') || '{}') as {
+            prompt?: string;
+            model?: string;
+            effort?: string;
+            context?: unknown;
+            root?: string;
+          };
+          const root = body.root ?? null;
+          const context = body.context ?? (await manifestContext(root));
+          const result = await createPlan({
+            prompt: body.prompt ?? '',
+            model: body.model,
+            effort: body.effort,
+            context,
+            root,
+            // 闸门②的引擎前置校验：交给引擎自己判（GDAL + 调度器）
+            precheck: gdalLoc
+              ? async (spec) => {
+                  const prepared = prepareOps(root, [spec]);
+                  const record = await previewOp(
+                    { loc: gdalLoc, store: prepared.store },
+                    prepared.ops[0]!,
+                  );
+                  return {
+                    ok: record.ok,
+                    error: record.error ?? null,
+                    unimplemented: record.unimplemented === true,
+                  };
+                }
+              : undefined,
+          });
+          json(statusForPlan(result.error), result);
+        } catch (err) {
+          json(500, { error: 'internal', message: scrub((err as Error).message) });
         }
       })();
       return;
