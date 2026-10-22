@@ -114,6 +114,27 @@ export type {
   CredentialReader,
 } from './key-provider.ts';
 
+/* ── ④ AI 接入页：官方接口的最小客户端 ── */
+
+export {
+  listModelIds,
+  chatOnce,
+  extractErrorMessage,
+  parseModelIds,
+  parseChatReply,
+  pickModelsAfterFailure,
+  MinimaxApiError,
+} from './llm/minimax-api.ts';
+export type {
+  MinimaxFetch,
+  MinimaxResponseLike,
+  MinimaxRequestInit,
+  MinimaxCallOptions,
+  MinimaxChatResult,
+  ModelsSource,
+  ModelsOutcome,
+} from './llm/minimax-api.ts';
+
 /* ── S5：样式转换 / 兼容性报告 / 出图 ── */
 
 export {
