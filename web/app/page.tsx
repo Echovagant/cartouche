@@ -141,6 +141,12 @@ export default function Home() {
             >
               交付物
             </a>
+            <a
+              href="ai.html"
+              className="hidden rounded-full px-3 py-1.5 text-[13px] text-ink-2 transition-colors hover:text-ink sm:block"
+            >
+              AI 接入
+            </a>
             <MagneticLink
               href="canvas.html"
               className="rounded-full bg-accent px-4 py-2 text-[13px] font-medium text-paper shadow-lift transition-colors hover:bg-accent-deep"
