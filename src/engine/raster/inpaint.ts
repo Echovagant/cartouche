@@ -5,18 +5,39 @@
  * 做法：从区域边界开始，逐层用已填充邻居的均值向内推进。
  * 对扫描件上的小污点、折痕通常够用；大面积缺失会明显发糊——
  * 这种场景应改用 raster.replaceRegion 从干净底图取像素。
+ *
+ * 按像素类型算：16 位影像的拷贝与填补都按 0..65535 走，
+ * 不会被 `Uint8Array.from` 逐元素截断成 255。
  */
 import { isInside, type PixelRegion } from './mask.ts';
+import {
+  pixelTypeOf,
+  writeSample,
+  type PixelBand,
+  type PixelType,
+} from './pixels.ts';
 
 export function inpaintRegion(
-  bands: readonly Uint8Array[],
+  bands: readonly PixelBand[],
   width: number,
   height: number,
   bandCount: number,
   region: PixelRegion,
   iterations = 8,
-): Uint8Array[] {
-  const out = bands.map((b) => Uint8Array.from(b));
+  pixelType?: PixelType,
+): PixelBand[] {
+  const type = pixelType ?? (bands[0] ? pixelTypeOf(bands[0]) : 'Byte');
+  const out = bands.map((b) => {
+    const actual = pixelTypeOf(b);
+    if (actual !== type) {
+      throw new Error(`像素带类型不一致：期望 ${type}，实际 ${actual}。`);
+    }
+    // 同类型逐元素拷贝：`Uint8Array.from(b)` 对 16 位带是**逐元素截断**，
+    // 65535 会被写成 255 —— 值被改坏了却看不出来。
+    return type === 'UInt16'
+      ? Uint16Array.from(b as Uint16Array)
+      : Uint8Array.from(b as Uint8Array);
+  });
   const total = width * height;
 
   // 待填充像元：区域内
@@ -55,7 +76,8 @@ export function inpaintRegion(
           if (!band) continue;
           let sum = 0;
           for (const n of neigh) sum += band[n]!;
-          band[idx] = Math.round(sum / neigh.length);
+          // 均值按目标类型落盘：钳位与取整交给 writeSample
+          writeSample(band, idx, sum / neigh.length, type);
         }
         nextFilled[idx] = 1;
         nextPending[idx] = 0;

@@ -17,7 +17,12 @@ import type { GdalLocation } from '../gdal/env.ts';
 import { replaceFileAtomically } from '../gdal/writeback.ts';
 import type { WorkspaceAdapter } from '../workspace/index.ts';
 import { readRasterPixels, writeRasterPixels, checksumOf, type RasterPixels } from './raw.ts';
-import { pixelTypeOf } from './pixels.ts';
+import {
+  MAX_SAMPLE,
+  readSample,
+  writeSample,
+  type PixelBand,
+} from './pixels.ts';
 import {
   buildAlphaMask,
   geoToPixelRegion,
@@ -122,6 +127,14 @@ function parseColor(color: string | readonly number[]): [number, number, number]
   return [color[0] ?? 0, color[1] ?? 0, color[2] ?? 0];
 }
 
+/**
+ * 像素级编辑按影像的像素类型走：8 位按 0..255，16 位按 0..65535。
+ *
+ * 运算层（blend / inpaint / levels / paint）已经改成按类型算，
+ * 所以这里不再拦 16 位源 —— 拦着的话 16 位影像就只能看不能改。
+ * 类型对不上的情况由运算层自己报错（比如拿 8 位底图去混 16 位覆盖图），
+ * 错误信息里带着两个类型名，不做静默截断。
+ */
 export class RasterEditor {
   readonly #loc: GdalLocation;
   readonly #store: WorkspaceAdapter;
@@ -171,7 +184,7 @@ export class RasterEditor {
   async #applyPixels(
     op: string,
     target: string,
-    mutate: (px: RasterPixels) => Uint8Array[],
+    mutate: (px: RasterPixels) => PixelBand[],
     options?: { readonly dryRun?: boolean },
   ): Promise<RasterOpResult> {
     const before = await this.#read(target);
@@ -312,7 +325,7 @@ export class RasterEditor {
     return this.#applyPixels(
       'raster.replaceRegion',
       req.target,
-      (px) => blendBands(requireByteBands(px), requireByteBands(source), alpha, px.bandCount),
+      (px) => blendBands(px.bands, source.bands, alpha, px.bandCount, px.pixelType),
       options,
     );
   }
@@ -323,7 +336,7 @@ export class RasterEditor {
     return this.#applyPixels(
       'raster.inpaint',
       req.target,
-      (px) => inpaintRegion(requireByteBands(px), px.width, px.height, px.bandCount, req.region, iterations),
+      (px) => inpaintRegion(px.bands, px.width, px.height, px.bandCount, req.region, iterations, px.pixelType),
       options,
     );
   }
@@ -337,7 +350,7 @@ export class RasterEditor {
         ...(req.contrast !== undefined ? { contrast: req.contrast } : {}),
         ...(req.gamma !== undefined ? { gamma: req.gamma } : {}),
       };
-      return adjustLevels(requireByteBands(px), levels);
+      return adjustLevels(px.bands, levels, px.pixelType);
     }, options);
   }
 
@@ -345,15 +358,26 @@ export class RasterEditor {
   async paint(req: PaintRequest, options?: { readonly dryRun?: boolean }): Promise<RasterOpResult> {
     const parsed = parseColor(req.color);
     return this.#applyPixels('raster.paint', req.target, (px) => {
-      const bands = requireByteBands(px);
+      const type = px.pixelType;
+      const maxValue = MAX_SAMPLE[type];
       let rgb: [number, number, number];
       if (parsed === 'sample-from-edge') {
+        // 取色是从本图上取的，天然就是本图口径（16 位图上就是 0..65535），不用放大
         rgb = sampleEdgeColor(px, req.region) ?? [0, 0, 0];
       } else {
-        rgb = parsed;
+        // 取色器给的是 8 位口径的 RGB。16 位影像上按比例放大到 0..65535，
+        // 否则涂上去的颜色只有 8 位量级，在 16 位图上几乎看不出来（等于没涂）。
+        rgb = [
+          (parsed[0] * maxValue) / 255,
+          (parsed[1] * maxValue) / 255,
+          (parsed[2] * maxValue) / 255,
+        ];
       }
-      return bands.map((band, b) => {
-        const out = Uint8Array.from(band);
+      return px.bands.map((band, b) => {
+        // 复制原值：`Uint8Array.from` 对 16 位带是逐元素截断，65535 会变成 255
+        const out = type === 'UInt16'
+          ? Uint16Array.from(band as Uint16Array)
+          : Uint8Array.from(band as Uint8Array);
         const value = rgb[Math.min(b, 2)]!;
         for (let y = 0; y < px.height; y++) {
           for (let x = 0; x < px.width; x++) {
@@ -364,8 +388,8 @@ export class RasterEditor {
               const a = maskAlphaAtRegion(req.mask, req.region, x, y);
               if (a <= 0) continue;
               const idx = y * px.width + x;
-              const old = out[idx] ?? 0;
-              out[idx] = Math.round(old + (value - old) * a);
+              const old = readSample(out, idx);
+              writeSample(out, idx, old + (value - old) * a, type);
             }
           }
         }
@@ -444,27 +468,6 @@ function sameGeotransform(a: number[] | null, b: number[] | null): boolean {
     if (Math.abs(a[i]! - b[i]!) > 1e-9) return false;
   }
   return true;
-}
-
-/**
- * 像素级编辑只认 8 位带。
- *
- * 16 位源读出来是 Uint16Array，而运算层（blend / inpaint / levels / paint）
- * 的算法与取值范围都还是 8 位语义：放行就等于把 16 位**静默截断**成 8 位 ——
- * 数值被改坏了却没有任何提示，比报错更坏。
- *
- * 写侧现在支持 16 位了（ENVI data type = 12），但这道闸门**不能跟着撤**：
- * 要等 SP-0A2 把运算层改成按类型算之后才放宽。
- */
-function requireByteBands(px: RasterPixels): readonly Uint8Array[] {
-  return px.bands.map((band) => {
-    if (!(band instanceof Uint8Array)) {
-      throw new Error(
-        `像素级编辑暂不支持 ${pixelTypeOf(band)} 影像：当前只支持 8 位（Byte）影像`,
-      );
-    }
-    return band;
-  });
 }
 
 /** 从区域外沿取一个像元的颜色 */
