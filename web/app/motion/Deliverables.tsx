@@ -19,9 +19,12 @@ import { FilePdfIcon, ShieldCheckIcon, StackIcon } from '@phosphor-icons/react';
 /** 干净数据文件：属性表 + 备份条 */
 function FilePreview() {
   return (
-    <div className="font-mono text-[10.5px] leading-[1.5]">
-      <div className="mb-2 flex items-center gap-2 text-paper/45">
-        <span className="text-accent">▸</span> scan-2024.tff + .tfw + .prj
+    <div className="font-mono text-[11px] leading-[1.5]">
+      <div className="mb-2 flex items-center gap-2 text-paper/70">
+        <span aria-hidden="true" className="text-accent-lit">
+          ▸
+        </span>{' '}
+        scan-2024.tff + .tfw + .prj
       </div>
       <div className="rounded border border-paper/10">
         {[
@@ -33,12 +36,12 @@ function FilePreview() {
             key={k}
             className="flex justify-between border-b border-paper/8 px-2.5 py-1.5 last:border-b-0"
           >
-            <span className="text-paper/45">{k}</span>
+            <span className="text-paper/70">{k}</span>
             <span className="text-paper/80">{v}</span>
           </div>
         ))}
       </div>
-      <div className="mt-2 text-accent/80">备份 scan-2024.tff.20261021-1052.bak 已生成</div>
+      <div className="mt-2 text-accent-lit">备份 scan-2024.tff.20261021-1052.bak 已生成</div>
     </div>
   );
 }
@@ -55,13 +58,13 @@ function SheetPreview() {
         stroke="#1c1a16"
         strokeOpacity="0.22"
       />
-      <path d="M60 40l84-9 8 58-88 7z" fill="#2f6f5e" fillOpacity="0.18" stroke="#2f6f5e" strokeOpacity="0.55" />
+      <path d="M60 40l84-9 8 58-88 7z" fill="#2f6f5e" fillOpacity="0.18" stroke="#2f6f5e" strokeOpacity="0.8" />
       <rect x="196" y="88" width="104" height="42" fill="#fff" stroke="#1c1a16" strokeOpacity="0.3" />
       <line x1="196" y1="102" x2="300" y2="102" stroke="#1c1a16" strokeOpacity="0.2" />
       <text x="204" y="99" fontSize="8" fontFamily="ui-sans-serif, sans-serif" fill="#1c1a16" fillOpacity="0.7">
         图签 Cartouche 出图
       </text>
-      <text x="204" y="116" fontSize="7" fontFamily="ui-monospace, monospace" fill="#1c1a16" fillOpacity="0.45">
+      <text x="204" y="116" fontSize="7" fontFamily="ui-monospace, monospace" fill="#1c1a16" fillOpacity="0.72">
         2026-10-21 · 张三
       </text>
       <rect x="24" y="116" width="26" height="5" fill="#1c1a16" fillOpacity="0.7" />
@@ -86,15 +89,15 @@ function ReportPreview() {
     ['6. 量化摘要', '未发现阻断', false],
   ] as const;
   return (
-    <div className="font-mono text-[10.5px] leading-[1.5]">
-      <div className="mb-1.5 text-paper/45">兼容性自检报告 · scan-2024.tff</div>
+    <div className="font-mono text-[11px] leading-[1.5]">
+      <div className="mb-1.5 text-paper/70">兼容性自检报告 · scan-2024.tff</div>
       {rows.map(([k, v, bad]) => (
         <div
           key={k}
           className="flex items-center justify-between border-b border-paper/8 py-0.5 last:border-b-0"
         >
-          <span className="text-paper/50">{k}</span>
-          <span className={bad ? 'text-warn' : 'text-accent'}>{v}</span>
+          <span className="text-paper/70">{k}</span>
+          <span className={bad ? 'text-warn-lit' : 'text-accent-lit'}>{v}</span>
         </div>
       ))}
     </div>
@@ -169,21 +172,21 @@ export function Deliverables() {
           >
             <div className="mb-6 flex items-center gap-3">
               <span className="grid h-10 w-10 place-items-center rounded-full bg-paper/10 text-paper">
-                <Icon size={19} weight="duotone" />
+                <Icon aria-hidden="true" size={19} weight="duotone" />
               </span>
-              <span className="font-mono text-[11px] tracking-[0.16em] text-paper/50 uppercase">
+              <span className="font-mono text-[11px] tracking-[0.16em] text-paper/75 uppercase">
                 {item.tag}
               </span>
             </div>
             <h3 className="font-display text-[21px] leading-snug font-semibold tracking-tight text-paper">
               {item.title}
             </h3>
-            <p className="mt-3 max-w-[38ch] text-[14.5px] leading-relaxed text-paper/65">
+            <p className="mt-3 max-w-[38ch] text-[14.5px] leading-relaxed text-paper/80">
               {item.body}
             </p>
 
             {/* 交付物的示意缩略：让卡片说的是"具体的东西"，不是抽象描述 */}
-            <div className="mt-7 h-48 shrink-0 overflow-hidden rounded-lg border border-paper/12 bg-ink/55 p-4">
+            <div className="mt-7 h-52 shrink-0 overflow-hidden rounded-lg border border-paper/12 bg-ink/55 p-4">
               {item.preview}
             </div>
 
@@ -192,7 +195,7 @@ export function Deliverables() {
               {item.meta.map((m) => (
                 <li
                   key={m}
-                  className="rounded-full border border-paper/15 px-2.5 py-1 font-mono text-[11.5px] text-paper/60"
+                  className="rounded-full border border-paper/15 px-2.5 py-1 font-mono text-[11.5px] text-paper/70"
                 >
                   {m}
                 </li>

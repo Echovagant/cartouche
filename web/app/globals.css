@@ -66,7 +66,10 @@
 
   --color-ink: #1c1a16;
   --color-ink-2: #4a463d;
-  --color-ink-3: #7c7668;
+  /* 次级说明文字。#7c7668 在纸面(#f4f1ea)上只有 4.01:1、在 surface(#fcfaf5)上
+     4.33:1，都差 WCAG AA 的 4.5:1 一截；压深到 #6f695c 之后是 4.83 / 5.23:1，
+     色相与暖调不变。 */
+  --color-ink-3: #6f695c;
   --color-ink-4: #a49d8c;
 
   --color-line: #e2dbcb;
@@ -75,9 +78,14 @@
   --color-accent: #2f6f5e;
   --color-accent-deep: #245549;
   --color-accent-soft: #e7efec;
+  /* 深墨底（bg-ink #1c1a16）上的强调色：墨绿 #2f6f5e 压在深底上只有 2.76:1，
+     读不了。深底改用同一色相亮一档，纸面底仍然用 --color-accent。 */
+  --color-accent-lit: #4fa88b;
 
   --color-warn: #a6552f;
   --color-warn-soft: #fbeee8;
+  /* 深墨底上的警示色，同上 */
+  --color-warn-lit: #d08a5e;
   --color-amber: #a8874f;
 
   /* 制图室的**运行时**色阶：画布（canvas）用。
@@ -189,11 +197,18 @@
 }
 
 @layer components {
-  /* 液态玻璃面板：backdrop-blur 之外还要有 1px 内描边和内阴影才像真的玻璃 */
+  /* 液态玻璃面板：backdrop-blur 之外还要有 1px 内描边和内阴影才像真的玻璃。
+
+     ⚠ 声明顺序不能改：**前缀在前、标准属性在后**。
+     反过来写（标准在前、前缀在后）时，Lightning CSS 会把后写的前缀声明
+     当作同一条声明的"覆盖版本"，在压缩阶段把标准属性直接裁掉，
+     产物里只剩 -webkit-backdrop-filter —— 而 Chrome 并不认这个名字
+     （它只是老 Safari 的别名），于是玻璃的模糊整个失效，内容直接透过导航条。
+     Tailwind 自己的 backdrop-blur-* 工具类之所以没事，正是因为它就是这个顺序。 */
   .glass {
     background: color-mix(in srgb, var(--color-surface) 72%, transparent);
-    backdrop-filter: blur(14px) saturate(1.25);
     -webkit-backdrop-filter: blur(14px) saturate(1.25);
+    backdrop-filter: blur(14px) saturate(1.25);
     border: 1px solid rgb(255 255 255 / 0.55);
     box-shadow:
       inset 0 1px 0 rgb(255 255 255 / 0.75),

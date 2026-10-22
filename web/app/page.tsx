@@ -207,19 +207,23 @@ export default function Home() {
 
       <main className="w-full max-w-full overflow-x-hidden">
         {/* ── 导航：悬浮玻璃药丸 ── */}
+        {/* 药丸永远单行：flex-nowrap + 靠断点"藏条目"腾空间，不靠折行
+            （折行会把药丸撑成两行高，视觉上塌掉）。
+            断点安排：标语 / 分隔线 / AI 入口一律 lg 起步 —— 640–1023px
+            那一段若同时显示，所需宽度超过药丸可用宽度，会把 CTA 顶出去。 */}
         <header className="fixed inset-x-0 top-0 z-50 px-4 pt-4 sm:px-6">
-          <nav className="glass mx-auto flex max-w-6xl items-center gap-3 rounded-full px-4 py-2.5 sm:px-5">
+          <nav className="glass mx-auto flex max-w-6xl flex-nowrap items-center gap-3 rounded-full px-3.5 py-2.5 sm:px-5">
             <Link
               href="./"
               className="flex shrink-0 items-center gap-2.5 text-[13.5px] font-medium tracking-tight whitespace-nowrap text-ink"
             >
               <span className="grid h-7 w-7 place-items-center rounded-full bg-accent text-paper">
-                <CompassIcon size={15} weight="bold" />
+                <CompassIcon aria-hidden="true" size={15} weight="bold" />
               </span>
               图签 Cartouche
             </Link>
-            <span className="hidden h-4 w-px bg-line-2 sm:block" />
-            <span className="hidden font-mono text-[12px] tracking-wide whitespace-nowrap text-ink-2 sm:block">
+            <span className="hidden h-4 w-px bg-line-2 lg:block" />
+            <span className="hidden font-mono text-[12px] tracking-wide whitespace-nowrap text-ink-2 lg:block">
               本机运行的出图工具
             </span>
             <span className="flex-1" />
@@ -237,7 +241,7 @@ export default function Home() {
             ))}
             <a
               href="ai.html"
-              className="hidden items-center gap-1.5 rounded-full px-3 py-1.5 text-[13px] whitespace-nowrap text-ink-2 transition-colors hover:text-ink sm:inline-flex"
+              className="hidden items-center gap-1.5 rounded-full px-3 py-1.5 text-[13px] whitespace-nowrap text-ink-2 transition-colors hover:text-ink lg:inline-flex"
             >
               AI 接入
               <span
@@ -272,7 +276,7 @@ export default function Home() {
             >
               改一处图斑，
               <br className="sm:hidden" />
-              不必先学一整套 ArcGIS
+              改前先看清，改后能退回
             </h1>
 
             <p
@@ -280,7 +284,7 @@ export default function Home() {
               className="mx-auto mt-7 max-w-[58ch] text-pretty text-[17px] leading-relaxed text-ink-2"
             >
               装在你自己电脑上，打开放图件的文件夹。画一笔、确认一下，
-              <span className="text-ink">原图件就地改好</span>，ArcGIS 照常打开。
+              <span className="text-ink">原图件就地改好</span>，格式与坐标系原样保留。
               改了什么、动了多少、备份在哪，都写在动手之前。
             </p>
 
@@ -291,6 +295,7 @@ export default function Home() {
               >
                 看三步怎么跑起来
                 <ArrowRightIcon
+                  aria-hidden="true"
                   size={16}
                   weight="bold"
                   className="transition-transform duration-300 group-hover:translate-x-1"
@@ -298,7 +303,7 @@ export default function Home() {
               </MagneticLink>
               <MagneticLink
                 href="canvas.html"
-                className="inline-flex items-center gap-2 rounded-full border border-line-2 bg-surface px-6 py-3 text-[14.5px] font-medium whitespace-nowrap text-ink transition-colors hover:border-ink-4"
+                className="inline-flex items-center gap-2 rounded-full border border-ink-3 bg-surface px-6 py-3 text-[14.5px] font-medium whitespace-nowrap text-ink transition-colors hover:border-ink-2"
               >
                 直接打开画布
               </MagneticLink>
@@ -403,7 +408,7 @@ export default function Home() {
                         dark ? 'bg-paper/12 text-paper' : 'bg-accent-soft text-accent'
                       }`}
                     >
-                      <Icon size={19} weight="duotone" />
+                      <Icon aria-hidden="true" size={19} weight="duotone" />
                     </div>
                     <p
                       className={`font-mono text-[11px] tracking-[0.16em] uppercase ${
@@ -517,7 +522,7 @@ export default function Home() {
               {/* 能改 */}
               <div className="rounded-panel border border-accent/40 bg-accent-soft/45 p-6">
                 <div className="flex items-center gap-2">
-                  <CheckCircleIcon size={17} weight="fill" className="text-accent" />
+                  <CheckCircleIcon aria-hidden="true" size={17} weight="fill" className="text-accent" />
                   <h3 className="font-display text-[17px] font-semibold text-ink">
                     能改 · 原样写回
                   </h3>
@@ -539,7 +544,10 @@ export default function Home() {
               {/* 只读栅格 */}
               <div className="rounded-panel border border-line bg-surface p-6 shadow-lift">
                 <div className="flex items-center gap-2">
-                  <span className="grid h-[17px] w-[17px] place-items-center rounded-full border border-ink-4 text-[10px] leading-none text-ink-3">
+                  <span
+                    aria-hidden="true"
+                    className="grid h-[17px] w-[17px] place-items-center rounded-full border border-ink-4 text-[10px] leading-none text-ink-3"
+                  >
                     ○
                   </span>
                   <h3 className="font-display text-[17px] font-semibold text-ink">
@@ -563,7 +571,10 @@ export default function Home() {
               {/* 只读矢量 */}
               <div className="rounded-panel border border-line bg-surface p-6 shadow-lift">
                 <div className="flex items-center gap-2">
-                  <span className="grid h-[17px] w-[17px] place-items-center rounded-full border border-ink-4 text-[10px] leading-none text-ink-3">
+                  <span
+                    aria-hidden="true"
+                    className="grid h-[17px] w-[17px] place-items-center rounded-full border border-ink-4 text-[10px] leading-none text-ink-3"
+                  >
                     ○
                   </span>
                   <h3 className="font-display text-[17px] font-semibold text-ink">
@@ -614,9 +625,10 @@ export default function Home() {
                     href="https://github.com/Echovagant/cartouche/releases"
                     className="group inline-flex items-center gap-2 rounded-full bg-paper px-6 py-3 text-[14.5px] font-semibold whitespace-nowrap text-ink shadow-lift transition-colors hover:bg-accent hover:text-paper"
                   >
-                    <DownloadSimpleIcon size={16} weight="bold" />
+                    <DownloadSimpleIcon aria-hidden="true" size={16} weight="bold" />
                     下载
                     <ArrowRightIcon
+                      aria-hidden="true"
                       size={16}
                       weight="bold"
                       className="transition-transform duration-300 group-hover:translate-x-1"
@@ -624,9 +636,9 @@ export default function Home() {
                   </MagneticLink>
                   <MagneticLink
                     href="https://github.com/Echovagant/cartouche"
-                    className="inline-flex items-center gap-2 rounded-full border border-paper/25 px-6 py-3 text-[14.5px] font-medium whitespace-nowrap text-paper transition-colors hover:border-paper/60"
+                    className="inline-flex items-center gap-2 rounded-full border border-paper/50 px-6 py-3 text-[14.5px] font-medium whitespace-nowrap text-paper transition-colors hover:border-paper/70"
                   >
-                    <GitBranchIcon size={16} weight="bold" />
+                    <GitBranchIcon aria-hidden="true" size={16} weight="bold" />
                     源码
                   </MagneticLink>
                 </div>
@@ -714,7 +726,7 @@ export default function Home() {
           <div className="grid grid-cols-2 gap-8 sm:grid-cols-4 lg:grid-cols-6">
             <div className="col-span-2">
               <span className="flex items-center gap-2 text-ink">
-                <MapTrifoldIcon size={16} weight="duotone" className="text-accent" />
+                <MapTrifoldIcon aria-hidden="true" size={16} weight="duotone" className="text-accent" />
                 <span className="font-display text-[15px] font-semibold">图签 Cartouche</span>
               </span>
               <p className="mt-3 max-w-[34ch] text-[12.5px] leading-relaxed text-ink-3">
