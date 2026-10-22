@@ -17,6 +17,7 @@ import type { GdalLocation } from '../gdal/env.ts';
 import { replaceFileAtomically } from '../gdal/writeback.ts';
 import type { WorkspaceAdapter } from '../workspace/index.ts';
 import { readRasterPixels, writeRasterPixels, checksumOf, type RasterPixels } from './raw.ts';
+import { pixelTypeOf } from './pixels.ts';
 import {
   buildAlphaMask,
   geoToPixelRegion,
@@ -307,7 +308,7 @@ export class RasterEditor {
     return this.#applyPixels(
       'raster.replaceRegion',
       req.target,
-      (px) => blendBands(px.bands, source.bands, alpha, px.bandCount),
+      (px) => blendBands(requireByteBands(px), requireByteBands(source), alpha, px.bandCount),
       options,
     );
   }
@@ -318,7 +319,7 @@ export class RasterEditor {
     return this.#applyPixels(
       'raster.inpaint',
       req.target,
-      (px) => inpaintRegion(px.bands, px.width, px.height, px.bandCount, req.region, iterations),
+      (px) => inpaintRegion(requireByteBands(px), px.width, px.height, px.bandCount, req.region, iterations),
       options,
     );
   }
@@ -332,7 +333,7 @@ export class RasterEditor {
         ...(req.contrast !== undefined ? { contrast: req.contrast } : {}),
         ...(req.gamma !== undefined ? { gamma: req.gamma } : {}),
       };
-      return adjustLevels(px.bands, levels);
+      return adjustLevels(requireByteBands(px), levels);
     }, options);
   }
 
@@ -340,13 +341,14 @@ export class RasterEditor {
   async paint(req: PaintRequest, options?: { readonly dryRun?: boolean }): Promise<RasterOpResult> {
     const parsed = parseColor(req.color);
     return this.#applyPixels('raster.paint', req.target, (px) => {
+      const bands = requireByteBands(px);
       let rgb: [number, number, number];
       if (parsed === 'sample-from-edge') {
         rgb = sampleEdgeColor(px, req.region) ?? [0, 0, 0];
       } else {
         rgb = parsed;
       }
-      return px.bands.map((band, b) => {
+      return bands.map((band, b) => {
         const out = Uint8Array.from(band);
         const value = rgb[Math.min(b, 2)]!;
         for (let y = 0; y < px.height; y++) {
@@ -438,6 +440,24 @@ function sameGeotransform(a: number[] | null, b: number[] | null): boolean {
     if (Math.abs(a[i]! - b[i]!) > 1e-9) return false;
   }
   return true;
+}
+
+/**
+ * 像素级编辑只认 8 位带。
+ *
+ * 16 位源读出来是 Uint16Array，而写回链路（ENVI 中转 + Byte 输出）目前还只支持 8 位：
+ * 放行就等于把 16 位**静默截断**成 8 位 —— 数值被改坏了却没有任何提示，比报错更坏。
+ * 等写侧支持 16 位（ENVI data type = 12）之后，再把这个闸门放宽。
+ */
+function requireByteBands(px: RasterPixels): readonly Uint8Array[] {
+  return px.bands.map((band) => {
+    if (!(band instanceof Uint8Array)) {
+      throw new Error(
+        `像素级编辑暂不支持 ${pixelTypeOf(band)} 影像：当前只支持 8 位（Byte）影像`,
+      );
+    }
+    return band;
+  });
 }
 
 /** 从区域外沿取一个像元的颜色 */
