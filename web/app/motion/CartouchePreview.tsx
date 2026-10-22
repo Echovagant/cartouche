@@ -77,7 +77,7 @@ export function CartouchePreview() {
           图签 Cartouche 出图
         </text>
         <text x="952" y="614" fontFamily="ui-monospace, monospace" fontSize="12" fill="#1c1a16" fillOpacity="0.42">
-          2026-10-21 · 操作人 韦安
+          2026-10-21 · 操作人 张三
         </text>
         <text x="952" y="646" fontFamily="ui-monospace, monospace" fontSize="12" fill="#1c1a16" fillOpacity="0.42">
           CGCS2000 / 3° 带

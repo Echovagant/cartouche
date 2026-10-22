@@ -62,7 +62,7 @@ function SheetPreview() {
         图签 Cartouche 出图
       </text>
       <text x="204" y="116" fontSize="7" fontFamily="ui-monospace, monospace" fill="#1c1a16" fillOpacity="0.45">
-        2026-10-21 · 韦安
+        2026-10-21 · 张三
       </text>
       <rect x="24" y="116" width="26" height="5" fill="#1c1a16" fillOpacity="0.7" />
       <rect x="50" y="116" width="26" height="5" fill="none" stroke="#1c1a16" strokeOpacity="0.7" />

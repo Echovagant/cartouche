@@ -22,7 +22,7 @@ test('清单：新建的项目有版本、名字与空图层', () => {
 test('清单：序列化后再解析，内容不变', () => {
   const m = {
     ...newManifest('2026改图', '2026-10-21T08:00:00.000Z'),
-    sheet: { title: '出图', operator: '韦安', page: 'A4-portrait', dpi: 300 },
+    sheet: { title: '出图', operator: '张三', page: 'A4-portrait', dpi: 300 },
     layers: [{ id: 'l1', kind: 'raster', path: '扫描件.tff', visible: true, opacity: 0.8 }],
     view: { center: [120.31, 30.53], zoom: 14.2 },
     operations: [{ at: '2026-10-21T09:00:00.000Z', op: 'raster.paint', target: '扫描件.tff', ok: true }],
@@ -118,7 +118,7 @@ test('清单：往返不丢字段（含 view / impact / operations）', () => {
   const m = {
     ...newManifest('往返', '2026-10-21T08:00:00.000Z'),
     updatedAt: '2026-10-21T09:00:00.000Z',
-    sheet: { title: '出图', operator: '韦安', page: 'A4-portrait', dpi: 300 },
+    sheet: { title: '出图', operator: '张三', page: 'A4-portrait', dpi: 300 },
     layers: [
       { id: 'l1', kind: 'raster', path: 'a.tff', visible: true, opacity: 0.8 },
       { id: 'l2', kind: 'vector', path: 'b/图.tff', visible: false, opacity: 0 },
