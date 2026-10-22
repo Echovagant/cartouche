@@ -1,14 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm, readFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const { resolveGdal } = await import(pathToFileURL(join(root, 'src', 'engine', 'gdal', 'env.ts')).href);
-const { tools } = await import(pathToFileURL(join(root, 'src', 'engine', 'gdal', 'runner.ts')).href);
+const { tools, runTool } = await import(pathToFileURL(join(root, 'src', 'engine', 'gdal', 'runner.ts')).href);
 const { renderRasterPng, readPngSize, buildPdfFromJpeg, inspectPdf, vectorToGeoJson, PdfBuildError } =
   await import(pathToFileURL(join(root, 'src', 'engine', 'export', 'index.ts')).href);
 
@@ -231,5 +231,259 @@ test('PDF 封装：PdfBuildError 是可辨识的错误类型', () => {
     assert.fail('应当抛错');
   } catch (err) {
     assert.ok(err instanceof PdfBuildError);
+  }
+});
+
+/* ────────── 16 位影像的显示拉伸（stretch 开关） ────────── */
+
+/**
+ * 造一张 ENVI 裸文件再转成 GTiff。
+ *
+ * ENVI 的 data type：1=Byte、12=UInt16。
+ * map info 的前两个数是**1 基的参考像元号**，后两个是参考像元的地图坐标 ——
+ * 写错 GDAL 会把图当南向上或整体偏移（raster-window.test.mjs 里的 helper 同此约定）。
+ *
+ * 转 GTiff 时用 -a_srs 钉死坐标系：ENVI 头里没有显式 CRS，GDAL 会自己挑一个
+ * （实测会挑到 GDA94 一族，于是重投影时落到 MGA zone 55 的 650 万米假东移上）。
+ */
+async function makeEnvifile(file, { width, height, dataType = 1, pixel = 1, cornerX = 0, cornerY = null, valueAt }) {
+  const bytesPerSample = dataType === 12 ? 2 : 1;
+  const data = Buffer.alloc(width * height * bytesPerSample);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const off = (y * width + x) * bytesPerSample;
+      const v = valueAt(x, y);
+      if (bytesPerSample === 2) data.writeUInt16LE(v, off);
+      else data[off] = v;
+    }
+  }
+  const top = cornerY ?? height * pixel;
+  const bin = file.replace(/\.tif$/, '.img');
+  writeFileSync(bin, data);
+  writeFileSync(
+    file.replace(/\.tif$/, '.hdr'),
+    [
+      'ENVI', `samples = ${width}`, 'bands = 1', 'header offset = 0', 'file type = ENVI Standard',
+      `data type = ${dataType}`, 'interleave = bsq', 'byte order = 0', `lines = ${height}`,
+      'header size = 0', `pixel size = ${pixel.toExponential(10)}`,
+      // 参考像元取 (1,1)、其地图坐标取左上角 → 读进来后整图原点正好落在 (cornerX, top)
+      `map info = {Geographic Lat/Lon, 1.0, 1.0, ${cornerX}, ${top}, ${pixel}, ${pixel}, units=degrees}`,
+      '',
+    ].join('\n'),
+    'latin1',
+  );
+  const res = await gdal.translate(['-of', 'GTiff', '-a_srs', 'EPSG:4326', bin, file]);
+  assert.ok(res.ok, `造夹具失败（${file}）：${res.stderr}`);
+  return file;
+}
+
+/** 读出栅格的实际地理范围（bbox 约定是 [minX, minY, maxX, maxY]） */
+async function extentOf(file) {
+  const res = await gdal.info(file, ['-json']);
+  assert.ok(res.ok, `gdalinfo 失败：${res.stderr}`);
+  const j = JSON.parse(res.stdout);
+  const gt = j.geoTransform;
+  const [w, h] = j.size;
+  return { minX: gt[0], maxX: gt[0] + gt[1] * w, maxY: gt[3], minY: gt[3] + gt[5] * h };
+}
+
+/** 读一个像元的值（gdallocationinfo 默认是像元/行坐标，不是地理坐标） */
+async function probe(file, x, y) {
+  const res = await runTool(loc, `gdallocationinfo${loc.exeSuffix}`, ['-valonly', file, String(x), String(y)]);
+  assert.ok(res.ok, `gdallocationinfo 失败：${res.stderr}`);
+  return Number(res.stdout.trim().split(/\s+/)[0]);
+}
+
+/** PNG 的波段类型（Byte / UInt16） */
+async function pngBandType(png) {
+  const dir = await mkdtemp(join(tmpdir(), 'cartouche-png-'));
+  try {
+    const file = join(dir, 'out.png');
+    writeFileSync(file, png);
+    const res = await gdal.info(file, ['-json']);
+    assert.ok(res.ok, `gdalinfo 失败：${res.stderr}`);
+    return JSON.parse(res.stdout).bands?.[0]?.type;
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+/** 16 位夹具：左半 0..1000、右半 2000..3000（整幅值域 0..3000） */
+const U16_VALUE = (x) => (x < 32 ? Math.round((x * 1000) / 31) : 2000 + Math.round(((x - 32) * 1000) / 31));
+
+test('渲染栅格：8 位源不给 stretch 时命令与改动前一致，且产物逐字节相同', async () => {
+  const res = await renderRasterPng(loc, { path: rasterFixture, width: 320, height: 240 });
+  // 默认路径不能多出任何换算参数
+  assert.ok(!res.command.includes('-scale'), `默认路径不该带 -scale：${res.command.join(' ')}`);
+  assert.ok(!res.command.includes('-ot'), `默认路径不该带 -ot：${res.command.join(' ')}`);
+  assert.equal(res.command[0], 'gdal_translate');
+  assert.deepEqual(res.command.slice(1, 4), ['-of', 'PNG', '-outsize']);
+
+  // 与手工跑一遍改动前那条命令的产物逐字节比对：默认路径一个字节都没多写
+  const dir = await mkdtemp(join(tmpdir(), 'cartouche-ref-'));
+  try {
+    const ref = join(dir, 'ref.png');
+    const r = await gdal.translate(['-of', 'PNG', '-outsize', '320', '240', rasterFixture, ref]);
+    assert.ok(r.ok, `参照命令失败：${r.stderr}`);
+    const refBytes = new Uint8Array(await readFile(ref));
+    assert.equal(res.png.length, refBytes.length);
+    assert.ok(res.png.every((b, i) => b === refBytes[i]), '默认路径的产物应与改动前的命令逐字节一致');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+
+  const size = readPngSize(res.png);
+  assert.ok(size, '应产出合法 PNG');
+  assert.equal(size.width, 320);
+  assert.equal(size.height, 240);
+});
+
+test('渲染栅格：16 位源不给 stretch 时按这一窗口的实际值域拉伸，铺满 0~255', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'cartouche-u16-'));
+  try {
+    const tif = join(dir, 'u16.tif');
+    await makeEnvifile(tif, {
+      width: 64, height: 64, dataType: 12, pixel: 0.0001, cornerX: 120, cornerY: 30.64,
+      valueAt: (x) => U16_VALUE(x),
+    });
+    const ext = await extentOf(tif);
+    // 只取左半窗口：这一窗口自己的值域是 0..1000，整幅却是 0..3000
+    const bbox = [ext.minX, ext.minY, (ext.minX + ext.maxX) / 2, ext.maxY];
+
+    const res = await renderRasterPng(loc, { path: tif, width: 64, height: 64, bbox });
+    assert.equal(await pngBandType(res.png), 'Byte', '16 位源的底图必须是 8 位');
+
+    // 拉伸用的是窗口自己的值域（0~1000），不是整幅的 0~3000
+    const i = res.command.indexOf('-scale');
+    assert.ok(i > 0, `应带 -scale：${res.command.join(' ')}`);
+    assert.equal(res.command[i + 1], '0');
+    assert.equal(res.command[i + 2], '1000');
+
+    const file = join(dir, 'out.png');
+    writeFileSync(file, res.png);
+    assert.equal(await probe(file, 0, 0), 0, '窗口左端应拉到 0');
+    assert.equal(await probe(file, 63, 0), 255, '窗口右端应拉到 255（铺满，而不是按整幅拉成 85）');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('渲染栅格：16 位源 stretch=none 时按固定全量程输出（0~65535 → 0~255）', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'cartouche-u16-'));
+  try {
+    const tif = join(dir, 'u16.tif');
+    await makeEnvifile(tif, {
+      width: 64, height: 64, dataType: 12, pixel: 0.0001, cornerX: 120, cornerY: 30.64,
+      valueAt: (x) => U16_VALUE(x),
+    });
+    const ext = await extentOf(tif);
+    const bbox = [ext.minX, ext.minY, (ext.minX + ext.maxX) / 2, ext.maxY];
+
+    const res = await renderRasterPng(loc, { path: tif, width: 64, height: 64, bbox, stretch: 'none' });
+    assert.equal(await pngBandType(res.png), 'Byte');
+    const i = res.command.indexOf('-scale');
+    assert.ok(i > 0, `应带 -scale：${res.command.join(' ')}`);
+    assert.deepEqual(res.command.slice(i, i + 5), ['-scale', '0', '65535', '0', '255']);
+
+    const file = join(dir, 'out.png');
+    writeFileSync(file, res.png);
+    const v = await probe(file, 63, 0);
+    // 1000 / 257 ≈ 3.9 → 4；关键是**不能**像拉伸那样铺满 255
+    assert.ok(v >= 3 && v <= 4, `固定全量程下 1000 应映射到 3~4，实际 ${v}`);
+    assert.notEqual(v, 255, '固定全量程不能铺满 255');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('渲染栅格：16 位常量图不变成全黑（值域退化时退回固定全量程）', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'cartouche-u16-'));
+  try {
+    const tif = join(dir, 'const.tif');
+    await makeEnvifile(tif, {
+      width: 32, height: 32, dataType: 12, pixel: 0.0001, cornerX: 120, cornerY: 30.64,
+      valueAt: () => 1000,
+    });
+    const res = await renderRasterPng(loc, { path: tif, width: 32, height: 32 });
+    assert.equal(await pngBandType(res.png), 'Byte');
+    const file = join(dir, 'out.png');
+    writeFileSync(file, res.png);
+    const v = await probe(file, 16, 16);
+    assert.ok(v > 0, `常量图不该是全黑，实际 ${v}`);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('渲染栅格：8 位源也能用 stretch=auto 按实际值域拉伸', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'cartouche-b8-'));
+  try {
+    const tif = join(dir, 'b8.tif');
+    await makeEnvifile(tif, {
+      width: 32, height: 32, dataType: 1, pixel: 0.0001, cornerX: 120, cornerY: 30.64,
+      valueAt: (x) => x * 8,
+    });
+
+    const auto = await renderRasterPng(loc, { path: tif, width: 32, height: 32, stretch: 'auto' });
+    const autoFile = join(dir, 'auto.png');
+    writeFileSync(autoFile, auto.png);
+    assert.equal(await probe(autoFile, 0, 0), 0, 'auto 应把窗口左端拉到 0');
+    assert.equal(await probe(autoFile, 31, 0), 255, 'auto 应把窗口右端拉到 255');
+
+    // 同一张图走 none：8 位原样输出，右端仍是 248
+    const none = await renderRasterPng(loc, { path: tif, width: 32, height: 32, stretch: 'none' });
+    const noneFile = join(dir, 'none.png');
+    writeFileSync(noneFile, none.png);
+    assert.equal(await probe(noneFile, 31, 0), 248, 'none 下 8 位应原样输出');
+    assert.ok(!none.command.includes('-scale'), `8 位 none 不该带 -scale：${none.command.join(' ')}`);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('渲染栅格：不认识的像素类型直接报错，错误信息带原始类型名', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'cartouche-f32-'));
+  try {
+    const tif = join(dir, 'f32.tif');
+    await makeEnvifile(tif, {
+      width: 16, height: 16, dataType: 1, pixel: 0.0001, cornerX: 120, cornerY: 30.64,
+      valueAt: () => 10,
+    });
+    // 转成 Float32：引擎只认 Byte / UInt16，别悄悄按 8 位处理
+    const r = await gdal.translate(['-of', 'GTiff', '-ot', 'Float32', tif, join(dir, 'f32_out.tif')]);
+    assert.ok(r.ok, `造 Float32 夹具失败：${r.stderr}`);
+    await assert.rejects(
+      () => renderRasterPng(loc, { path: join(dir, 'f32_out.tif'), width: 16, height: 16 }),
+      (err) => {
+        assert.match(err.message, /不支持的像素类型/, '要说明是不支持的类型');
+        assert.match(err.message, /Float32/, '错误信息要带上原始类型名');
+        return true;
+      },
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('渲染栅格：16 位源重投影时也走中间瓦片（gdalwarp 没有 -scale）', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'cartouche-u16-'));
+  try {
+    const tif = join(dir, 'u16.tif');
+    await makeEnvifile(tif, {
+      width: 64, height: 64, dataType: 12, pixel: 0.0001, cornerX: 120, cornerY: 30.64,
+      valueAt: (x) => U16_VALUE(x),
+    });
+    const res = await renderRasterPng(loc, { path: tif, width: 64, height: 64, targetCrs: 'EPSG:32631' });
+    assert.equal(await pngBandType(res.png), 'Byte', '重投影后的底图也必须是 8 位');
+    // 最后一步由 gdal_translate 出 PNG（warp 只负责落中间瓦片）
+    assert.equal(res.command[0], 'gdal_translate', `最后一步应是 translate：${res.command.join(' ')}`);
+    assert.ok(res.command.includes('-scale'), `应带 -scale：${res.command.join(' ')}`);
+    // 瓦片是中间产物，在临时目录里（改完就被清掉）
+    assert.ok(
+      res.command.some((a) => /tile\.tif$/.test(a)),
+      `命令应指向中间瓦片：${res.command.join(' ')}`,
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
   }
 });
