@@ -76,10 +76,10 @@ export function CartouchePreview() {
         <text x="952" y="576" fontFamily="ui-sans-serif, sans-serif" fontSize="19" fontWeight="600" fill="#1c1a16" fillOpacity="0.72">
           图签 Cartouche 出图
         </text>
-        <text x="952" y="614" fontFamily="ui-monospace, monospace" fontSize="12" fill="#1c1a16" fillOpacity="0.42">
+        <text x="952" y="614" fontFamily="ui-monospace, monospace" fontSize="12" fill="#1c1a16" fillOpacity="0.66">
           2026-10-21 · 操作人 张三
         </text>
-        <text x="952" y="646" fontFamily="ui-monospace, monospace" fontSize="12" fill="#1c1a16" fillOpacity="0.42">
+        <text x="952" y="646" fontFamily="ui-monospace, monospace" fontSize="12" fill="#1c1a16" fillOpacity="0.66">
           CGCS2000 / 3° 带
         </text>
       </g>
@@ -89,10 +89,10 @@ export function CartouchePreview() {
         <rect x="0" y="0" width="46" height="8" fill="#1c1a16" fillOpacity="0.72" />
         <rect x="46" y="0" width="46" height="8" fill="#fcfaf5" stroke="#1c1a16" strokeOpacity="0.72" />
         <rect x="92" y="0" width="46" height="8" fill="#1c1a16" fillOpacity="0.72" />
-        <text x="0" y="26" fontFamily="ui-monospace, monospace" fontSize="12" fill="#1c1a16" fillOpacity="0.5">
+        <text x="0" y="26" fontFamily="ui-monospace, monospace" fontSize="12" fill="#1c1a16" fillOpacity="0.72">
           0
         </text>
-        <text x="124" y="26" fontFamily="ui-monospace, monospace" fontSize="12" fill="#1c1a16" fillOpacity="0.5">
+        <text x="124" y="26" fontFamily="ui-monospace, monospace" fontSize="12" fill="#1c1a16" fillOpacity="0.72">
           150 m
         </text>
       </g>
@@ -101,7 +101,7 @@ export function CartouchePreview() {
       <g transform="translate(120 452)">
         <circle r="34" fill="#fcfaf5" fillOpacity="0.62" stroke="#1c1a16" strokeOpacity="0.2" />
         <path d="M0-26L9 16 0 6-9 16z" fill="#1c1a16" fillOpacity="0.78" />
-        <text x="-4" y="-38" fontFamily="ui-monospace, monospace" fontSize="13" fill="#1c1a16" fillOpacity="0.6">
+        <text x="-4" y="-38" fontFamily="ui-monospace, monospace" fontSize="13" fill="#1c1a16" fillOpacity="0.72">
           N
         </text>
       </g>

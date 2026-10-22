@@ -32,10 +32,52 @@ const geistMono = localFont({
   fallback: ['ui-monospace', 'SFMono-Regular', 'JetBrains Mono', 'monospace'],
 });
 
+/**
+ * 站点地址。
+ *
+ * 站点挂在 GitHub Pages 的 **子路径** `/cartouche/` 下，所以 metadataBase
+ * 必须带上这段路径：Next 解析相对的 og:image 时会拼到 metadataBase 的
+ * pathname 上（`/og.png` → `https://echovagant.github.io/cartouche/og.png`），
+ * 少了它，图片地址会跑到域名根目录去。
+ */
+const SITE_URL = 'https://echovagant.github.io/cartouche/';
+
+const SITE_TITLE = '图签 Cartouche · 本机运行的地图出图工具';
+
+const SITE_DESCRIPTION =
+  '装在你自己电脑上，打开放图件的文件夹。画一笔、确认一下，原图件就地改好，格式与坐标系原样保留。改了什么、动了多少、备份在哪，都写在动手之前。';
+
 export const metadata: Metadata = {
-  title: '图签 Cartouche · 本机运行的地图出图工具',
-  description:
-    '装在你自己电脑上，打开放图件的文件夹。画一笔、确认一下，原图件就地改好，ArcGIS 照常打开。改了什么、动了多少、备份在哪，都写在动手之前。',
+  metadataBase: new URL(SITE_URL),
+  title: SITE_TITLE,
+  description: SITE_DESCRIPTION,
+  alternates: {
+    canonical: SITE_URL,
+  },
+  openGraph: {
+    type: 'website',
+    locale: 'zh_CN',
+    url: SITE_URL,
+    siteName: '图签 Cartouche',
+    title: SITE_TITLE,
+    description: SITE_DESCRIPTION,
+    // ⚠ 分享图 **尚未生成**：/og.png 是计划中的路径，文件本身还不存在。
+    // 生成后放到静态产物根目录（部署后即 https://echovagant.github.io/cartouche/og.png）。
+    images: [
+      {
+        url: '/og.png',
+        width: 1200,
+        height: 630,
+        alt: '图签 Cartouche · 本机运行的地图出图工具',
+      },
+    ],
+  },
+  twitter: {
+    card: 'summary_large_image',
+    title: SITE_TITLE,
+    description: SITE_DESCRIPTION,
+    images: ['/og.png'],
+  },
 };
 
 export const viewport: Viewport = {
