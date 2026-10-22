@@ -20,7 +20,7 @@ import { readRasterPixels, writeRasterPixels, checksumOf, type RasterPixels } fr
 import {
   buildAlphaMask,
   geoToPixelRegion,
-  maskAlphaAt,
+  maskAlphaAtRegion,
   type GeoBounds,
   type PixelMask,
   type PixelRegion,
@@ -354,7 +354,8 @@ export class RasterEditor {
             if (x >= req.region.minX && x < req.region.maxX && y >= req.region.minY && y < req.region.maxY) {
               // 有掩膜时按不透明度混合：mask=255 的效果与原来的硬写一致，
               // 所以加掩膜不会改变"纯矩形涂色"这条老路子的行为。
-              const a = maskAlphaAt(req.mask, x, y);
+              // 掩膜是相对 region 的坐标，查表要减掉区域原点。
+              const a = maskAlphaAtRegion(req.mask, req.region, x, y);
               if (a <= 0) continue;
               const idx = y * px.width + x;
               const old = out[idx] ?? 0;

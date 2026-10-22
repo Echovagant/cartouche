@@ -13,7 +13,9 @@ export type ParamType =
   | 'number'
   | 'boolean'
   | 'layerRef'
+  | 'pathRef'
   | 'bbox'
+  | 'region'
   | 'object'
   | 'stringArray';
 
@@ -91,6 +93,29 @@ function checkType(spec: TemplateParamSpec, value: unknown): void {
     case 'layerRef':
       if (typeof value !== 'string') bad();
       return;
+    case 'pathRef':
+      // 引擎只认 dataset:// 引用：layer:// 是图层标识，不是文件路径
+      if (typeof value !== 'string' || !/^dataset:\/\/.+$/.test(value)) bad();
+      return;
+    case 'region':
+      // 区域有三种写法：
+      //   ① 像元坐标对象 { minX, minY, maxX, maxY }
+      //   ② 地理范围数组 [minX, minY, maxX, maxY]
+      //   ③ 旧写法：字符串引用（layer://…）
+      // ③ 是历史包袱：引擎认不出图层引用，操作契约也会拒下。
+      // 这里先不打断老调用 —— 权威判断在操作契约那一层，不在模板这一层。
+      if (typeof value === 'string') return;
+      if (Array.isArray(value)) {
+        if (value.length !== 4 || value.some((v) => typeof v !== 'number')) bad();
+        return;
+      }
+      if (isPlainObject(value)) {
+        for (const key of ['minX', 'minY', 'maxX', 'maxY']) {
+          if (typeof value[key] !== 'number') bad();
+        }
+        return;
+      }
+      bad();
     case 'object':
       if (!isPlainObject(value)) bad();
       return;
@@ -216,9 +241,9 @@ function template(
 const LAYER = (required = true): TemplateParamSpec => ({
   name: 'target',
   label: '目标图层',
-  type: 'layerRef',
+  type: 'pathRef',
   required,
-  description: '形如 dataset://a.shp 或 layer://某图层',
+  description: '形如 dataset://a.shp —— 引擎只认 dataset:// 引用（图层标识不是文件路径）',
 });
 
 export const builtinTemplates: readonly OperationTemplate[] = [
@@ -317,7 +342,7 @@ export const builtinTemplates: readonly OperationTemplate[] = [
     'raster.clip',
     [
       { name: 'inputs', label: '待裁切影像', type: 'string', required: true, description: '单个引用或通配路径，如 batch/*.tif' },
-      { name: 'clip', label: '裁切范围', type: 'layerRef', required: true },
+      { name: 'clip', label: '裁切范围', type: 'pathRef', required: true },
       { name: 'mode', label: '保留范围', type: 'string', required: false, options: ['inside', 'outside'] },
     ],
     { inputs: 'dataset://scan.tff', clip: 'dataset://frame.shp', mode: 'inside' },
@@ -328,13 +353,19 @@ export const builtinTemplates: readonly OperationTemplate[] = [
     '把某个区域替换成另一期影像或另一图层的同范围内容',
     'raster.replaceRegion',
     [
-      { name: 'source', label: '来源图', type: 'layerRef', required: true },
+      { name: 'source', label: '来源图', type: 'pathRef', required: true },
       LAYER(),
-      { name: 'region', label: '替换范围', type: 'layerRef', required: false },
+      {
+        name: 'region',
+        label: '替换范围',
+        type: 'region',
+        required: false,
+        description: '像元坐标 {minX,minY,maxX,maxY} 或地理范围 [minX,minY,maxX,maxY]；不要写 layer:// 引用',
+      },
       { name: 'bbox', label: '替换范围(坐标)', type: 'bbox', required: false },
       { name: 'featherPx', label: '边缘过渡(像素)', type: 'number', required: false },
     ],
-    { source: 'dataset://scan-2024.tff', target: 'dataset://scan-2019.tff', region: 'layer://parcel' },
+    { source: 'dataset://scan-2024.tff', target: 'dataset://scan-2019.tff', region: [120.3, 30.52, 120.31, 30.53] },
     (input) => {
       if (input.region === undefined && input.bbox === undefined) {
         throw new TemplateError('replace-region', '必须给出替换范围（region 或 bbox）');
@@ -349,11 +380,17 @@ export const builtinTemplates: readonly OperationTemplate[] = [
     'raster.erase',
     [
       LAYER(),
-      { name: 'region', label: '要擦除的范围', type: 'layerRef', required: true },
+      {
+        name: 'region',
+        label: '要擦除的范围',
+        type: 'region',
+        required: true,
+        description: '像元坐标 {minX,minY,maxX,maxY} 或地理范围 [minX,minY,maxX,maxY]；不要写 layer:// 引用',
+      },
       { name: 'fill', label: '填充方式', type: 'string', required: false, options: ['underlying', 'transparent', 'color'] },
       { name: 'keepAnnotations', label: '保留其它标注', type: 'boolean', required: true, description: '是否保留范围内的其它标注' },
     ],
-    { target: 'dataset://scan.tff', region: 'layer://markup', fill: 'underlying', keepAnnotations: false },
+    { target: 'dataset://scan.tff', region: [120.3, 30.52, 120.31, 30.53], fill: 'underlying', keepAnnotations: false },
   ),
   template(
     'summarize-by-field',
@@ -394,7 +431,13 @@ export const builtinTemplates: readonly OperationTemplate[] = [
     [
       LAYER(),
       { name: 'format', label: '格式', type: 'string', required: true, options: ['png', 'jpeg', 'pdf', 'tif'] },
-      { name: 'region', label: '导出范围', type: 'layerRef', required: false },
+      {
+        name: 'region',
+        label: '导出范围',
+        type: 'region',
+        required: false,
+        description: '像元坐标 {minX,minY,maxX,maxY} 或地理范围 [minX,minY,maxX,maxY]；不要写 layer:// 引用',
+      },
       { name: 'dpi', label: '分辨率', type: 'number', required: false },
     ],
     { target: 'dataset://scan.tff', format: 'png', dpi: 300 },

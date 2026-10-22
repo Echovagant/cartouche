@@ -31,7 +31,57 @@
     "layerRef": {
       "type": "string",
       "pattern": "^(layer|dataset|summary)://.+",
-      "description": "图层引用，如 layer://2024_basemap、dataset://current.tff"
+      "description": "图层引用，如 layer://2024_basemap、dataset://current.tff。只用于不由引擎执行器落地的 op（dataset.* / feature.* / vector.* / export.*）；引擎要改文件时一律用 pathRef"
+    },
+    "pathRef": {
+      "type": "string",
+      "pattern": "^dataset://.+$",
+      "description": "工作区相对路径引用，如 dataset://底图/current.tff。引擎只认这一种：layer:// 是图层标识、不是文件路径，引擎会拒掉（“目标引用不是文件路径”）；裸相对路径引擎能跑，但不符合契约"
+    },
+    "pixelRegion": {
+      "type": "object",
+      "required": ["minX", "minY", "maxX", "maxY"],
+      "additionalProperties": false,
+      "properties": {
+        "minX": { "type": "number" },
+        "minY": { "type": "number" },
+        "maxX": { "type": "number" },
+        "maxY": { "type": "number" }
+      },
+      "description": "像元坐标区域 { minX, minY, maxX, maxY }：左上角为原点（与 GDAL 行序一致），maxX/maxY 为不含；引擎按像元直接裁剪"
+    },
+    "region": {
+      "description": "要改动的区域。两种形状二选一：①像元坐标对象 { minX, minY, maxX, maxY }；②地理范围数组 [minX, minY, maxX, maxY]（目标图层坐标系，引擎按仿射参数换算成像元）。不要写 layer:// / dataset:// 引用——引擎无法把图层引用解析成区域",
+      "allOf": [
+        {
+          "if": { "type": "object" },
+          "then": { "$ref": "#/$defs/pixelRegion" },
+          "else": { "$ref": "#/$defs/bbox" }
+        }
+      ]
+    },
+    "pixelMask": {
+      "type": "object",
+      "required": ["width", "height", "data"],
+      "additionalProperties": false,
+      "properties": {
+        "width": { "type": "integer", "minimum": 1 },
+        "height": { "type": "integer", "minimum": 1 },
+        "data": { "type": "string", "description": "base64 编码的逐像元不透明度字节，长度 = width × height；0 = 不着色，255 = 完全着色" }
+      },
+      "description": "自由形状画笔掩膜；与矩形区域取交集。坐标**相对 region 左上角**：掩膜宽高 = region 包围盒的宽高，第 (0,0) 个字节对应 region 左上角那个像元。一般由画布栅格化产生，不手写"
+    },
+    "hexColor": {
+      "type": "string",
+      "pattern": "^(#[0-9a-fA-F]{6}|[0-9a-fA-F]{6}|sample-from-edge)$",
+      "description": "'#RRGGBB'、'RRGGBB'，或 'sample-from-edge'（从区域外沿取色）"
+    },
+    "rgb": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 4,
+      "items": { "type": "integer", "minimum": 0, "maximum": 255 },
+      "description": "[r, g, b]（0~255 整数）"
     },
     "operation": {
       "type": "object",
@@ -167,10 +217,13 @@
       "required": ["source", "target"],
       "additionalProperties": false,
       "properties": {
-        "source": { "$ref": "#/$defs/layerRef" },
-        "target": { "$ref": "#/$defs/layerRef" },
+        "source": { "$ref": "#/$defs/pathRef" },
+        "target": { "$ref": "#/$defs/pathRef" },
         "bbox": { "$ref": "#/$defs/bbox" },
-        "region": { "$ref": "#/$defs/layerRef" },
+        "region": {
+          "$ref": "#/$defs/region",
+          "description": "替换范围。两种形状二选一：①像元坐标对象 { minX, minY, maxX, maxY }；②地理范围数组 [minX, minY, maxX, maxY]（目标图层坐标系）。不要写 layer:// / dataset:// 引用"
+        },
         "featherPx": { "type": "integer", "minimum": 0, "maximum": 200, "default": 0 },
         "resample": { "type": "string", "enum": ["nearest", "bilinear", "cubic"], "default": "bilinear" }
       },
@@ -181,8 +234,11 @@
       "required": ["target", "region"],
       "additionalProperties": false,
       "properties": {
-        "target": { "$ref": "#/$defs/layerRef" },
-        "region": { "$ref": "#/$defs/layerRef" },
+        "target": { "$ref": "#/$defs/pathRef" },
+        "region": {
+          "$ref": "#/$defs/region",
+          "description": "要擦除的区域。两种形状二选一：①像元坐标对象 { minX, minY, maxX, maxY }；②地理范围数组 [minX, minY, maxX, maxY]（目标图层坐标系）。不要写 layer:// / dataset:// 引用"
+        },
         "bbox": { "$ref": "#/$defs/bbox" },
         "fill": { "type": "string", "enum": ["underlying", "transparent", "color"], "default": "underlying" },
         "color": { "type": "array", "minItems": 3, "maxItems": 4, "items": { "type": "integer", "minimum": 0, "maximum": 255 } }
@@ -193,8 +249,11 @@
       "required": ["target", "region"],
       "additionalProperties": false,
       "properties": {
-        "target": { "$ref": "#/$defs/layerRef" },
-        "region": { "$ref": "#/$defs/layerRef" },
+        "target": { "$ref": "#/$defs/pathRef" },
+        "region": {
+          "$ref": "#/$defs/region",
+          "description": "要修补的区域。两种形状二选一：①像元坐标对象 { minX, minY, maxX, maxY }；②地理范围数组 [minX, minY, maxX, maxY]（目标图层坐标系）。不要写 layer:// / dataset:// 引用"
+        },
         "bbox": { "$ref": "#/$defs/bbox" },
         "method": { "type": "string", "enum": ["telea", "navier-stokes", "nearest-fill"], "default": "telea" },
         "radiusPx": { "type": "integer", "minimum": 1, "maximum": 100, "default": 5 }
@@ -205,9 +264,9 @@
       "required": ["clip"],
       "additionalProperties": false,
       "properties": {
-        "target": { "$ref": "#/$defs/layerRef" },
+        "target": { "$ref": "#/$defs/pathRef" },
         "inputs": { "type": "string", "description": "批量模式下的通配路径，如 batch/*.tif" },
-        "clip": { "$ref": "#/$defs/layerRef" },
+        "clip": { "$ref": "#/$defs/pathRef" },
         "mode": { "type": "string", "enum": ["inside", "outside"], "default": "inside" },
         "naming": { "type": "string", "enum": ["source-basename", "source-basename-index"], "default": "source-basename" }
       }
@@ -217,10 +276,10 @@
       "required": ["inputs"],
       "additionalProperties": false,
       "properties": {
-        "inputs": { "type": "array", "minItems": 2, "items": { "$ref": "#/$defs/layerRef" } },
+        "inputs": { "type": "array", "minItems": 2, "items": { "$ref": "#/$defs/pathRef" } },
         "overlap": { "type": "string", "enum": ["first", "last", "blend"], "default": "blend" },
         "resample": { "type": "string", "enum": ["nearest", "bilinear", "cubic"], "default": "bilinear" },
-        "output": { "$ref": "#/$defs/layerRef" }
+        "output": { "$ref": "#/$defs/pathRef" }
       }
     },
     "params.raster.resample": {
@@ -240,7 +299,7 @@
       "required": ["target"],
       "additionalProperties": false,
       "properties": {
-        "target": { "$ref": "#/$defs/layerRef" },
+        "target": { "$ref": "#/$defs/pathRef" },
         "brightness": { "type": "number", "minimum": -1, "maximum": 1 },
         "contrast": { "type": "number", "minimum": 0, "maximum": 4 },
         "method": { "type": "string", "enum": ["linear-stretch", "gamma", "manual"], "default": "linear-stretch" },
@@ -249,12 +308,21 @@
     },
     "params.raster.paint": {
       "type": "object",
-      "required": ["target", "region"],
+      "required": ["target", "region", "color"],
       "additionalProperties": false,
       "properties": {
-        "target": { "$ref": "#/$defs/layerRef" },
-        "region": { "$ref": "#/$defs/layerRef" },
-        "color": { "type": "string", "description": "#RRGGBB，或 sample-from-edge 表示从周边取样" }
+        "target": { "$ref": "#/$defs/pathRef" },
+        "region": {
+          "$ref": "#/$defs/region",
+          "description": "要涂色的区域。两种形状二选一：①像元坐标对象 { minX, minY, maxX, maxY }；②地理范围数组 [minX, minY, maxX, maxY]（目标图层坐标系）。不要写 layer:// / dataset:// 引用"
+        },
+        "color": {
+          "description": "涂色颜色：'#RRGGBB'、'sample-from-edge'（从区域外沿取色）或 [r, g, b]",
+          "allOf": [
+            { "if": { "type": "string" }, "then": { "$ref": "#/$defs/hexColor" }, "else": { "$ref": "#/$defs/rgb" } }
+          ]
+        },
+        "mask": { "$ref": "#/$defs/pixelMask" }
       }
     },
     "params.feature.setAttributes": {
@@ -402,7 +470,10 @@
       "additionalProperties": false,
       "properties": {
         "target": { "$ref": "#/$defs/layerRef" },
-        "region": { "$ref": "#/$defs/layerRef" },
+        "region": {
+          "$ref": "#/$defs/region",
+          "description": "导出范围。两种形状二选一：①像元坐标对象 { minX, minY, maxX, maxY }；②地理范围数组 [minX, minY, maxX, maxY]（目标图层坐标系）。不要写 layer:// / dataset:// 引用"
+        },
         "bbox": { "$ref": "#/$defs/bbox" },
         "format": { "enum": ["png", "jpeg", "pdf", "tif"] },
         "dpi": { "type": "integer", "minimum": 72, "maximum": 1200 },

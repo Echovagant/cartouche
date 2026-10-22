@@ -33,6 +33,10 @@
     "crs-fix": "坐标系与投影问题（3 条）",
     "export": "出图与导出（2 条）"
   },
+  "conventions": {
+    "region": "region 一律写成 4 元地理范围数组 [minX, minY, maxX, maxY]（目标图层坐标系）。引擎认两种形状：像元坐标对象 {minX,minY,maxX,maxY} 与地理范围数组；layer:// / dataset:// 引用不是区域，引擎与操作契约都不收。文中的坐标是示意值（CGCS2000 3 度带、米），不对应任何真实数据。",
+    "paths": "target / source / clip 一律写成 dataset://<工作区相对路径>：引擎只认这一种，layer:// 是图层标识、不是文件路径。"
+  },
   "cases": [
     {
       "id": "A1",
@@ -52,7 +56,7 @@
             "op": "raster.erase",
             "params": {
               "target": "dataset://scan-2023.tff",
-              "region": "layer://markup",
+              "region": [500000, 3000000, 500200, 3000200],
               "fill": "underlying"
             }
           }
@@ -121,8 +125,7 @@
             "params": {
               "source": "dataset://scan-2024.tff",
               "target": "dataset://scan-2019.tff",
-              "bbox": null,
-              "region": "layer://parcel",
+              "region": [500800, 3000200, 501000, 3000400],
               "featherPx": 8
             }
           }
@@ -184,7 +187,7 @@
             "op": "raster.inpaint",
             "params": {
               "target": "dataset://scan-2023.tff",
-              "region": "layer://defects",
+              "region": [500300, 2999900, 500400, 3000000],
               "method": "telea"
             }
           }
@@ -234,7 +237,7 @@
             "op": "raster.clip",
             "params": {
               "target": "dataset://scan-2023.tff",
-              "clip": "layer://frame",
+              "clip": "dataset://frame.shp",
               "mode": "inside"
             }
           }
@@ -287,8 +290,6 @@
             "op": "raster.adjustLevels",
             "params": {
               "target": "dataset://scan-2023.tff",
-              "brightness": null,
-              "contrast": null,
               "method": "linear-stretch"
             }
           }
@@ -450,7 +451,7 @@
             "op": "raster.paint",
             "params": {
               "target": "dataset://scan-2023.tff",
-              "region": "layer://nodata",
+              "region": [500500, 2999800, 500600, 2999900],
               "color": "sample-from-edge"
             }
           }
@@ -1676,7 +1677,7 @@
             "op": "export.image",
             "params": {
               "target": "dataset://scan-2023.tff",
-              "region": "layer://parcel",
+              "region": [500000, 3000000, 501000, 3001000],
               "format": "png",
               "dpi": 300
             }

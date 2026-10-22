@@ -32,6 +32,10 @@ export interface GeoBounds {
  * 那条笔画可能是个 L 形、个圈，套进矩形就变成了大面积误涂。
  * 所以画笔走这条路：把笔迹栅格化成逐像元的不透明度，
  * 再叠加在矩形之上（两者是**与**的关系）。
+ *
+ * **坐标是相对 region 的**：掩膜的宽高 = region 包围盒的宽高，
+ * 字节 (0, 0) 对应的是 region 左上角那个像元，不是栅格的 (0, 0)。
+ * 画笔按笔迹的外接矩形出掩膜（掩膜大了就没法上传），所以必须这样对齐。
  */
 export interface PixelMask {
   readonly width: number;
@@ -61,6 +65,23 @@ export function maskAlphaAt(mask: PixelMask | undefined, x: number, y: number): 
   if (!mask) return 1;
   if (x < 0 || y < 0 || x >= mask.width || y >= mask.height) return 0;
   return mask.alpha[y * mask.width + x] ?? 0;
+}
+
+/**
+ * 按**栅格绝对坐标**取掩膜不透明度。
+ *
+ * 掩膜是相对 region 的（见 PixelRegion 的说明），
+ * 所以查表前必须先减去区域原点 —— 否则 region.minX/minY ≠ 0 时，
+ * 笔迹会落到错位的像元上（要么一笔什么都没画上，要么画到隔壁）。
+ */
+export function maskAlphaAtRegion(
+  mask: PixelMask | undefined,
+  region: PixelRegion,
+  x: number,
+  y: number,
+): number {
+  if (!mask) return 1;
+  return maskAlphaAt(mask, x - region.minX, y - region.minY);
 }
 
 /** 像元是否落在区域内 */
