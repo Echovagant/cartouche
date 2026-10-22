@@ -100,6 +100,28 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             __html: `(function(){try{var t=localStorage.getItem('cartouche.canvas.theme');if(t==='light'||t==='dark'){document.documentElement.dataset.theme=t;}}catch(e){}})();`,
           }}
         />
+
+        {/*
+          官网的深浅段（data-surface）也必须在首帧之前定下来：
+          深色段上的玻璃导航要换深色皮，晚了半秒就是一次"闪白"。
+
+          这里按**导航条所在的那一行**落在哪一段来判断：命中深色段就是深色，
+          否则浅色。正常滚动中的切换由 ScrollChoreography 负责，
+          这个脚本只负责"页面刚打开时"（含深链接直接落到 #s5 / #s8 的情况）。
+        */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `(function(){function pick(){var d=document.documentElement;var secs=d.querySelectorAll('[data-surface-section="dark"]');var probe=72;var surface='light';for(var i=0;i<secs.length;i++){var r=secs[i].getBoundingClientRect();if(r.top<=probe&&r.bottom>probe){surface='dark';break;}}d.dataset.surface=surface;}if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',pick);}else{pick();}})();`,
+          }}
+        />
+
+        {/*
+          没有 JS 时揭示态（.reveal）会一直停在 opacity 0 —— 整页是空的。
+          noscript 里把它展开：内容优先于仪式感。
+        */}
+        <noscript>
+          <style>{'.reveal{opacity:1 !important}'}</style>
+        </noscript>
       </head>
       <body className="grain min-h-[100dvh] bg-paper font-sans text-ink antialiased">{children}</body>
     </html>

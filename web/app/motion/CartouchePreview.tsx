@@ -1,19 +1,27 @@
 'use client';
 
 /**
- * Hero 的制图视觉：一张正在被"扫描"的图幅。
+ * 制图视觉：一张正在被"扫描"的图幅。
  *
  * 全部是内联 SVG —— 不引外部图片，**离线可用、零网络请求**，
  * 而且比贴一张图库照片更贴产品本身（画的就是图签的图框、比例尺、图例）。
+ *
+ * 两个变体：
+ *   full  S1 的主图幅（整张，视图框 1440×760）
+ *   sheet S8 的图签框特写（只裁到标题栏那一块，放大约 2.4 倍）
  */
-export function CartouchePreview() {
+export function CartouchePreview({ variant = 'full' }: { variant?: 'full' | 'sheet' }) {
+  // 特写：只取标题栏那块矩形（x 932 / y 548 / 404×112）——图签就是这一块
+  const sheet = variant === 'sheet';
+
   return (
     <svg
-      viewBox="0 0 1440 760"
+      viewBox={sheet ? '932 548 404 112' : '0 0 1440 760'}
       className="h-full w-full"
-      // 锚在**底部**：宽屏上 slice 会把上下裁掉一大截，
+      // 整幅锚在**底部**：宽屏上 slice 会把上下裁掉一大截，
       // 锚底部才能保证图签框、比例尺这些"家具"始终留在画面里。
-      preserveAspectRatio="xMidYMax slice"
+      // 特写则居中等比，四周留白是给它当展品的框。
+      preserveAspectRatio={sheet ? 'xMidYMid meet' : 'xMidYMax slice'}
       aria-hidden="true"
     >
       <defs>
@@ -77,10 +85,10 @@ export function CartouchePreview() {
           图签 Cartouche 出图
         </text>
         <text x="952" y="614" fontFamily="ui-monospace, monospace" fontSize="12" fill="#1c1a16" fillOpacity="0.66">
-          2026-10-21 · 操作人 张三
+          出图时间 —— · 操作人 姓名
         </text>
         <text x="952" y="646" fontFamily="ui-monospace, monospace" fontSize="12" fill="#1c1a16" fillOpacity="0.66">
-          CGCS2000 / 3° 带
+          坐标系 —— 按原文件保留
         </text>
       </g>
 
