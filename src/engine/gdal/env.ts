@@ -73,7 +73,10 @@ export function resolveGdal(options: ResolveGdalOptions = {}): GdalLocation | nu
   const separator = options.pathSeparator ?? delimiter;
   const pathValue = options.pathValue ?? process.env.PATH ?? '';
   const platform = options.platform ?? process.platform;
-  const explicit = options.gdalBin ?? process.env.GDAL_BIN ?? '';
+  // gdalBin 显式传 '' 表示"不要用环境变量里的 GDAL_BIN"（测试要隔离时用）；
+  // 不传这个键才回落到 process.env.GDAL_BIN。
+  const explicit =
+    options.gdalBin !== undefined ? options.gdalBin : (process.env.GDAL_BIN ?? '');
 
   // 显式指定（GDAL_BIN）优先：CI 里已经把它指向 conda 环境的 bin
   if (explicit && isGdalBin(explicit)) return buildLocation(explicit, platform);

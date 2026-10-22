@@ -33,8 +33,10 @@ export function resolveOptions(options = {}) {
     pathValue: options.pathValue ?? process.env.PATH ?? '',
     pathSeparator: options.pathSeparator ?? delimiter,
     platform: options.platform ?? process.platform,
-    // 显式指定优先于 PATH 考古：CI 里 GDAL_BIN 就是给这一步用的
-    gdalBin: options.gdalBin ?? process.env.GDAL_BIN ?? '',
+    // 显式指定优先于 PATH 考古：CI 里 GDAL_BIN 就是给这一步用的。
+    // 显式传 '' 表示"不要用环境变量里的 GDAL_BIN"（测试隔离用）；
+    // 不传这个键才回落到 process.env.GDAL_BIN。
+    gdalBin: options.gdalBin !== undefined ? options.gdalBin : (process.env.GDAL_BIN ?? ''),
   };
 }
 

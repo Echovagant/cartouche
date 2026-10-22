@@ -61,7 +61,7 @@ test('engine：POSIX 形状的 PATH（: 分隔、无 .exe）能定位到 GDAL', 
   const bin = fakeLinuxGdalBin(base);
   const relBin = asPosixShaped(bin);
 
-  const loc = resolveGdal({ pathValue: `${relBin}:/usr/bin:/bin`, pathSeparator: ':', platform: 'linux' });
+  const loc = resolveGdal({ gdalBin: '', pathValue: `${relBin}:/usr/bin:/bin`, pathSeparator: ':', platform: 'linux' });
 
   assert.ok(loc, '应能定位到 GDAL');
   assert.equal(loc.binDir, relBin, '必须命中 PATH 里那个目录，而不是回退到本机已安装的 GDAL');
@@ -73,7 +73,7 @@ test('engine：Windows 形状的 PATH（; 分隔、.exe）依然能定位', () =
   mkdirSync(bin, { recursive: true });
   writeFileSync(join(bin, 'gdalinfo.exe'), 'MZ');
 
-  const loc = resolveGdal({ pathValue: `${bin};C:\\Windows\\System32`, pathSeparator: ';', platform: 'win32' });
+  const loc = resolveGdal({ gdalBin: '', pathValue: `${bin};C:\\Windows\\System32`, pathSeparator: ';', platform: 'win32' });
 
   assert.ok(loc);
   assert.equal(loc.binDir, bin);
@@ -85,8 +85,8 @@ test('engine：exeSuffix 跟着平台走', () => {
   const bin = fakeLinuxGdalBin(base);
   const relBin = asPosixShaped(bin);
 
-  const linux = resolveGdal({ pathValue: relBin, pathSeparator: ':', platform: 'linux' });
-  const win = resolveGdal({ pathValue: relBin, pathSeparator: ':', platform: 'win32' });
+  const linux = resolveGdal({ gdalBin: '', pathValue: relBin, pathSeparator: ':', platform: 'linux' });
+  const win = resolveGdal({ gdalBin: '', pathValue: relBin, pathSeparator: ':', platform: 'win32' });
 
   assert.equal(linux.exeSuffix, '');
   assert.equal(win.exeSuffix, '.exe');
@@ -99,7 +99,7 @@ test('engine：POSIX 布局的 GDAL_DATA 落在 <prefix>/share/gdal', () => {
   const shareGdal = join(dirname(relBin), 'share', 'gdal');
   mkdirSync(shareGdal, { recursive: true });
 
-  const loc = resolveGdal({ pathValue: relBin, pathSeparator: ':', platform: 'linux' });
+  const loc = resolveGdal({ gdalBin: '', pathValue: relBin, pathSeparator: ':', platform: 'linux' });
 
   assert.equal(loc.gdalData, shareGdal, 'Linux 上 GDAL 数据目录是 <prefix>/share/gdal，不是 <prefix>/Library/share/gdal');
 });
@@ -109,7 +109,7 @@ test('engine：gdalEnv 用平台分隔符拼 PATH', () => {
   const bin = fakeLinuxGdalBin(base);
   const relBin = asPosixShaped(bin);
 
-  const loc = resolveGdal({ pathValue: relBin, pathSeparator: ':', platform: 'linux' });
+  const loc = resolveGdal({ gdalBin: '', pathValue: relBin, pathSeparator: ':', platform: 'linux' });
   const env = gdalEnv(loc);
 
   assert.equal(env.PATH.split(delimiter)[0], relBin, 'GDAL 的 bin 目录要排在 PATH 最前');
@@ -121,7 +121,7 @@ test('scripts/lib/env.mjs：POSIX 形状的 PATH 同样能定位（JS 孪生实�
   const bin = fakeLinuxGdalBin(base);
   const relBin = asPosixShaped(bin);
 
-  const found = resolveGdalBin({ pathValue: `${relBin}:/usr/bin`, pathSeparator: ':', platform: 'linux' });
+  const found = resolveGdalBin({ gdalBin: '', pathValue: `${relBin}:/usr/bin`, pathSeparator: ':', platform: 'linux' });
 
   assert.equal(found, relBin, 'scripts 侧的定位逻辑必须和 engine 侧一致');
 });
@@ -173,6 +173,34 @@ test('scripts/lib/env.mjs：显式指定的 GDAL_BIN 同样优先', () => {
   });
 
   assert.equal(found, relBin);
+});
+
+/**
+ * 环境变量 GDAL_BIN 的语义（2026-10-22 CI 踩过）：
+ *   不传 gdalBin 这个键 → 读 process.env.GDAL_BIN（CI 里就是这么设的）
+ *   传 gdalBin: ''      → 明确表示"别看环境变量"
+ *
+ * 为什么要有第二种：CI 环境里 GDAL_BIN 指向真实的 conda GDAL，
+ * 而这些用例要断言的是"按 PATH/显式路径解析"，不隔离就会被环境变量劫持
+ * （2026-10-22 那次 CI 就是这么红的：拿到 /usr/share/miniconda/... 而不是测试目录）。
+ */
+test('engine：环境变量 GDAL_BIN 会被采用，但显式传 gdalBin:"" 可以屏蔽它', () => {
+  const base = tempDir();
+  const bin = fakeLinuxGdalBin(base);
+  const relBin = asPosixShaped(bin);
+  const saved = process.env.GDAL_BIN;
+  try {
+    process.env.GDAL_BIN = relBin;
+
+    const fromEnv = resolveGdal({ pathValue: '/usr/bin', pathSeparator: ':', platform: 'linux' });
+    assert.equal(fromEnv.binDir, relBin, '不传 gdalBin 时应采用环境变量');
+
+    const isolated = resolveGdal({ gdalBin: '', pathValue: '/usr/bin', pathSeparator: ':', platform: 'linux' });
+    assert.notEqual(isolated?.binDir, relBin, '显式传空串必须屏蔽环境变量');
+  } finally {
+    if (saved === undefined) delete process.env.GDAL_BIN;
+    else process.env.GDAL_BIN = saved;
+  }
 });
 
 // ── CI 工作流本身的门禁 ───────────────────────────────────────
