@@ -175,6 +175,7 @@ export type {
   BBox4326,
   RasterRenderOptions,
   RasterRenderResult,
+  RasterStretch,
   PdfOptions,
   VectorToGeoJsonOptions,
   VectorToGeoJsonResult,

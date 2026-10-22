@@ -138,6 +138,15 @@ export default function CanvasWorkbench() {
   const [operator, setOperator] = useState('');
   const [producedAt, setProducedAt] = useState(formatNow());
 
+  /**
+   * 栅格显示的拉伸档位。
+   *
+   * undefined = 自动（不发参数，引擎按源类型决定：8 位按原样、16 位按实际亮度）。
+   * 用户手动切过之后才显式发出去 —— 直接默认发 'auto' 会把 8 位影像的显示行为也改掉，
+   * 那是既有行为，不该被这个开关顺手改掉。
+   */
+  const [stretch, setStretch] = useState<'auto' | 'none' | undefined>(undefined);
+
   const [report, setReport] = useState<CompatReportPayload | null>(null);
   const [reportOpen, setReportOpen] = useState(false);
   const [banner, setBanner] = useState<string | null>(null);
@@ -765,6 +774,8 @@ export default function CanvasWorkbench() {
         canReport={Boolean(activeLayer)}
         health={engine.health.status}
         onReloadHealth={engine.reloadHealth}
+        stretch={stretch}
+        onStretchChange={setStretch}
       />
 
       <EditToolbar
@@ -857,6 +868,7 @@ export default function CanvasWorkbench() {
               }}
               editTool={editTools.tool}
               editPreview={editTools.preview}
+              stretch={stretch}
               onEditGesture={editTools.onGesture}
             />
             <LayerArrival stageRef={stageRef} layerCount={layers.length} />

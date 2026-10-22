@@ -9,7 +9,7 @@
  * 因此中文字体正常，且与屏幕上所见完全一致。
  */
 export { renderRasterPng, readPngSize, RasterRenderError } from './raster-image.ts';
-export type { BBox4326, RasterRenderOptions, RasterRenderResult } from './raster-image.ts';
+export type { BBox4326, RasterRenderOptions, RasterRenderResult, RasterStretch } from './raster-image.ts';
 
 export { buildPdfFromJpeg, inspectPdf, PdfBuildError, A4_LANDSCAPE_PT, A4_PORTRAIT_PT } from './pdf.ts';
 export type { PdfOptions } from './pdf.ts';
