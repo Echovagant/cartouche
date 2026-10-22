@@ -219,8 +219,8 @@ export default function Home() {
               图签 Cartouche
             </Link>
             <span className="hidden h-4 w-px bg-line-2 sm:block" />
-            <span className="hidden font-mono text-[11.5px] tracking-wide whitespace-nowrap text-ink-3 sm:block">
-              AI 地图修改工作台
+            <span className="hidden font-mono text-[12px] tracking-wide whitespace-nowrap text-ink-2 sm:block">
+              本机运行的出图工具
             </span>
             <span className="flex-1" />
             {NAV.map((item, i) => (
@@ -333,10 +333,10 @@ export default function Home() {
                 />
                 <figcaption className="border-t border-line px-5 py-4">
                   <p className="font-mono text-[12px] tracking-[0.16em] text-ink-2 uppercase">
-                    交差的东西
+                    工作台
                   </p>
                   <p className="mt-2 text-[14px] leading-relaxed text-ink-2">
-                    带图框与标题栏的成图。图名、操作人、图例、比例尺、出图时间都在图面上。
+                    出图工作台：栅格与矢量叠着看，图名、操作人、图例、比例尺、出图时间都印在图框里。
                   </p>
                 </figcaption>
               </figure>
@@ -352,7 +352,7 @@ export default function Home() {
                 />
                 <figcaption className="border-t border-line px-5 py-4">
                   <p className="font-mono text-[12px] tracking-[0.16em] text-ink-2 uppercase">
-                    改之前先自检
+                    六段式自检报告
                   </p>
                   <p className="mt-2 text-[14px] leading-relaxed text-ink-2">
                     缺什么、会出什么问题、怎么改，逐条写清——不用等打开 ArcGIS 才发现坐标系未知。
