@@ -38,7 +38,11 @@ jobs:
         #   2. conda 的目录布局分平台：Windows 是 <prefix>\Library\bin，
         #      Linux 是 <prefix>/bin。这里跑在 ubuntu-latest 上，只能用后者。
         run: |
-          conda create -y -n gdal -c conda-forge gdal proj geos
+          # gdal 钉在小版本上（3.13.x）：门禁断言的是 GDAL 的**已知行为**
+          # （比如"同名 .prj 对栅格无效"）。不钉版本的话，conda-forge 哪天
+          # 出了 3.14 且行为变了，CI 就会因为一件跟代码无关的事变红——
+          # 那种红是噪声，不是信号。升版本时请显式改这里，并同步复核那几条检查。
+          conda create -y -n gdal -c conda-forge gdal=3.13 proj geos
           CONDA_BASE="$(conda info --base)"
           GDAL_ROOT="$CONDA_BASE/envs/gdal"
           echo "GDAL_BIN=$GDAL_ROOT/bin" >> "$GITHUB_ENV"

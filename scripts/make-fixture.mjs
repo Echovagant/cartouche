@@ -104,6 +104,15 @@ const ck1 = checksums(info(tff, ['-checksum']));
 runTool(gdalBin, 'gdal_translate', ['-of', 'GTiff', tff, roundtrip]);
 const ck2 = checksums(info(roundtrip, ['-checksum']));
 
+// GDAL 版本号要印出来：门禁断言的是 GDAL 的**已知行为**（比如 .prj 对栅格无效），
+// 一旦 conda-forge 出了新版本而行为变了，日志里必须一眼看出"是不是版本变了"。
+let gdalVersion = '版本未知';
+try {
+  gdalVersion = runTool(gdalBin, 'gdalinfo', ['--version']).trim().split('\n')[0];
+} catch {
+  /* 拿不到版本号不阻断：下面每项检查照样会给出结论 */
+}
+
 // 校验清单：检查项逐条记录，最后由 checklist.finish() 统一决定退出码。
 // 以前这里只打印、不影响退出码，等于没有门禁（2026-10-22 修）。
 const checklist = createChecklist({
@@ -112,17 +121,28 @@ const checklist = createChecklist({
   badMark: BAD,
   dim: DIM,
   reset: RESET,
+  hints: [
+    `本轮 GDAL：${gdalVersion}`,
+    '若失败项与 GDAL 行为有关：CI 已把 gdal 钉在固定小版本上，先确认是版本变化还是代码改动。',
+  ],
 });
 const report = (name, ok, detail) => checklist.add(name, ok, detail);
 
-console.log(`\n${BOLD}样本生成与往返校验${RESET}  ${DIM}${fixDir}${RESET}\n`);
+console.log(`\n${BOLD}样本生成与往返校验${RESET}  ${DIM}${fixDir}${RESET}  ${DIM}${gdalVersion}${RESET}\n`);
 console.log(`${BOLD}A. Esri 原始组合（.tff + .tfw + .wld + .prj）${RESET}`);
 report('GDAL 按内容识别 .tff', driver.startsWith('GTiff'), `Driver = ${driver}`);
 report('影像尺寸读取', Boolean(size), size ? `${size[1]} x ${size[2]} 像元` : '读取失败');
 report('同名 .tfw 被自动关联', listsSidecar, 'gdalinfo 的 Files: 列出了 .tfw');
 report('世界文件生效（仿射参数）', Boolean(px), px ? `Pixel Size = ${px[1]}, ${px[2]}` : '未读到');
 report('原点读取', Boolean(origin), origin ? `Origin = (${origin[1]}, ${origin[2]})` : '未读到');
-report('同名 .prj 对栅格**无效**（已知行为）', !hasCrsSection(infoTff), 'gdalinfo 无 "Coordinate System is:" 段');
+const prjIgnored = !hasCrsSection(infoTff);
+report(
+  '同名 .prj 对栅格**无效**（已知行为）',
+  prjIgnored,
+  prjIgnored
+    ? 'gdalinfo 无 "Coordinate System is:" 段'
+    : 'GDAL 现在会读 .prj 了 —— 行为已变，不是本项目的 bug',
+);
 
 console.log(`\n${BOLD}B. 写回模板（CRS 内嵌）${RESET}`);
 report('内嵌 CRS 的 .tff 可解析坐标系', hasCrsSection(infoEmbedded), 'gdal_translate -a_srs EPSG:4326');
