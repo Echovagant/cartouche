@@ -48,6 +48,14 @@ test('窗口字节数：宽 × 高 × 波段数', () => {
   assert.equal(windowBytes({ x: 0, y: 0, w: 100, h: 50 }, 3), 15000);
 });
 
+test('窗口字节数：16 位时是 8 位的两倍', async () => {
+  const { windowBytes } = await import(eng('window.ts'));
+  const { BYTES_PER_SAMPLE } = await import(eng('pixels.ts'));
+  const win = { x: 0, y: 0, w: 100, h: 50 };
+  assert.equal(windowBytes(win, 3), 15000, '默认按 1 字节/样本');
+  assert.equal(windowBytes(win, 3, BYTES_PER_SAMPLE.UInt16), 30000, '16 位应是两倍');
+});
+
 /* ────────── 窗口化读取 ────────── */
 
 const GDAL_BIN = process.env.GDAL_BIN ?? '';
@@ -76,28 +84,46 @@ function runGdal(tool, args, what) {
 const enviCoord = (n) => (Number.isInteger(n) ? `${n}.0` : String(n));
 
 /**
- * 造一张 40x30 的 GTiff：每个像元值 = valueAt(x, y)。
+ * 造一张 40x30 的 GTiff：每个像元值 = valueAt(x, y, band)。
  *
  * map info 的参考点是 1 基的像元号（ENVI 约定），所以参考点取 (1.0, 1.0)、
  * 参考像元的位置取 (0, 30)：GDAL 读进来后整图原点正好落在 (0, 30)、像元 1x1，
  * 也就是这张图铺满 [0,40]×[0,30]。
  *
  * southUp=true 时改用 -a_ullr 造**南向上**（正 NS 分辨率）的图。
+ *
+ * dataType='UInt16' 时写 16 位裸数据（ENVI data type = 12，小端）——
+ * 16 位原图过去会被 GDAL 判为异构而跳过窗口（实测 GDAL 3.13.3），必须能造出来才测得了。
+ *
+ * bands > 1 时按 bsq 交错铺（一个波段一整段）。
+ * colorinterp 给 'red,green,blue' 时在转成 GTiff 后**补一次** -colorinterp：
+ * ENVI 本身不带颜色解释信息，不补的话 3 波段出来是 Undefined/Undefined/Undefined
+ * （实测），与彩色原图合成时会被 gdalbuildvrt 判为异构。
  */
-function makeRaster(file, valueAt, { southUp = false } = {}) {
+function makeRaster(file, valueAt, { southUp = false, dataType = 'Byte', bands = 1, colorinterp = null } = {}) {
   const w = 40, h = 30;
-  const data = Buffer.alloc(w * h);
-  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) data[y * w + x] = valueAt(x, y);
+  const bytesPerSample = dataType === 'UInt16' ? 2 : 1;
+  const data = Buffer.alloc(w * h * bands * bytesPerSample);
+  for (let b = 0; b < bands; b++) {
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      // bsq：一个波段一整段
+      const off = (b * w * h + y * w + x) * bytesPerSample;
+      if (bytesPerSample === 2) data.writeUInt16LE(valueAt(x, y, b), off);
+      else data[off] = valueAt(x, y, b);
+    }
+  }
   const bin = file.replace(/\.tif$/, '.img');
   writeFileSync(bin, data);
   writeFileSync(file.replace(/\.tif$/, '.hdr'),
-    ['ENVI','bands = 1','header offset = 0','file type = ENVI Standard',
-     'data type = 1','interleave = bsq','byte order = 0',`lines = ${h}`,`samples = ${w}`,
+    ['ENVI',`bands = ${bands}`,'header offset = 0','file type = ENVI Standard',
+     `data type = ${dataType === 'UInt16' ? 12 : 1}`,'interleave = bsq','byte order = 0',`lines = ${h}`,`samples = ${w}`,
      'header size = 0', 'pixel size = 1.0000000000e+000',
      'map info = {Geographic Lat/Lon, 1.0, 1.0, 0.0, 30.0, 1.0, 1.0, units=degrees}',''].join('\n'),
     'latin1');
   const args = ['-of','GTiff'];
   if (southUp) args.push('-a_ullr', '0', '0', String(w), String(h));
+  // -colorinterp 只能给一次，值逗号分隔
+  if (colorinterp) args.push('-colorinterp', colorinterp);
   args.push(bin, file);
   runGdal('gdal_translate', args, `造原图 ${file}`);
   return { width: w, height: h };
@@ -374,6 +400,152 @@ test('局部覆盖：窗口像元分辨率与原图不一致时报错，不按�
       () => overlayWindowOntoRaster(loc, full, winFile, out),
       out,
       /像元大小/,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/* ────────── 16 位与彩色原图走通合成 ────────── */
+
+/**
+ * 用引擎自己的 writeRasterPixels 写一个窗口文件。
+ *
+ * 为什么不用 makeWindowFile：那条夹具造的是 ENVI 直转的裸文件，
+ * 而 Task 4 的既定链路是 writeRasterPixels -> overlayWindowOntoRaster，
+ * 要验的就是这条链路（writeRasterPixels 负责类型与颜色解释，overlay 负责合成）。
+ *
+ * 窗口的仿射必须与原图落在**同一个像元网格**上：
+ * 原图原点在 (0,30)、像元 1x1，所以盖住 geo [4,12]x[6,12] 的窗口
+ * 自身仿射就是 [4, 1, 0, 12, 0, -1]（原点相差整数个像元）。
+ *
+ * crs 必须跟着原图走：坐标系不一致同样是 gdalbuildvrt 判异构的原因之一。
+ */
+async function writeWindowViaEngine(loc, file, { width, height, bands, pixelType, colorInterpretation, crs }) {
+  const { writeRasterPixels } = await import(eng('raw.ts'));
+  await writeRasterPixels(loc, file, {
+    width,
+    height,
+    bands,
+    pixelType,
+    colorInterpretation,
+    geotransform: [4, 1, 0, 12, 0, -1],
+    crs,
+  });
+}
+
+/** 原图的坐标系：窗口必须继承它，否则会被判异构 */
+async function crsOf(loc, file) {
+  const { readRasterFrame } = await import(eng('raw.ts'));
+  return (await readRasterFrame(loc, file)).crs;
+}
+
+test('合成：UInt16 原图 + 16 位窗口，合成成功且类型不丢', async () => {
+  const { loc, overlayWindowOntoRaster } = await loadOverlay();
+  const { readRasterPixels } = await import(eng('raw.ts'));
+  const { newBand } = await import(eng('pixels.ts'));
+
+  const dir = mkdtempSync(join(tmpdir(), 'cartouche-ovl-'));
+  try {
+    // 原图：40x30 的 UInt16，铺满 geo [0,40]x[0,30]
+    const full = join(dir, 'full_u16.tif');
+    const valueAt = (x, y) => 1000 + x * 10 + y;
+    makeRaster(full, valueAt, { dataType: 'UInt16' });
+
+    // 窗口：8x6，盖住 geo [4,12]x[6,12]，值 60000
+    const winFile = join(dir, 'win_u16.tif');
+    const band = newBand('UInt16', 8 * 6);
+    band.fill(60000);
+    await writeWindowViaEngine(loc, winFile, {
+      width: 8, height: 6, bands: [band], pixelType: 'UInt16',
+      colorInterpretation: ['Gray'], crs: await crsOf(loc, full),
+    });
+
+    const out = join(dir, 'out.tif');
+    await overlayWindowOntoRaster(loc, full, winFile, out);
+
+    const px = await readRasterPixels(loc, out);
+    assert.equal(px.pixelType, 'UInt16', '产出必须仍是 16 位，不能被压成 8 位');
+    assert.equal(px.bandCount, 1);
+
+    // geo -> 像元：col = X，row = 30 - Y。窗口盖住 col 4..11、row 18..23。
+    const idx = (col, row) => row * px.width + col;
+    assert.equal(px.bands[0][idx(6, 22)], 60000, '窗口内应被 16 位窗口覆盖');
+    assert.equal(px.bands[0][idx(30, 5)], valueAt(30, 5), '窗口外应与原图一致');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('合成：RGB 原图 + 3 波段窗口，合成成功且仍是 3 波段', async () => {
+  const { loc, overlayWindowOntoRaster } = await loadOverlay();
+  const { readRasterPixels } = await import(eng('raw.ts'));
+  const { newBand } = await import(eng('pixels.ts'));
+
+  const dir = mkdtempSync(join(tmpdir(), 'cartouche-ovl-'));
+  try {
+    // 原图：3 波段，颜色解释 Red/Green/Blue
+    const full = join(dir, 'full_rgb.tif');
+    const valueAt = (x, y, band) => 10 * (band + 1) + ((x + y) % 200);
+    makeRaster(full, valueAt, { bands: 3, colorinterp: 'red,green,blue' });
+
+    const winFile = join(dir, 'win_rgb.tif');
+    const bands = [newBand('Byte', 8 * 6), newBand('Byte', 8 * 6), newBand('Byte', 8 * 6)];
+    bands[0].fill(200);
+    bands[1].fill(100);
+    bands[2].fill(50);
+    await writeWindowViaEngine(loc, winFile, {
+      width: 8, height: 6, bands, pixelType: 'Byte',
+      colorInterpretation: ['Red', 'Green', 'Blue'], crs: await crsOf(loc, full),
+    });
+
+    const out = join(dir, 'out.tif');
+    await overlayWindowOntoRaster(loc, full, winFile, out);
+
+    const px = await readRasterPixels(loc, out);
+    assert.equal(px.bandCount, 3, '产出必须仍是 3 波段');
+    assert.deepEqual(px.colorInterpretation, ['Red', 'Green', 'Blue'], '颜色解释不能丢');
+
+    const idx = (col, row) => row * px.width + col;
+    assert.equal(px.bands[0][idx(6, 22)], 200, '窗口内 Red 波段应被覆盖');
+    assert.equal(px.bands[1][idx(6, 22)], 100, '窗口内 Green 波段应被覆盖');
+    assert.equal(px.bands[2][idx(6, 22)], 50, '窗口内 Blue 波段应被覆盖');
+    assert.equal(px.bands[0][idx(30, 5)], valueAt(30, 5, 0), '窗口外应与原图一致');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('合成：UInt16 原图配 Byte 窗口时报错，要说清是波段类型问题', async () => {
+  const { loc, overlayWindowOntoRaster } = await loadOverlay();
+  const { newBand } = await import(eng('pixels.ts'));
+
+  const dir = mkdtempSync(join(tmpdir(), 'cartouche-ovl-'));
+  try {
+    const full = join(dir, 'full_u16.tif');
+    makeRaster(full, () => 1000, { dataType: 'UInt16' });
+
+    // 类型不一致的窗口：颜色解释与原图一致（都是 Gray），
+    // 这样唯一的异构就是波段类型，报错必须指向这一点。
+    const winFile = join(dir, 'win_b8.tif');
+    const band = newBand('Byte', 8 * 6);
+    band.fill(99);
+    await writeWindowViaEngine(loc, winFile, {
+      width: 8, height: 6, bands: [band], pixelType: 'Byte',
+      colorInterpretation: ['Gray'], crs: await crsOf(loc, full),
+    });
+
+    const out = join(dir, 'out.tif');
+    await assertRejectsWithoutOutput(
+      () => overlayWindowOntoRaster(loc, full, winFile, out),
+      out,
+      (err) => {
+        console.log(`\n[类型不一致时的完整错误信息]\n${err.message}\n`);
+        assert.match(err.message, /波段类型/, '错误信息要指出是波段类型问题');
+        assert.match(err.message, /heterogeneous band data type/, '要带上 GDAL 原文');
+        assert.match(err.message, /Skipping/, '要说明是有源被跳过了');
+        return true;
+      },
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });

@@ -11,6 +11,7 @@
  *  - localRegion 把整图坐标换成窗口内坐标（给只拿到窗口像素的算法用）
  */
 import type { PixelRegion } from './mask.ts';
+import { BYTES_PER_SAMPLE } from './pixels.ts';
 
 export interface RasterWindow {
   readonly x: number;
@@ -60,7 +61,16 @@ export function localRegion(win: RasterWindow, region: PixelRegion): PixelRegion
   };
 }
 
-/** 窗口占用的像素字节数（Byte 型） */
-export function windowBytes(win: RasterWindow, bandCount: number): number {
-  return win.w * win.h * Math.max(1, bandCount);
+/**
+ * 窗口占用的像素字节数。
+ *
+ * bytesPerSample 默认 1（8 位）。16 位影像必须传 2 ——
+ * 否则体积护栏会把实际占用算少一半，护栏就形同虚设了。
+ */
+export function windowBytes(
+  win: RasterWindow,
+  bandCount: number,
+  bytesPerSample: number = BYTES_PER_SAMPLE.Byte,
+): number {
+  return win.w * win.h * Math.max(1, bandCount) * bytesPerSample;
 }
