@@ -5,7 +5,7 @@
  */
 import { createServer, type Server } from 'node:http';
 import { readFileSync } from 'node:fs';
-import { join, dirname, resolve, isAbsolute, sep } from 'node:path';
+import { join, dirname, resolve, isAbsolute, sep, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   LocalFolderStore,
@@ -779,6 +779,10 @@ export function createEngineServer(): Server {
             totalPixels: record.impact?.totalPixels ?? 0,
             affectedRatio: record.impact?.affectedRatio ?? 0,
             backupPath: record.impact?.backupPath ?? null,
+            // 预演不会真的生成备份，但备份**叫什么**是定死的：
+            // `<原名>.bak.<yyyyMMdd-HHmmss>`。确认卡上写清这个名字，
+            // 用户才知道改完能在哪儿找到原件 —— 写"执行时自动生成"等于没说。
+            backupNamePattern: `${basename(record.target)}.bak.<yyyyMMdd-HHmmss>`,
             verified: record.impact?.verified ?? false,
           });
         } catch (err) {
