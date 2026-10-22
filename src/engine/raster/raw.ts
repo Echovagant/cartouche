@@ -15,13 +15,26 @@ import { join } from 'node:path';
 import { tools } from '../gdal/runner.ts';
 import type { GdalLocation } from '../gdal/env.ts';
 import { windowGeotransform, type RasterFrame, type RasterWindow } from './window.ts';
+import {
+  BYTES_PER_SAMPLE,
+  decodeSample,
+  newBand,
+  pixelTypeFromGdal,
+  writeSample,
+  type PixelBand,
+  type PixelType,
+} from './pixels.ts';
 
 export interface RasterPixels {
   readonly width: number;
   readonly height: number;
   readonly bandCount: number;
   /** 每个波段一份，长度 = width * height */
-  readonly bands: Uint8Array[];
+  readonly bands: readonly PixelBand[];
+  /** 像素类型：8 位还是 16 位 */
+  readonly pixelType: PixelType;
+  /** 每个波段的颜色解释（Red / Green / Blue / Gray / Undefined…） */
+  readonly colorInterpretation: readonly string[];
   /** [originX, pixelW, 0, originY, 0, pixelH] */
   readonly geotransform: number[] | null;
   /** 坐标系 WKT */
@@ -38,6 +51,44 @@ export interface RasterPixels {
   readonly checksum: string;
 }
 
+/**
+ * ENVI 头里 `data type` 的编号 → 本引擎的像素类型。
+ *
+ * 只认得两种：1 = Byte、12 = UInt16。
+ * 认不出来的必须报错：Int16 / Float32 这类带如果被默默当成 8 位或 16 位处理，
+ * 结果就是数据被改错了却看不出来 —— 那正是 `-ot Byte` 静默饱和的老毛病。
+ */
+const ENVI_DATA_TYPES: Readonly<Record<number, PixelType>> = Object.freeze({
+  1: 'Byte',
+  12: 'UInt16',
+});
+
+/** ENVI `data type` 编号 → 类型名。报错时要说明白到底是哪种类型不支持。 */
+const ENVI_DATA_TYPE_NAMES: Readonly<Record<number, string>> = Object.freeze({
+  1: 'Byte',
+  2: 'Int16',
+  3: 'Int32',
+  4: 'Float32',
+  5: 'Float64',
+  6: 'Complex',
+  9: 'ComplexDouble',
+  12: 'UInt16',
+  13: 'UInt32',
+  14: 'Int64',
+  15: 'UInt64',
+});
+
+/** 把 ENVI 的 data type 编号翻成本引擎的像素类型；不支持的类型直接报错。 */
+function enviPixelType(dataType: number): PixelType {
+  const type = ENVI_DATA_TYPES[dataType];
+  if (type) return type;
+  const name = ENVI_DATA_TYPE_NAMES[dataType] ?? `未知类型（data type = ${dataType}）`;
+  throw new Error(
+    `不支持的 ENVI 数据类型「${name}」：本引擎只支持 8 位无符号（Byte，data type = 1）` +
+    `与 16 位无符号（UInt16，data type = 12）影像`,
+  );
+}
+
 /** 解析 ENVI 头文件 */
 function parseEnviHeader(text: string): {
   samples: number;
@@ -45,6 +96,7 @@ function parseEnviHeader(text: string): {
   bands: number;
   interleave: string;
   dataType: number;
+  byteOrder: number;
 } {
   const pick = (key: string): string | undefined => {
     const m = new RegExp(`^\\s*${key}\\s*=\\s*\\{?([^}\\r\\n]*)`, 'im').exec(text);
@@ -53,10 +105,14 @@ function parseEnviHeader(text: string): {
   const samples = Number(pick('samples') ?? 0);
   const lines = Number(pick('lines') ?? 0);
   const bands = Number(pick('bands') ?? 1);
-  const interleave = (pick('interleave') ?? 'bip').toLowerCase();
+  // 交错方式取不到时按 bsq（波段顺序）处理：ENVI 规范与 GDAL 驱动都是这个默认。
+  const interleave = (pick('interleave') ?? 'bsq').toLowerCase();
   const dataType = Number(pick('data type') ?? 1);
+  // 字节序：0 = 低字节在前（小端），1 = 高字节在前（大端）。
+  // 取不到时按小端处理 —— GDAL 写出来的 ENVI 一律是小端。
+  const byteOrder = Number(pick('byte order') ?? 0);
   if (!samples || !lines || !bands) throw new Error('ENVI 头文件解析失败：缺少尺寸信息');
-  return { samples, lines, bands, interleave, dataType };
+  return { samples, lines, bands, interleave, dataType, byteOrder };
 }
 
 /**
@@ -65,15 +121,56 @@ function parseEnviHeader(text: string): {
  * 导出它是为了**预演**：预演时像素在内存里算完就丢，
  * 但确认卡要给出"改完之后长什么样"的凭据 —— 同一个算法算出来的校验和
  * 才能和真实执行后的校验和对得上，否则预演给的是个假数字。
+ *
+ * 必须按**字节流**算：带可能是 Uint16Array，直接 update 整条带依赖运行时的处理方式，
+ * 显式切成字节视图才是确定的做法。8 位带的取值与改动前完全一致。
  */
-export function checksumOf(bands: readonly Uint8Array[]): string {
+export function checksumOf(bands: readonly PixelBand[]): string {
   const h = createHash('sha256');
-  for (const b of bands) h.update(b);
+  for (const b of bands) h.update(Buffer.from(b.buffer, b.byteOffset, b.byteLength));
   return h.digest('hex');
 }
 
-/** 读一份 ENVI 中转文件，返回拆好的波段。ENVI 头的命名有两种约定。 */
-function readEnviBands(bin: string, width: number, height: number, bandCount: number): Uint8Array[] {
+/**
+ * ENVI 三种交错方式下，某个样点在裸字节流里的偏移。
+ *
+ *  - bsq（波段顺序）：一个波段一整段
+ *  - bip（像元交错）：同一像元的各波段相邻
+ *  - bil（行交错）：每行内部像元交错，行与行整段分开
+ *
+ * 把 bil 当 bip 处理的话，**第二行起偏移就全错了**，而那只是数值错误，不会报错。
+ */
+function enviSampleOffset(
+  interleave: string,
+  x: number,
+  y: number,
+  band: number,
+  width: number,
+  height: number,
+  bandCount: number,
+  bytesPerSample: number,
+): number {
+  if (interleave === 'bip') {
+    return ((y * width + x) * bandCount + band) * bytesPerSample;
+  }
+  if (interleave === 'bil') {
+    const rowStart = y * width * bandCount * bytesPerSample;
+    return rowStart + (x * bandCount + band) * bytesPerSample;
+  }
+  if (interleave === 'bsq') {
+    const bandStart = band * width * height * bytesPerSample;
+    return bandStart + (y * width + x) * bytesPerSample;
+  }
+  throw new Error(`不支持的 ENVI 交错方式「${interleave}」：只支持 bsq / bip / bil`);
+}
+
+/**
+ * 读一份 ENVI 中转文件，返回拆好的波段。ENVI 头的命名有两种约定。
+ *
+ * 波段的宽度与类型由 ENVI 头的 `data type` 决定（1 = Byte、12 = UInt16），
+ * 样点按头的 `byte order` 解释字节。类型不支持时直接报错，不当成 8 位凑合。
+ */
+export function readEnviBands(bin: string, width: number, height: number, bandCount: number): PixelBand[] {
   const headerCandidates = [`${bin}.hdr`, bin.replace(/\.bin$/i, '.hdr')];
   const headerPath = headerCandidates.find((p) => existsSync(p));
   if (!headerPath) {
@@ -81,23 +178,26 @@ function readEnviBands(bin: string, width: number, height: number, bandCount: nu
   }
   const header = readFileSync(headerPath, 'utf8');
   const meta = parseEnviHeader(header);
+  const pixelType = enviPixelType(meta.dataType);
+  const bytesPerSample = BYTES_PER_SAMPLE[pixelType];
   const raw = new Uint8Array(readFileSync(bin));
-  const expected = width * height * bandCount;
+  const expected = width * height * bandCount * bytesPerSample;
   if (raw.length < expected) {
     throw new Error(`原始像素长度异常：期望 ${expected}，实际 ${raw.length}`);
   }
-  const bands: Uint8Array[] = [];
-  if (meta.interleave === 'bip' || meta.interleave === 'bil') {
-    for (let b = 0; b < bandCount; b++) {
-      const band = new Uint8Array(width * height);
-      for (let i = 0; i < width * height; i++) band[i] = raw[i * bandCount + b]!;
-      bands.push(band);
+  const bands: PixelBand[] = [];
+  for (let b = 0; b < bandCount; b++) {
+    const band = newBand(pixelType, width * height);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const i = y * width + x;
+        const offset = enviSampleOffset(
+          meta.interleave, x, y, b, width, height, bandCount, bytesPerSample,
+        );
+        writeSample(band, i, decodeSample(raw, offset, bytesPerSample, meta.byteOrder), pixelType);
+      }
     }
-  } else {
-    // bsq / bil
-    for (let b = 0; b < bandCount; b++) {
-      bands.push(raw.slice(b * width * height, (b + 1) * width * height));
-    }
+    bands.push(band);
   }
   return bands;
 }
@@ -114,7 +214,7 @@ export async function readRasterPixels(
   }
   const info = JSON.parse(infoRes.stdout) as {
     size?: [number, number];
-    bands?: unknown[];
+    bands?: { type?: string; colorInterpretation?: string }[];
     geoTransform?: number[];
     coordinateSystem?: { wkt?: string };
     driverShortName?: string;
@@ -126,9 +226,17 @@ export async function readRasterPixels(
     throw new Error(`栅格尺寸异常：${absPath}`);
   }
 
+  // 按源的类型读：`-ot Byte` 对 16 位源是**静默饱和**（65535 被压成 255，
+  // 退出码仍是 0、stderr 也是空的，实测 GDAL 3.13.3）——值被改坏了却没有任何提示。
+  // 要保真就得让 GDAL 按源类型导出，导完再按 ENVI 头的类型与字节序读回来。
+  // 源类型不认识（Int16 / Float32 …）在这里就报错，不带着坏数据往下走。
+  const pixelType = pixelTypeFromGdal(info.bands?.[0]?.type);
+  const colorInterpretation = (info.bands ?? []).map((b) => b.colorInterpretation ?? 'Undefined');
+
   const tmp = mkdtempSync(join(tmpdir(), 'cartouche-raw-'));
   const bin = join(tmp, 'raw.bin');
-  const tr = await gdal.translate(['-of', 'ENVI', '-ot', 'Byte', absPath, bin]);
+  const ot = pixelType === 'UInt16' ? 'UInt16' : 'Byte';
+  const tr = await gdal.translate(['-of', 'ENVI', '-ot', ot, absPath, bin]);
   if (!tr.ok) {
     throw new Error(`导出原始像素失败：${absPath}\n${tr.stderr}`);
   }
@@ -140,6 +248,8 @@ export async function readRasterPixels(
     height,
     bandCount,
     bands,
+    pixelType,
+    colorInterpretation,
     geotransform: info.geoTransform ? [...info.geoTransform] : null,
     crs: info.coordinateSystem?.wkt ?? null,
     driver: String(info.driverShortName ?? 'GTiff'),
@@ -218,7 +328,9 @@ export interface RasterWindowPixels {
   readonly width: number;      // = window.w
   readonly height: number;     // = window.h
   readonly bandCount: number;
-  readonly bands: Uint8Array[];
+  readonly bands: readonly PixelBand[];
+  /** 像素类型：8 位还是 16 位 */
+  readonly pixelType: PixelType;
   /** 窗口自身的仿射参数 */
   readonly geotransform: number[] | null;
   readonly crs: string | null;
@@ -229,6 +341,10 @@ export interface RasterWindowPixels {
 export interface RasterFrameInfo extends RasterFrame {
   readonly bandCount: number;
   readonly crs: string | null;
+  /** 像素类型：8 位还是 16 位 */
+  readonly pixelType: PixelType;
+  /** 每个波段的颜色解释（Red / Green / Blue / Gray / Undefined…） */
+  readonly colorInterpretation: readonly string[];
 }
 
 /** 读整图的基本信息（不读像素，很便宜） */
@@ -243,7 +359,7 @@ export async function readRasterFrame(
   }
   const info = JSON.parse(infoRes.stdout) as {
     size?: [number, number];
-    bands?: unknown[];
+    bands?: { type?: string; colorInterpretation?: string }[];
     geoTransform?: number[];
     coordinateSystem?: { wkt?: string };
   };
@@ -256,12 +372,17 @@ export async function readRasterFrame(
   if (!info.geoTransform) {
     throw new Error(`栅格缺少仿射参数，无法定位窗口：${absPath}`);
   }
+  // 源类型不认识就报错：窗口读按类型导出，类型判错会把 16 位静默压成 8 位
+  const pixelType = pixelTypeFromGdal(info.bands?.[0]?.type);
+  const colorInterpretation = (info.bands ?? []).map((b) => b.colorInterpretation ?? 'Undefined');
   return {
     width,
     height,
     bandCount,
     geotransform: [...info.geoTransform],
     crs: info.coordinateSystem?.wkt ?? null,
+    pixelType,
+    colorInterpretation,
   };
 }
 
@@ -285,8 +406,9 @@ export async function readRasterWindow(
 
   const tmp = mkdtempSync(join(tmpdir(), 'cartouche-win-'));
   const bin = join(tmp, 'win.bin');
+  const ot = frame.pixelType === 'UInt16' ? 'UInt16' : 'Byte';
   const tr = await gdal.translate([
-    '-of', 'ENVI', '-ot', 'Byte',
+    '-of', 'ENVI', '-ot', ot,
     '-srcwin', String(win.x), String(win.y), String(win.w), String(win.h),
     absPath, bin,
   ]);
@@ -301,6 +423,7 @@ export async function readRasterWindow(
     height: win.h,
     bandCount: frame.bandCount,
     bands,
+    pixelType: frame.pixelType,
     geotransform: windowGeotransform(frame, win),
     crs: frame.crs,
     checksum: checksumOf(bands),
