@@ -15,6 +15,10 @@
  *      → 栅格的 CRS 必须内嵌进 GeoTIFF，否则面积/长度/叠加全错
  *
  * 用法：npm run fixture
+ *
+ * 这是一道**真门禁**：13 项检查里任何一项没过，脚本都以退出码 1 结束，
+ * CI 的"样本生成与写回往返校验"那一步直接红。
+ * （2026-10-22 之前它只打印 ●/■ 从不影响退出码，等于没有门禁。）
  */
 import { mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
