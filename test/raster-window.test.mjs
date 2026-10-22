@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
@@ -247,6 +247,17 @@ test('局部覆盖：尺寸不变、原点与像元大小不变、窗口内被�
   }
 });
 
+/**
+ * 失败路径必须既报错、又**不留下产出文件**。
+ *
+ * 只断言"抛错"不够：要是报错之前已经把文件写出来（或写了一半），
+ * 调用方拿到的就是一个看着正常、其实没叠加过的文件 —— 那正是最坏的情况。
+ */
+async function assertRejectsWithoutOutput(fn, outPath, check) {
+  await assert.rejects(fn, check);
+  assert.equal(existsSync(outPath), false, '失败路径不能留下产出文件');
+}
+
 test('局部覆盖：原图是南向上时报错，不静默产出错文件', async () => {
   const { loc, overlayWindowOntoRaster } = await loadOverlay();
 
@@ -259,8 +270,10 @@ test('局部覆盖：原图是南向上时报错，不静默产出错文件', as
 
     // gdalbuildvrt 对南向上的源是"Warning + 跳过 + 退出码 0"，
     // 产出反而只剩窗口那么大（8×6）。必须由我们自己报错。
-    await assert.rejects(
-      () => overlayWindowOntoRaster(loc, full, winFile, join(dir, 'out.tif')),
+    const out = join(dir, 'out.tif');
+    await assertRejectsWithoutOutput(
+      () => overlayWindowOntoRaster(loc, full, winFile, out),
+      out,
       (err) => {
         assert.match(err.message, /南向上/, '错误信息要指出是方向问题');
         assert.match(err.message, /Skipping/, '错误信息要带上 GDAL 原文');
@@ -283,8 +296,10 @@ test('局部覆盖：窗口是南向上时报错，窗口被丢掉也要报错',
     const winFile = join(dir, 'win_south.tif');
     makeWindowFile(winFile, 8, 6, 4, 12, 99, { southUp: true });
 
-    await assert.rejects(
-      () => overlayWindowOntoRaster(loc, full, winFile, join(dir, 'out.tif')),
+    const out = join(dir, 'out.tif');
+    await assertRejectsWithoutOutput(
+      () => overlayWindowOntoRaster(loc, full, winFile, out),
+      out,
       (err) => {
         assert.match(err.message, /南向上/, '错误信息要指出是方向问题');
         assert.match(err.message, /Skipping/, '错误信息要带上 GDAL 原文');
@@ -306,8 +321,10 @@ test('局部覆盖：窗口文件不存在时报错，不产出没叠加过的�
     makeRaster(full, () => 10);
     const missing = join(dir, 'nope.tif');
 
-    await assert.rejects(
-      () => overlayWindowOntoRaster(loc, full, missing, join(dir, 'out.tif')),
+    const out = join(dir, 'out.tif');
+    await assertRejectsWithoutOutput(
+      () => overlayWindowOntoRaster(loc, full, missing, out),
+      out,
       (err) => {
         assert.match(err.message, /Skipping/, '错误信息要带上 GDAL 原文');
         assert.match(err.message, /nope\.tif/, '错误信息要指名被跳过的文件');
@@ -330,8 +347,10 @@ test('局部覆盖：窗口没完全落在原图内时报错，不悄悄裁掉�
     const winFile = join(dir, 'win_out.tif');
     makeWindowFile(winFile, 8, 6, 36, 12, 99);
 
-    await assert.rejects(
-      () => overlayWindowOntoRaster(loc, full, winFile, join(dir, 'out.tif')),
+    const out = join(dir, 'out.tif');
+    await assertRejectsWithoutOutput(
+      () => overlayWindowOntoRaster(loc, full, winFile, out),
+      out,
       /窗口超出原图范围/,
     );
   } finally {
@@ -350,8 +369,10 @@ test('局部覆盖：窗口像元分辨率与原图不一致时报错，不按�
     const winFile = join(dir, 'win_fine.tif');
     makeWindowFile(winFile, 8, 6, 4, 12, 99, { pixel: 0.5 });
 
-    await assert.rejects(
-      () => overlayWindowOntoRaster(loc, full, winFile, join(dir, 'out.tif')),
+    const out = join(dir, 'out.tif');
+    await assertRejectsWithoutOutput(
+      () => overlayWindowOntoRaster(loc, full, winFile, out),
+      out,
       /像元大小/,
     );
   } finally {
