@@ -31,10 +31,29 @@ jobs:
       - name: 安装 GDAL（conda-forge）
         # GDAL 是系统级预编译二进制，不走 npm；CI 必须真的装上，
         # 否则样本生成与引擎冒烟测试会变成"永远绿"的假验证。
+        #
+        # 两个平台差异坑（2026-10-22 修，之前 CI 就是死在这里）：
+        #   1. `conda create` 只建环境、不激活，$CONDA_PREFIX 在这一步里是空的；
+        #      环境实际落在 <base>/envs/gdal，前缀要用 `conda info --base` 取。
+        #   2. conda 的目录布局分平台：Windows 是 <prefix>\Library\bin，
+        #      Linux 是 <prefix>/bin。这里跑在 ubuntu-latest 上，只能用后者。
         run: |
           conda create -y -n gdal -c conda-forge gdal proj geos
-          echo "GDAL_BIN=$CONDA_PREFIX/Library/bin" >> "$GITHUB_ENV"
-          echo "GDAL_BIN=$CONDA_PREFIX/Library/bin" >> "$GITHUB_STEP_SUMMARY"
+          CONDA_BASE="$(conda info --base)"
+          GDAL_ROOT="$CONDA_BASE/envs/gdal"
+          echo "GDAL_BIN=$GDAL_ROOT/bin" >> "$GITHUB_ENV"
+          if [ -d "$GDAL_ROOT/share/gdal" ]; then
+            echo "GDAL_DATA=$GDAL_ROOT/share/gdal" >> "$GITHUB_ENV"
+            echo "PROJ_LIB=$GDAL_ROOT/share/proj" >> "$GITHUB_ENV"
+            echo "PROJ_DATA=$GDAL_ROOT/share/proj" >> "$GITHUB_ENV"
+          fi
+          # 用 $GITHUB_PATH 把 GDAL 的 bin 追加进 PATH。
+          # 千万别写 `env: PATH: ${{ env.GDAL_BIN }}:${{ env.PATH }}`：
+          # env 上下文里没有 runner 默认的 PATH，${{ env.PATH }} 会展开成空串，
+          # 于是 PATH 被清成只剩一个不存在的目录，npm 找不到 sh，
+          # 直接以 "enoent spawn sh ENOENT" 收场。
+          echo "$GDAL_ROOT/bin" >> "$GITHUB_PATH"
+          echo "GDAL_BIN=$GDAL_ROOT/bin" >> "$GITHUB_STEP_SUMMARY"
 
       - name: 类型检查
         run: npm run typecheck
@@ -50,13 +69,9 @@ jobs:
       # （embedded.tff / worldref.tff 等），没先生成就跑不起来。
       # 2026-10-21：步骤顺序反了，CI 第一次跑就挂在单元测试上。
       - name: 样本生成与写回往返校验
-        env:
-          PATH: ${{ env.GDAL_BIN }}:${{ env.PATH }}
         run: npm run fixture
 
       - name: 单元测试
-        env:
-          PATH: ${{ env.GDAL_BIN }}:${{ env.PATH }}
         # 串行执行：并行跑多个测试文件会同时拉起十几个 GDAL 子进程，
         # 在 Windows 上偶发文件锁/扫描竞争（实测 5 轮里偶发 1 次失败）。
         # 本地开发可用 `npm test`（并行，快），CI 用这个确定性的串行档。
@@ -80,8 +95,6 @@ jobs:
         run: npm run scan:encoding
 
       - name: 引擎冒烟测试
-        env:
-          PATH: ${{ env.GDAL_BIN }}:${{ env.PATH }}
         run: npm run smoke:engine
 
       - name: 构建前端静态站点

@@ -39,7 +39,7 @@ if (!gdalBin) {
 } else {
   let version = '';
   try {
-    version = runTool(gdalBin, 'gdalinfo.exe', ['--version']).trim();
+    version = runTool(gdalBin, 'gdalinfo', ['--version']).trim();
   } catch (e) {
     version = `调用失败: ${e.message}`;
   }
@@ -48,8 +48,8 @@ if (!gdalBin) {
 
   try {
     // 栅格驱动用 gdalinfo --formats，矢量驱动用 ogrinfo --formats（两者列表不同）
-    const rasterFormats = runTool(gdalBin, 'gdalinfo.exe', ['--formats']);
-    const vectorFormats = runTool(gdalBin, 'ogrinfo.exe', ['--formats']);
+    const rasterFormats = runTool(gdalBin, 'gdalinfo', ['--formats']);
+    const vectorFormats = runTool(gdalBin, 'ogrinfo', ['--formats']);
     const wanted = [
       { name: 'GTiff', source: rasterFormats },
       { name: 'OpenFileGDB', source: vectorFormats },
