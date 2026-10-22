@@ -33,9 +33,9 @@ const geistMono = localFont({
 });
 
 export const metadata: Metadata = {
-  title: '图签 Cartouche · AI 地图修改工作台',
+  title: '图签 Cartouche · 本机运行的地图出图工具',
   description:
-    '用一句话描述要改什么，AI 给出可核对的修改方案，确定性引擎执行，全程留痕。',
+    '装在你自己电脑上，打开放图件的文件夹。画一笔、确认一下，原图件就地改好，ArcGIS 照常打开。改了什么、动了多少、备份在哪，都写在动手之前。',
 };
 
 export const viewport: Viewport = {

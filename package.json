@@ -1,7 +1,7 @@
 {
   "name": "cartouche",
   "version": "0.1.0",
-  "description": "图签 Cartouche — AI 驱动的地图修改工作台：用自然语言描述要改什么，AI 给出可核对的修改方案，确定性引擎执行，全程留痕。",
+  "description": "图签 Cartouche — 跑在本机的地图出图工具：改图、原子写回、兼容性自检、交差材料与留痕，数据不出本机，不依赖商业 GIS 授权。",
   "license": "Apache-2.0",
   "type": "module",
   "private": false,
@@ -33,6 +33,7 @@
     "build:web": "npm -w web run build",
     "build:server": "npm -w @cartouche/engine run build && npm -w server run build",
     "build:engine": "npm -w @cartouche/engine run build",
+    "pack:release": "node scripts/pack-release.mjs",
     "typecheck": "npm -w @cartouche/engine run build && npm -w @cartouche/engine run typecheck && npm -w server run typecheck && npm -w web run typecheck"
   },
   "keywords": [
