@@ -174,6 +174,8 @@ async function evaluate(sample) {
       width: px.width,
       height: px.height,
       bands: px.bands,
+      pixelType: px.pixelType,
+      colorInterpretation: px.colorInterpretation,
       geotransform: px.geotransform,
       crs: px.crs,
     });
