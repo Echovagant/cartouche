@@ -59,7 +59,7 @@ export { resolveGdal, gdalEnv, candidateBinDirs } from './gdal/env.ts';
 export type { GdalLocation } from './gdal/env.ts';
 export { runTool, tools, classifyError } from './gdal/runner.ts';
 export type { GdalTools, ToolResult, GdalErrorKind, ClassifiedError } from './gdal/runner.ts';
-export { probeDataset, listDrivers } from './gdal/probe.ts';
+export { probeDataset, listDrivers, isLongitudeLatitude } from './gdal/probe.ts';
 export type { DatasetInfo, RasterInfo, VectorInfo, CrsInfo } from './gdal/probe.ts';
 export { writeBack, backupPathFor, createBackup, replaceFileAtomically } from './gdal/writeback.ts';
 export type { WriteBackRequest, WriteBackResult, WriteBackSidecar } from './gdal/writeback.ts';

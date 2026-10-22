@@ -33,6 +33,7 @@ import {
   previewOp,
   normalizePlan,
   listImplementedOps,
+  isLongitudeLatitude,
   type OperationSpec,
   type PlanDocument,
   type PlanExecutionResult,
@@ -723,10 +724,20 @@ export function createEngineServer(): Server {
             height: ds.height,
             bandCount: ds.bandCount,
             geotransform: ds.geotransform,
-            // 给前端一句能直接判断的 CRS 摘要：
-            // 前端要把地图坐标换算成原生像元，坐标系不是 4326 时换算不了
-            crs: ds.crs.epsg ? `EPSG:${ds.crs.epsg}` : (ds.crs.authority ? ds.crs.authority : null),
-            crsWkt: ds.crs.wkt ?? null,
+            // 坐标系：原始信息 + **一个能直接用的结论**。
+            // 前端要判断"能不能拿经纬度直接换算原生像元"，
+            // 但 GDAL 对同一个文件有时只给 WKT 不给 EPSG 代码（crs.epsg 会是 undefined），
+            // 让前端自己判字符串会漏判 —— 这个结论由引擎给，判据见 isLongitudeLatitude。
+            crs: {
+              present: ds.crs.present,
+              epsg: ds.crs.epsg ?? null,
+              authority: ds.crs.authority ?? null,
+              source: ds.crs.source,
+              wkt: ds.crs.wkt ?? null,
+              /** true = 坐标就是经纬度，可以直接按 geotransform 反算原生像元 */
+              is4326: isLongitudeLatitude(ds.crs, ds.geotransform),
+            },
+            // 兼容旧字段：能给出 EPSG 代码时给 "EPSG:xxxx"，否则 null
             epsg: ds.crs.epsg ?? null,
           });
         } catch (err) {
