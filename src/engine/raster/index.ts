@@ -4,8 +4,16 @@
 export { RasterEditor } from './ops.ts';
 export type { RasterOpResult, RasterDeps } from './ops.ts';
 
-export { readRasterPixels, writeRasterPixels, checksumOf } from './raw.ts';
-export type { RasterPixels } from './raw.ts';
+export {
+  readRasterPixels,
+  writeRasterPixels,
+  checksumOf,
+  readRasterFrame,
+  readRasterWindow,
+} from './raw.ts';
+export type { RasterPixels, RasterWindowPixels, RasterFrameInfo } from './raw.ts';
+
+export { overlayWindowOntoRaster } from './overlay.ts';
 
 export {
   buildAlphaMask,

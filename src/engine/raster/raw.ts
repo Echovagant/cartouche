@@ -225,11 +225,17 @@ export interface RasterWindowPixels {
   readonly checksum: string;
 }
 
+/** 整图的基本信息（尺寸 + 仿射参数）之外，再带上波段数与坐标系 */
+export interface RasterFrameInfo extends RasterFrame {
+  readonly bandCount: number;
+  readonly crs: string | null;
+}
+
 /** 读整图的基本信息（不读像素，很便宜） */
 export async function readRasterFrame(
   loc: GdalLocation,
   absPath: string,
-): Promise<RasterFrame & { readonly bandCount: number; readonly crs: string | null }> {
+): Promise<RasterFrameInfo> {
   const gdal = tools(loc);
   const infoRes = await gdal.info(absPath, ['-json']);
   if (!infoRes.ok) {
