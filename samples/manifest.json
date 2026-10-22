@@ -1,7 +1,7 @@
 {
   "version": "1.0",
   "note": "公开、免费、免登录的地理数据源清单。全部用于压测本项目的引擎能力，不是产品数据。下载到 samples/（已在 .gitignore 中），不入库。",
-  "selection": "优先选：① 免登录可直连 ② 许可允许商用 ③ 能触发我们已知的薄弱点（非 Byte 类型、缺 CRS、nodata、超大、超多字段、中文字段）",
+  "selection": "优先选：① 免登录可直连 ② 许可允许商用 ③ 能压到已知薄弱点（非 Byte 类型、缺 CRS、nodata、超大、超多字段、中文字段）",
   "samples": [
     {
       "id": "naturalearth-admin0",
