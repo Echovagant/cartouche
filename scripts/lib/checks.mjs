@@ -16,6 +16,7 @@
  * @param {string} [options.badMark]  失败标记
  * @param {string} [options.dim]      次要信息前缀（ANSI）
  * @param {string} [options.reset]    ANSI 复位
+ * @param {string[]} [options.hints]  失败时附带的排查提示
  */
 export function createChecklist(options = {}) {
   const {
@@ -24,6 +25,7 @@ export function createChecklist(options = {}) {
     badMark = '■',
     dim = '',
     reset = '',
+    hints = [],
   } = options;
 
   const results = [];
@@ -56,6 +58,9 @@ export function createChecklist(options = {}) {
       console.log(`\n  ${badMark} ${title}：${this.total} 项中 ${failed.length} 项未通过`);
       for (const f of failed) {
         console.log(`    · ${f.name}${f.detail ? `  ${dim}${f.detail}${reset}` : ''}`);
+      }
+      for (const h of hints) {
+        console.log(`    ${dim}${h}${reset}`);
       }
       console.log('');
       // 不调 process.exit()：让事件循环自然排空，避免 Windows 上强退触发 libuv 断言

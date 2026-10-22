@@ -118,6 +118,7 @@ test('make-fixture：真实 GDAL 下检查项全过，退出码为 0', () => {
   assert.equal(res.status, 0, `本机应有 GDAL 且全部检查通过，实际退出码 ${res.status}\n${out}`);
   assert.ok(!out.includes(FAIL), `不该有失败标记\n${out}`);
   assert.match(out, /项全部通过/, '应有通过汇总');
+  assert.match(out, /GDAL \d+\.\d+/, '应打印本次用的 GDAL 版本号——门禁断言的是 GDAL 的已知行为，版本号必须可见');
 });
 
 test('make-fixture：检查项不通过时必须以非零码退出（真门禁）', () => {
@@ -144,4 +145,14 @@ test('ci.yml：样本生成那一步不能用 continue-on-error / || true 绕过
   assert.ok(!/continue-on-error/.test(cfg), 'continue-on-error 会把门禁变成摆设');
   assert.ok(!/npm run fixture.*\|\|\s*true/.test(cfg), '|| true 会吞掉失败退出码');
   assert.ok(/run: npm run fixture/.test(cfg), '样本生成步骤应当直接跑 npm run fixture');
+});
+
+test('ci.yml：GDAL 必须钉住小版本（否则行为变化会以噪声的形式让 CI 变红）', () => {
+  const yml = readFileSync(join(root, '.github', 'workflows', 'ci.yml'), 'utf8');
+  const cfg = yml.split(/\r?\n/).map((l) => l.replace(/#.*$/, '')).join('\n');
+  assert.match(
+    cfg,
+    /gdal=\d+\.\d+/,
+    'CI 必须把 GDAL 钉在固定小版本上：门禁断言的是 GDAL 的已知行为，版本漂移必须是有意为之',
+  );
 });
