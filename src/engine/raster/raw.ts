@@ -14,6 +14,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { tools } from '../gdal/runner.ts';
 import type { GdalLocation } from '../gdal/env.ts';
+import { windowGeotransform, type RasterFrame, type RasterWindow } from './window.ts';
 
 export interface RasterPixels {
   readonly width: number;
@@ -71,6 +72,36 @@ export function checksumOf(bands: readonly Uint8Array[]): string {
   return h.digest('hex');
 }
 
+/** 读一份 ENVI 中转文件，返回拆好的波段。ENVI 头的命名有两种约定。 */
+function readEnviBands(bin: string, width: number, height: number, bandCount: number): Uint8Array[] {
+  const headerCandidates = [`${bin}.hdr`, bin.replace(/\.bin$/i, '.hdr')];
+  const headerPath = headerCandidates.find((p) => existsSync(p));
+  if (!headerPath) {
+    throw new Error(`未找到 ENVI 头文件（尝试过：${headerCandidates.join('、')}）`);
+  }
+  const header = readFileSync(headerPath, 'utf8');
+  const meta = parseEnviHeader(header);
+  const raw = new Uint8Array(readFileSync(bin));
+  const expected = width * height * bandCount;
+  if (raw.length < expected) {
+    throw new Error(`原始像素长度异常：期望 ${expected}，实际 ${raw.length}`);
+  }
+  const bands: Uint8Array[] = [];
+  if (meta.interleave === 'bip' || meta.interleave === 'bil') {
+    for (let b = 0; b < bandCount; b++) {
+      const band = new Uint8Array(width * height);
+      for (let i = 0; i < width * height; i++) band[i] = raw[i * bandCount + b]!;
+      bands.push(band);
+    }
+  } else {
+    // bsq / bil
+    for (let b = 0; b < bandCount; b++) {
+      bands.push(raw.slice(b * width * height, (b + 1) * width * height));
+    }
+  }
+  return bands;
+}
+
 /** 读取一个栅格的原始像素（不含缩放、不做重采样） */
 export async function readRasterPixels(
   loc: GdalLocation,
@@ -102,33 +133,7 @@ export async function readRasterPixels(
     throw new Error(`导出原始像素失败：${absPath}\n${tr.stderr}`);
   }
 
-  // ENVI 头的命名有两种约定：<base>.hdr（替换扩展名）或 <base>.bin.hdr
-  const headerCandidates = [`${bin}.hdr`, bin.replace(/\.bin$/i, '.hdr')];
-  const headerPath = headerCandidates.find((p) => existsSync(p));
-  if (!headerPath) {
-    throw new Error(`未找到 ENVI 头文件（尝试过：${headerCandidates.join('、')}）`);
-  }
-  const header = readFileSync(headerPath, 'utf8');
-  const meta = parseEnviHeader(header);
-  const raw = new Uint8Array(readFileSync(bin));
-  const expected = width * height * bandCount;
-  if (raw.length < expected) {
-    throw new Error(`原始像素长度异常：期望 ${expected}，实际 ${raw.length}`);
-  }
-
-  const bands: Uint8Array[] = [];
-  if (meta.interleave === 'bip' || meta.interleave === 'bil') {
-    for (let b = 0; b < bandCount; b++) {
-      const band = new Uint8Array(width * height);
-      for (let i = 0; i < width * height; i++) band[i] = raw[i * bandCount + b]!;
-      bands.push(band);
-    }
-  } else {
-    // bsq / bil
-    for (let b = 0; b < bandCount; b++) {
-      bands.push(raw.slice(b * width * height, (b + 1) * width * height));
-    }
-  }
+  const bands = readEnviBands(bin, width, height, bandCount);
 
   return {
     width,
@@ -205,4 +210,93 @@ export async function writeRasterPixels(
   if (!res.ok) {
     throw new Error(`写出 GeoTIFF 失败：${outAbsPath}\n${res.stderr}`);
   }
+}
+
+/** 一个窗口的像素（窗口自身坐标系下的仿射参数） */
+export interface RasterWindowPixels {
+  readonly window: RasterWindow;
+  readonly width: number;      // = window.w
+  readonly height: number;     // = window.h
+  readonly bandCount: number;
+  readonly bands: Uint8Array[];
+  /** 窗口自身的仿射参数 */
+  readonly geotransform: number[] | null;
+  readonly crs: string | null;
+  readonly checksum: string;
+}
+
+/** 读整图的基本信息（不读像素，很便宜） */
+export async function readRasterFrame(
+  loc: GdalLocation,
+  absPath: string,
+): Promise<RasterFrame & { readonly bandCount: number; readonly crs: string | null }> {
+  const gdal = tools(loc);
+  const infoRes = await gdal.info(absPath, ['-json']);
+  if (!infoRes.ok) {
+    throw new Error(`读取栅格信息失败：${absPath}\n${infoRes.stderr}`);
+  }
+  const info = JSON.parse(infoRes.stdout) as {
+    size?: [number, number];
+    bands?: unknown[];
+    geoTransform?: number[];
+    coordinateSystem?: { wkt?: string };
+  };
+  const width = info.size?.[0] ?? 0;
+  const height = info.size?.[1] ?? 0;
+  const bandCount = info.bands?.length ?? 0;
+  if (!width || !height || !bandCount) {
+    throw new Error(`栅格尺寸异常：${absPath}`);
+  }
+  if (!info.geoTransform) {
+    throw new Error(`栅格缺少仿射参数，无法定位窗口：${absPath}`);
+  }
+  return {
+    width,
+    height,
+    bandCount,
+    geotransform: [...info.geoTransform],
+    crs: info.coordinateSystem?.wkt ?? null,
+  };
+}
+
+/**
+ * 只读一个窗口的像素。
+ *
+ * 走 `-srcwin`：GDAL 只把窗口那一块导出成 ENVI，
+ * Node 内存里就只有窗口大小，与原文件大小无关。
+ */
+export async function readRasterWindow(
+  loc: GdalLocation,
+  absPath: string,
+  win: RasterWindow,
+): Promise<RasterWindowPixels> {
+  const gdal = tools(loc);
+  const frame = await readRasterFrame(loc, absPath);
+  if (win.x < 0 || win.y < 0 || win.w <= 0 || win.h <= 0 ||
+      win.x + win.w > frame.width || win.y + win.h > frame.height) {
+    throw new Error(`窗口越出栅格范围（窗口 ${win.x},${win.y} ${win.w}×${win.h}；整图 ${frame.width}×${frame.height}）`);
+  }
+
+  const tmp = mkdtempSync(join(tmpdir(), 'cartouche-win-'));
+  const bin = join(tmp, 'win.bin');
+  const tr = await gdal.translate([
+    '-of', 'ENVI', '-ot', 'Byte',
+    '-srcwin', String(win.x), String(win.y), String(win.w), String(win.h),
+    absPath, bin,
+  ]);
+  if (!tr.ok) {
+    throw new Error(`导出窗口像素失败：${absPath}\n${tr.stderr}`);
+  }
+  const bands = readEnviBands(bin, win.w, win.h, frame.bandCount);
+
+  return {
+    window: win,
+    width: win.w,
+    height: win.h,
+    bandCount: frame.bandCount,
+    bands,
+    geotransform: windowGeotransform(frame, win),
+    crs: frame.crs,
+    checksum: checksumOf(bands),
+  };
 }
