@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync, readdirSync, statfsSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
@@ -821,6 +821,239 @@ test('区域替换：羽化向外生长，窗口留足余量，边缘过渡与�
       if (after.bands[0][i] !== expected[0][i]) diff++;
     }
     assert.equal(diff, 0, `羽化边缘必须与整图一致（差异 ${diff} 个像元）`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/* ────────── 磁盘余量护栏 ────────── */
+
+/**
+ * 造一张"整图远大于可用空间"的稀疏大图。
+ *
+ * 为什么用 gdal_create 而不是真写像素：整图要是真写出来，
+ * 几十 GB 的数据会把测试机直接写满 —— 那正是这条护栏要防的事故本身。
+ * gdal_create 建的是**稀疏**文件：磁盘上几乎不占地方，头里却写着真实尺寸，
+ * 于是"按整图算的需求"超过可用空间、"按窗口算的需求"不超 ——
+ * 这正是区分两种实现的那把尺子。
+ *
+ * `--config CHECK_DISK_FREE_SPACE FALSE`：GDAL 3.13 自己也会拦
+ * "要建的比可用空间还大"（实测原文："Free disk space available is 29.15 GB,
+ * whereas 62.50 GB are at least necessary"），而这里要的正是那个尺寸，所以得关掉它。
+ */
+function makeSparseHugeRaster(file, side) {
+  runGdal('gdal_create', [
+    '--config', 'CHECK_DISK_FREE_SPACE', 'FALSE',
+    '-outsize', String(side), String(side),
+    '-bands', '1', '-ot', 'Byte', '-burn', '0',
+    // 必须给仿射参数：gdal_create 默认不带地理变换，
+    // 而窗口路径要求"栅格缺少仿射参数"这一关能过（否则根本走不到磁盘护栏）。
+    // -a_ullr 的顺序是 上左 x、上左 y、下右 x、下右 y ——
+    // 上左 y 必须**大于**下右 y 才是北向上（正 NS 分辨率会被 gdalbuildvrt 跳过）。
+    '-a_ullr', '0', String(side), String(side), '0',
+    '-of', 'GTiff', file,
+  ], `造稀疏大图 ${file}`);
+}
+
+/** gdal_create 是否可用（造稀疏大图要用；没有就跳过那条用例） */
+function hasGdalCreate() {
+  try {
+    execFileSync(gdalBin(`gdal_create${EXE_SUFFIX}`), ['--help'], { stdio: 'ignore' });
+    return true;
+  } catch (err) {
+    // 工具不存在才会是 ENOENT；退出码非 0 说明工具在、只是 --help 不是合法用法
+    return err.code !== 'ENOENT';
+  }
+}
+
+test('磁盘余量：余量不足时明确报错，原文件一个字节都没变', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cartouche-disk-'));
+  try {
+    const tif = join(dir, 'small.tif');
+    makeRaster(tif, BIG_VALUE);
+    const bytesBefore = readFileSync(tif);
+
+    // 下限顶到天上 → 必然不够用
+    const { editor } = await loadEditor(dir, { minFreeBytes: Number.MAX_SAFE_INTEGER });
+
+    await assert.rejects(
+      () => editor.paint({
+        target: 'small.tif',
+        region: { minX: 2, minY: 2, maxX: 8, maxY: 8 },
+        color: [10, 20, 30],
+      }),
+      (err) => {
+        console.log('[磁盘余量不足时的错误信息]\n' + err.message);
+        assert.match(err.message, /磁盘/, '要说明是磁盘问题');
+        assert.match(err.message, /空间/, '要说明是空间不足');
+        assert.match(err.message, /当前可用/, '要报出实际可用空间');
+        assert.match(err.message, /建议/, '要给出下一步该怎么做');
+        return true;
+      },
+    );
+
+    assert.deepEqual(readFileSync(tif), bytesBefore, '原文件必须一个字节都没变');
+    // 护栏要挡在**写临时文件之前**：失败路径不能留下半个临时文件
+    const leftovers = readdirSync(dir).filter((f) => f.startsWith('.'));
+    assert.deepEqual(leftovers, [], '失败路径不能留下临时文件');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('磁盘余量：余量够时正常写回', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cartouche-disk-'));
+  try {
+    const tif = join(dir, 'small.tif');
+    makeRaster(tif, BIG_VALUE);
+    const { loc, editor } = await loadEditor(dir, { minFreeBytes: 0 });
+
+    const res = await editor.paint({
+      target: 'small.tif',
+      region: { minX: 2, minY: 2, maxX: 8, maxY: 8 },
+      color: [10, 20, 30],
+    });
+    assert.equal(res.verified, true, '余量够时应当正常写回并通过回读校验');
+
+    const after = await readRasterPixels(loc, tif);
+    const idx = (x, y) => y * after.width + x;
+    assert.equal(after.bands[0][idx(4, 4)], 10, '涂色应当生效');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/* 这条用例的关键数字（随机器的可用空间自适应，所以永远成立）：
+ *   可用空间 avail = bavail × bsize（statfsSync）
+ *   整图 side×side 字节 = wholeBytes，side = ceil(sqrt(avail × 2)) + 1
+ *        ⇒ 整图字节数 > 可用空间（留一倍余量，防测试期间磁盘占用变化导致量级翻转）
+ *   窗口 64×64 = 4 096 字节
+ *   minFreeBytes = 64 MB（**介于窗口大小与整图大小之间**）
+ *
+ * 为什么这条能区分两种实现 —— 需求取"本次实际需求"与"下限"里更大的那个：
+ *   按窗口算 → 需求 = max(4 096, 64 MB) = 64 MB ≤ 可用 → **放行**（错：必然写满磁盘）
+ *   按整图算 → 需求 = max(整图, 64 MB) = 整图 > 可用 → **拦下**（对）
+ * 也就是说：这条用例拦下来了，就说明需求是按整图算的；放行了，就说明按窗口算了。 */
+test('磁盘余量：窗口路径按**整图**算 —— 整图必然写满磁盘时必须拦下', async (t) => {
+  if (!hasGdalCreate()) {
+    t.skip('本机没有 gdal_create，造不出稀疏大图');
+    return;
+  }
+  const dir = mkdtempSync(join(tmpdir(), 'cartouche-disk-'));
+  try {
+    const st = statfsSync(dir);
+    const avail = st.bavail * st.bsize;
+    const side = Math.ceil(Math.sqrt(avail * 2)) + 1;
+    const wholeBytes = side * side;
+    const winBytes = 64 * 64;
+    const minFree = 64 * 1024 * 1024;
+
+    const tif = join(dir, 'huge.tif');
+    makeSparseHugeRaster(tif, side);
+    console.log(
+      `[磁盘余量] 可用 ${avail} 字节（bavail ${st.bavail} × bsize ${st.bsize}）；` +
+      `整图 ${side}×${side} = ${wholeBytes} 字节；窗口 64×64 = ${winBytes} 字节；` +
+      `下限 ${minFree} 字节`,
+    );
+    assert.ok(wholeBytes > avail, '整图必须大于可用空间，这条用例才说明得了问题');
+    assert.ok(winBytes < minFree && minFree < wholeBytes, '下限必须介于窗口大小与整图大小之间');
+
+    const { editor } = await loadEditor(dir, { minFreeBytes: minFree });
+    await assert.rejects(
+      () => editor.paint({ target: 'huge.tif', region: BIG_REGION, color: [10, 20, 30] }),
+      (err) => {
+        console.log('[整图写不下时的错误信息]\n' + err.message);
+        assert.match(err.message, /磁盘/, '要说明是磁盘问题');
+        assert.match(err.message, /空间/, '要说明是空间不足');
+        assert.match(
+          err.message,
+          new RegExp(`${(wholeBytes / 1024 ** 3).toFixed(2)} GB`),
+          '报出的需求必须是整图大小',
+        );
+        assert.doesNotMatch(err.message, /4\.0 KB/, '不能报窗口大小');
+        return true;
+      },
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('磁盘余量：窗口路径报出的需求是整图大小，不是窗口大小', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cartouche-disk-'));
+  try {
+    const tif = join(dir, 'big.tif');
+    makeRaster(tif, BIG_VALUE, { width: BIG_W, height: BIG_H });
+    // 整图 2048×1536×1 波段×8 位 = 3 145 728 字节（3.0 MB）；窗口 64×64 = 4 096 字节（4.0 KB）
+    const { editor } = await loadEditor(dir, { minFreeBytes: Number.MAX_SAFE_INTEGER });
+
+    await assert.rejects(
+      () => editor.paint({ target: 'big.tif', region: BIG_REGION, color: [200, 100, 50] }),
+      (err) => {
+        console.log('[窗口路径的磁盘需求]\n' + err.message);
+        assert.match(err.message, /本次实际需求 3\.0 MB/, '需求必须按整图算（3.0 MB）');
+        assert.doesNotMatch(err.message, /4\.0 KB/, '不能报窗口大小（4.0 KB）');
+        assert.doesNotMatch(err.message, /4 096 字节/, '不能报窗口大小');
+        return true;
+      },
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('磁盘余量：查的是目标所在目录（临时文件与目标同目录 ⇒ 同一卷）', async () => {
+  // 动态导入：护栏函数还不存在时也能把别的用例跑完（ESM 静态导入缺导出是整份文件加载失败）
+  const { assertFreeSpace } = await import(eng('ops.ts'));
+  const dir = mkdtempSync(join(tmpdir(), 'cartouche-disk-'));
+  try {
+    const st = statfsSync(dir);
+    const avail = st.bavail * st.bsize;
+    const target = join(dir, 'x.tif');
+
+    // 需求略小于可用空间 → 放行
+    assertFreeSpace(target, avail - 1024 * 1024);
+
+    // 需求略大于可用空间 → 拦下，且报错要带上被查的目录
+    assert.throws(
+      () => assertFreeSpace(target, avail + 1024 * 1024),
+      (err) => {
+        assert.match(err.message, /磁盘/, '要说明是磁盘问题');
+        assert.ok(err.message.includes(dir), `报错要带上被检查的目录（${dir}）`);
+        return true;
+      },
+    );
+
+    // 另存为到**还不存在**的子目录：按它所在的卷算，不能因此报"查不了磁盘"
+    assertFreeSpace(join(dir, 'sub', 'deep', 'out.tif'), 1024);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('磁盘余量：另存为时查的是新文件所在目录（临时文件落在那儿）', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cartouche-disk-'));
+  try {
+    const tif = join(dir, 'small.tif');
+    makeRaster(tif, BIG_VALUE);
+    // 另存到的子目录要先建好：临时文件由 gdal_translate 写，它不会自己建目录
+    mkdirSync(join(dir, 'sub'), { recursive: true });
+    const { editor } = await loadEditor(dir, { minFreeBytes: Number.MAX_SAFE_INTEGER });
+
+    await assert.rejects(
+      () => editor.paint(
+        { target: 'small.tif', region: { minX: 2, minY: 2, maxX: 8, maxY: 8 }, color: [10, 20, 30] },
+        { outputPath: 'sub/out.tif' },
+      ),
+      (err) => {
+        assert.match(err.message, /磁盘/, '要说明是磁盘问题');
+        assert.ok(
+          err.message.includes(join(dir, 'sub')),
+          `要查新文件所在目录（临时文件落在那儿）：${err.message}`,
+        );
+        return true;
+      },
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

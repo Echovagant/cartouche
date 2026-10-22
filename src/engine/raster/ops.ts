@@ -14,10 +14,10 @@
  *  - **整图路径**（全局操作，如调色）：整读整图。
  * 两条路径都受体积上限约束（见 `RasterDeps.maxWindowBytes`）。
  *
- * 共同的安全链路：占用检测 → 备份 → 临时文件 → 原子替换 → 回读校验。
+ * 共同的安全链路：占用检测 → 磁盘余量 → 备份 → 临时文件 → 原子替换 → 回读校验。
  */
 import { randomBytes } from 'node:crypto';
-import { rmSync } from 'node:fs';
+import { rmSync, statfsSync, existsSync } from 'node:fs';
 import { dirname, join, basename } from 'node:path';
 import { tools } from '../gdal/runner.ts';
 import type { GdalLocation } from '../gdal/env.ts';
@@ -109,6 +109,104 @@ export interface RasterDeps {
    * 超限时明确报错，比默默 OOM 强。
    */
   readonly maxWindowBytes?: number;
+  /**
+   * 要求的最小可用磁盘字节数（作为下限；本次实际需求更大时按实际算）。默认 512 MB。
+   *
+   * 为什么要有这个下限：光看"这一次写得下吗"不够 ——
+   * 把盘写满会让系统日志、临时目录、别的工程一起写不进去，
+   * 故障就从"这一次操作失败"扩散成"整台机器都不正常"。
+   */
+  readonly minFreeBytes?: number;
+}
+
+/** 默认保留下限：写回后磁盘至少还剩 512 MB */
+const DEFAULT_MIN_FREE_BYTES = 512 * 1024 * 1024;
+
+/**
+ * 把字节数说成人看得懂的量。
+ *
+ * 报错信息是给人看的：直接甩 3145728 没人判断得出"这够不够"，
+ * 换算成 MB / GB 才行。
+ */
+function humanBytes(bytes: number): string {
+  if (!Number.isFinite(bytes)) return '未知大小';
+  const abs = Math.abs(bytes);
+  if (abs >= 1024 ** 5) return `${(bytes / 1024 ** 5).toFixed(2)} PB`;
+  if (abs >= 1024 ** 4) return `${(bytes / 1024 ** 4).toFixed(2)} TB`;
+  if (abs >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(2)} GB`;
+  if (abs >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
+  if (abs >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${Math.round(bytes)} 字节`;
+}
+
+/**
+ * 找出离 dir 最近的、确实存在的目录。
+ *
+ * 为什么需要往上找：另存为到一个**还不存在**的子目录时，
+ * 直接 statfsSync(那个目录) 会 ENOENT —— 那是"目录还没建"，不是"查不了磁盘"。
+ * 往上找到最近存在的祖先目录即可：新建目录与它的父目录必然同卷。
+ */
+function nearestExistingDir(dir: string): string {
+  let cur = dir;
+  for (;;) {
+    if (existsSync(cur)) return cur;
+    const parent = dirname(cur);
+    if (parent === cur) return cur;
+    cur = parent;
+  }
+}
+
+/**
+ * 磁盘余量护栏。
+ *
+ * 为什么要有：写回时要写一份与原图同尺寸的临时文件。磁盘不够时，
+ * 写到一半失败会留下半个文件 —— 用户的图件处于不明状态，比直接报错糟得多。
+ *
+ * 查的是**目标所在目录**的可用空间：临时文件与目标同目录（同卷），
+ * 所以查目标所在目录就等于查临时文件所在的那个卷。
+ *
+ * @param absPath 目标所在路径（临时文件与目标同目录 => 同一卷）
+ * @param neededBytes 本次实际需要的字节数
+ * @param minFreeBytes 保留下限：可用空间要满足"实际需求"与"下限"里更大的那个
+ */
+export function assertFreeSpace(
+  absPath: string,
+  neededBytes: number,
+  minFreeBytes = 0,
+): void {
+  const dir = dirname(absPath);
+  const probeDir = nearestExistingDir(dir);
+  let available: number;
+  try {
+    const st = statfsSync(probeDir);
+    // bavail = 留给普通用户可用的量（POSIX 语义）；Windows 上 bfree === bavail。
+    available = st.bavail * st.bsize;
+  } catch (err) {
+    // 查不到余量时**不放行**：放行等于把"写到一半失败"的风险原样放回去。
+    // 报错里带上原始原因，用户才分得清是"盘满了"还是"这个目录查不了"。
+    throw new Error(
+      `无法查询磁盘余量（${probeDir}）：${(err as Error).message}\n` +
+        '为避免写到一半失败留下半个文件，本次操作已中止。' +
+        '请确认该目录存在、且当前用户有访问权限。',
+    );
+  }
+
+  const required = Math.max(neededBytes, minFreeBytes);
+  if (available >= required) return;
+
+  const where = probeDir === dir
+    ? `目标所在磁盘（${dir}）`
+    : `目标所在磁盘（${probeDir}；目标目录 ${dir} 还不存在，按它所在的卷算）`;
+  const detail = [`本次实际需求 ${humanBytes(neededBytes)}`];
+  if (minFreeBytes > 0) detail.push(`保留下限 ${humanBytes(minFreeBytes)}`);
+  throw new Error(
+    `磁盘空间不足，无法安全写回。\n` +
+      `${where}当前可用 ${humanBytes(available)}；` +
+      `本次写回需要 ${humanBytes(required)}（${detail.join('、')}）。\n` +
+      '写回时会先写一份与原图同尺寸的临时文件；空间不够就会写到一半失败、留下半个文件，' +
+      '用户手上的图件就处于不明状态。\n' +
+      '建议：把工程换到可用空间更大的盘；或清理该盘上的旧文件腾出空间；或缩小操作范围。',
+  );
 }
 
 /**
@@ -202,11 +300,14 @@ export class RasterEditor {
   readonly #store: WorkspaceAdapter;
   /** 单个窗口（或整图）允许的最大像素字节数 */
   readonly #maxWindowBytes: number;
+  /** 写回时磁盘至少要剩下的可用字节数 */
+  readonly #minFreeBytes: number;
 
   constructor(deps: RasterDeps) {
     this.#loc = deps.loc;
     this.#store = deps.store;
     this.#maxWindowBytes = deps.maxWindowBytes ?? 256 * 1024 * 1024;
+    this.#minFreeBytes = deps.minFreeBytes ?? DEFAULT_MIN_FREE_BYTES;
   }
 
   #abs(rel: string): string {
@@ -347,9 +448,9 @@ export class RasterEditor {
     // 体积护栏必须在**整读之前**判：整读几 GB 的影像就是 OOM，
     // 等读完再判断等于没有护栏。
     const meta = await this.#metaOf(this.#abs(target));
-    this.#assertWithinSizeLimit(
-      meta.width * meta.height * meta.bandCount * BYTES_PER_SAMPLE[meta.pixelType],
-    );
+    // 整图的像素字节数：内存护栏（按整图）与磁盘护栏（按整图）都用它
+    const wholeBytes = meta.width * meta.height * meta.bandCount * BYTES_PER_SAMPLE[meta.pixelType];
+    this.#assertWithinSizeLimit(wholeBytes);
 
     const before = await this.#read(target);
     this.#assertWritebackSafe(target, before.driver);
@@ -377,6 +478,9 @@ export class RasterEditor {
 
     // 另存为：临时文件落在**新文件旁边**，rename 才是同卷原子操作
     const dest = outputPath ?? target;
+    // 磁盘余量护栏：临时文件与原图同尺寸 ⇒ 需求按**整图**算。
+    // 放在写临时文件之前 —— 写下去才发现装不下，就只剩半个文件了。
+    assertFreeSpace(this.#abs(dest), wholeBytes, this.#minFreeBytes);
     const temp = this.#tempPath(dest, 'tmp.tif');
     await writeRasterPixels(this.#loc, temp, {
       width: before.width,
@@ -492,6 +596,12 @@ export class RasterEditor {
 
     // 另存为：临时文件落在**新文件旁边**，rename 才是同卷原子操作
     const dest = outputPath ?? target;
+    // ⚠️ 磁盘余量护栏：窗口化省的是**内存**，不是磁盘 ——
+    // overlayWindowOntoRaster 产出的临时文件与原图**同尺寸**，
+    // 所以需求按**整图**算；按窗口算会放行一个必然写满磁盘的操作。
+    // 这与体积护栏（maxWindowBytes）语义不同：那个管内存、按窗口算；这个管磁盘、按整图算。
+    const wholeBytes = frame.width * frame.height * meta.bandCount * BYTES_PER_SAMPLE[meta.pixelType];
+    assertFreeSpace(this.#abs(dest), wholeBytes, this.#minFreeBytes);
     const winTmp = this.#tempPath(dest, 'win.tif');
     const mergedTmp = this.#tempPath(dest, 'merged.tif');
     let backupPath: string | null = null;
