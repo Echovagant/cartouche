@@ -84,6 +84,19 @@ export interface RasterOpResult {
   readonly dryRun?: boolean;
 }
 
+/**
+ * 像素级编辑的通用选项。
+ *
+ * `outputPath` 是"另存为新文件"的引擎侧开关：给了它，新内容落到那个新路径，
+ * **原文件一个字节都不动**（用户裁定 2026-10-22：默认直接改原文件，
+ * 另给一个"另存为新文件"的按钮；按钮的界面在出图排版那一轮，不在本层）。
+ */
+export interface RasterEditOptions {
+  readonly dryRun?: boolean;
+  /** 给定则写到新文件，原文件不动（"另存为新文件"）；工作区相对路径 */
+  readonly outputPath?: string;
+}
+
 export interface RasterDeps {
   readonly loc: GdalLocation;
   readonly store: WorkspaceAdapter;
@@ -293,6 +306,9 @@ export class RasterEditor {
    *  - **整图路径**（没给 region）：调色这类全局操作，整读整图。
    *
    * 两条路径都受体积护栏约束 —— 整图路径也不能把几个 GB 读进内存。
+   *
+   * 给了 outputPath 就是"另存为新文件"：临时文件落在**新文件旁边**，
+   * 最后落到新路径，原文件一个字节都不动。
    */
   async #applyPixels(
     op: string,
@@ -304,15 +320,20 @@ export class RasterEditor {
       readonly region?: PixelRegion;
       /** 区域外扩的像元数（修补需要边界外的像素） */
       readonly marginPx?: number;
+      /** 给定则写到新文件，原文件不动（"另存为新文件"） */
+      readonly outputPath?: string;
     },
   ): Promise<RasterOpResult> {
     const region = options?.region;
     if (region) {
       return this.#applyPixelsOnWindow(
         op, target, mutate, region, options?.marginPx ?? 0, options?.dryRun ?? false,
+        options?.outputPath,
       );
     }
-    return this.#applyPixelsOnWhole(op, target, mutate, options?.dryRun ?? false);
+    return this.#applyPixelsOnWhole(
+      op, target, mutate, options?.dryRun ?? false, options?.outputPath,
+    );
   }
 
   /** 整图路径：整读整图，在内存里算，再整图写回 */
@@ -321,6 +342,7 @@ export class RasterEditor {
     target: string,
     mutate: (px: RasterPixels, ctx: PixelEditContext) => PixelBand[] | Promise<PixelBand[]>,
     dryRun: boolean,
+    outputPath: string | undefined,
   ): Promise<RasterOpResult> {
     // 体积护栏必须在**整读之前**判：整读几 GB 的影像就是 OOM，
     // 等读完再判断等于没有护栏。
@@ -353,7 +375,9 @@ export class RasterEditor {
       };
     }
 
-    const temp = this.#tempPath(target, 'tmp.tif');
+    // 另存为：临时文件落在**新文件旁边**，rename 才是同卷原子操作
+    const dest = outputPath ?? target;
+    const temp = this.#tempPath(dest, 'tmp.tif');
     await writeRasterPixels(this.#loc, temp, {
       width: before.width,
       height: before.height,
@@ -365,12 +389,20 @@ export class RasterEditor {
       geotransform: before.geotransform,
       crs: before.crs,
     });
-    const { backupPath } = await replaceFileAtomically(this.#store, { target, tempPath: temp });
-    const after = await this.#read(target);
+    const { backupPath } = await replaceFileAtomically(
+      this.#store,
+      outputPath
+        ? { target, tempPath: temp, mode: 'copy', outputPath }
+        : { target, tempPath: temp },
+    );
+    // 回读校验读的是**落地的那个文件**：另存为时是新文件，不是原文件
+    const after = await this.#read(dest);
 
     return {
       op,
       target: this.#abs(target),
+      // 另存为时 outputPath 是新文件；原地替换时不带这个字段
+      ...(outputPath ? { outputPath: this.#abs(outputPath) } : {}),
       affectedPixels: countChanged(before.bands[0], after.bands[0]),
       totalPixels: before.width * before.height,
       checksumBefore: before.checksum,
@@ -403,6 +435,7 @@ export class RasterEditor {
     region: PixelRegion,
     marginPx: number,
     dryRun: boolean,
+    outputPath: string | undefined,
   ): Promise<RasterOpResult> {
     const abs = this.#abs(target);
     const meta = await this.#metaOf(abs);
@@ -457,8 +490,10 @@ export class RasterEditor {
       };
     }
 
-    const winTmp = this.#tempPath(target, 'win.tif');
-    const mergedTmp = this.#tempPath(target, 'merged.tif');
+    // 另存为：临时文件落在**新文件旁边**，rename 才是同卷原子操作
+    const dest = outputPath ?? target;
+    const winTmp = this.#tempPath(dest, 'win.tif');
+    const mergedTmp = this.#tempPath(dest, 'merged.tif');
     let backupPath: string | null = null;
     try {
       await writeRasterPixels(this.#loc, winTmp, {
@@ -479,15 +514,23 @@ export class RasterEditor {
       // 叠回原图：产出与原图同尺寸、同仿射、同波段类型的完整文件
       await overlayWindowOntoRaster(this.#loc, abs, winTmp, mergedTmp);
 
-      const replaced = await replaceFileAtomically(this.#store, { target, tempPath: mergedTmp });
+      const replaced = await replaceFileAtomically(
+        this.#store,
+        outputPath
+          ? { target, tempPath: mergedTmp, mode: 'copy', outputPath }
+          : { target, tempPath: mergedTmp },
+      );
       backupPath = replaced.backupPath;
 
       // 回读校验只读窗口：窗口外的像素不逐字节比对（那要读整个文件）
-      const verified = await this.#verifyWindow(target, win, newBands, frame);
+      // 另存为时校验的是**新文件**（原地替换时校验的是原文件）
+      const verified = await this.#verifyWindow(dest, win, newBands, frame);
 
       return {
         op,
         target: abs,
+        // 另存为时 outputPath 是新文件；原地替换时不带这个字段
+        ...(outputPath ? { outputPath: this.#abs(outputPath) } : {}),
         affectedPixels: countChanged(before.bands[0], newBands[0]),
         totalPixels: frame.width * frame.height,
         // 窗口口径的校验和：写进去的值与回读值已由 verifyWindow 逐样点证明相同
@@ -568,7 +611,7 @@ export class RasterEditor {
   }
 
   /** 擦除标注色块：有干净底图就从底图取像素，没有就用边界内插 */
-  async erase(req: EraseRequest, options?: { readonly dryRun?: boolean }): Promise<RasterOpResult> {
+  async erase(req: EraseRequest, options?: RasterEditOptions): Promise<RasterOpResult> {
     if (req.source) {
       return this.replaceRegion({
         source: req.source,
@@ -581,7 +624,7 @@ export class RasterEditor {
   }
 
   /** 用另一张图替换指定区域（可羽化过渡） */
-  async replaceRegion(req: ReplaceRegionRequest, options?: { readonly dryRun?: boolean }): Promise<RasterOpResult> {
+  async replaceRegion(req: ReplaceRegionRequest, options?: RasterEditOptions): Promise<RasterOpResult> {
     const targetMeta = await this.#metaOf(this.#abs(req.target));
     const sourceMeta = await this.#metaOf(this.#abs(req.source));
 
@@ -618,7 +661,7 @@ export class RasterEditor {
   }
 
   /** 边界内插修补 */
-  async inpaint(req: InpaintRequest, options?: { readonly dryRun?: boolean }): Promise<RasterOpResult> {
+  async inpaint(req: InpaintRequest, options?: RasterEditOptions): Promise<RasterOpResult> {
     const radiusPx = req.radiusPx ?? 4;
     const iterations = Math.max(1, Math.round(radiusPx * 2));
     return this.#applyPixels(
@@ -635,7 +678,7 @@ export class RasterEditor {
   }
 
   /** 亮度 / 对比度调整 */
-  async adjustLevels(req: { target: string } & LevelsOptions, options?: { readonly dryRun?: boolean }): Promise<RasterOpResult> {
+  async adjustLevels(req: { target: string } & LevelsOptions, options?: RasterEditOptions): Promise<RasterOpResult> {
     return this.#applyPixels('raster.adjustLevels', req.target, (px) => {
       const levels: LevelsOptions = {
         method: req.method ?? 'linear-stretch',
@@ -648,7 +691,7 @@ export class RasterEditor {
   }
 
   /** 区域涂色 */
-  async paint(req: PaintRequest, options?: { readonly dryRun?: boolean }): Promise<RasterOpResult> {
+  async paint(req: PaintRequest, options?: RasterEditOptions): Promise<RasterOpResult> {
     const parsed = parseColor(req.color);
     // 'sample-from-edge' 要看区域**外面**的像元，窗口至少外扩一圈；
     // 否则窗口里根本没有区域外的像元可取（取不到色就只剩黑色）。
