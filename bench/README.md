@@ -116,4 +116,4 @@ npm run samples:eval    # 用真实数据量出「实现程度」，产出能力
 3. `preconditions.state` 要写真实状态，不要写理想状态——理想状态下模型不会犯错，测不出问题。
 4. 新增用例必须带 `proParity`（Pro 工具链 + 复杂度等级 + 来源），否则无法判断它离真实场景有多远。
 5. `gap` 用例在能力补齐后，把 `status` 改成 `covered` 并补上 `expected.ops` 与 `assertions`。
-6. 用例先由模型起草、再由人工逐条核对，尤其是 `preconditions.state` 与期望结果是否符合现场实况。
+6. 用例先起草、再由人工逐条核对，尤其是 `preconditions.state` 与期望结果是否符合现场实况。

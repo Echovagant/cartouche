@@ -1,7 +1,7 @@
 // 下载公开样本数据到 samples/（该目录已在 .gitignore 中，不入库）。
 //
 // 选源原则（见 samples/manifest.json）：
-//   ① 免登录可直连 ② 许可允许商用 ③ 能触发我们已知的薄弱点
+//   ① 免登录可直连 ② 许可允许商用 ③ 能压到已知薄弱点
 //
 // 用法：
 //   node scripts/fetch-samples.mjs              # 下载缺失的样本
