@@ -84,3 +84,6 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+
+# 发布包（npm run pack:release 的产物）：几十 MB 的 zip，不进仓库
+release/

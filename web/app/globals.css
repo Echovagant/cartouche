@@ -335,3 +335,17 @@
     scroll-behavior: auto !important;
   }
 }
+
+/* ── 打印兜底：滚动揭示的入场动画在打印时一律展开 ───────────────
+ * 那些卡片靠 GSAP 从 opacity 0 淡入，屏幕上滚到就会显形；
+ * 但打印/整页截图不会滚动，于是大片内容是隐形的。
+ * 打印的读者要的是内容本身，不是仪式感。 */
+@media print {
+  [data-bento='cell'],
+  [data-gate='card'],
+  [data-pipeline='item'] {
+    opacity: 1 !important;
+    visibility: visible !important;
+    transform: none !important;
+  }
+}

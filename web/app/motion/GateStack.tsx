@@ -39,11 +39,14 @@ export function GateStack({ gates }: { gates: readonly Gate[] }) {
             scale: 1,
             autoAlpha: 1,
             ease: 'power2.out',
+            // 一次性淡入，**不用 scrub**。
+            // scrub 把进度绑死在滚动位置上：停在 #gates 时第 3、4 张卡会永远停在
+            // opacity 0.88 / 0.99 —— 文字发虚，看着像渲染坏了。
+            // 堆叠的视觉由 z-index + 负 margin 负责，不需要靠 scrub 维持。
             scrollTrigger: {
               trigger: card,
               start: 'top 88%',
-              end: 'top 46%',
-              scrub: 0.5,
+              once: true,
             },
           },
         );
