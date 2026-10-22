@@ -537,6 +537,39 @@ try {
     await rm(join(wsRoot, opRaster), { force: true });
   }
 
+  /* ── ④：AI 接入页的端点（不配密钥时的行为） ── */
+  const llmStatus = await fetch(`${BASE}/api/llm/status`);
+  const llmStatusJson = await llmStatus.json();
+  check(
+    'GET /api/llm/status 只回状态，不回密钥',
+    llmStatus.ok
+      && llmStatusJson.configured === false
+      && llmStatusJson.source === 'none'
+      && typeof llmStatusJson.models?.length === 'number'
+      && !('apiKey' in llmStatusJson)
+      && !('key' in llmStatusJson),
+    JSON.stringify(llmStatusJson).slice(0, 160),
+  );
+
+  // 没配密钥时，拉模型与发消息都要明确拒掉，不能默默给一份假清单
+  const llmModelsNoKey = await fetch(`${BASE}/api/llm/models`);
+  check(
+    'GET /api/llm/models 没配密钥返回 400',
+    llmModelsNoKey.status === 400,
+    `HTTP ${llmModelsNoKey.status}`,
+  );
+
+  const llmTestNoKey = await fetch(`${BASE}/api/llm/test`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ prompt: '你好' }),
+  });
+  check(
+    'POST /api/llm/test 没配密钥返回 400',
+    llmTestNoKey.status === 400,
+    `HTTP ${llmTestNoKey.status}`,
+  );
+
   console.log(`\n  ${failed ? BAD : OK} 冒烟测试${failed ? '未通过' : '通过'}${RESET}\n`);
 } catch (err) {
   console.error(`  ${BAD} 冒烟测试异常: ${err.message}`);

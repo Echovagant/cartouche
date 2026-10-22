@@ -19,8 +19,13 @@ import {
   redactSecrets,
   MINIMAX_MODELS,
   MINIMAX_EFFORT_LEVELS,
+  MINIMAX_CN_BASE_URL,
+  listModelIds,
+  chatOnce,
+  pickModelsAfterFailure,
   type KeyProvider,
   type LlmCredentials,
+  type ModelsSource,
 } from '@cartouche/engine';
 
 export type KeySource = 'none' | 'env' | 'session';
@@ -91,22 +96,105 @@ export function llmStatus(): LlmStatus {
     baseUrl: provider.baseUrl,
     configured: Boolean(currentApiKey()),
     source: currentKeySource(),
-    models: MINIMAX_MODELS,
+    // 拉过一次之后就用拉到的真清单；还没拉过就给代码里的离线兜底清单
+    models: lastSuccessfulModels ?? MINIMAX_MODELS,
     effortLevels: MINIMAX_EFFORT_LEVELS,
   };
 }
 
-const MINIMAX_MODEL_LIST = [
-  'MiniMax-M2.7',
-  'MiniMax-M2.7-highspeed',
-  'MiniMax-M2.5',
-  'MiniMax-M2.5-highspeed',
-  'MiniMax-M2.1',
-  'MiniMax-M2.1-highspeed',
-  'MiniMax-M2',
-];
+/**
+ * 模型清单的来源。
+ *
+ * - `api`：刚从官方 `GET {base}/models` 实时拉到 —— 这是**准确**的那一份，
+ *   因为模型上下线很频繁，写死在代码里的清单随时会过期。
+ * - `stale`：这次没拉到，用的是**上一次成功**拉到的那份（用户知道它可能过期）。
+ * - `fallback`：一次都没成功拉过，只能用代码里的离线清单。
+ *
+ * 哪一种都**必须**标出来 —— 只给一份列表却不说是哪来的，
+ * 用户会以为那就是实时结果。
+ */
+export type LlmModelsSource = ModelsSource;
+
+export interface LlmModelsResult {
+  readonly models: readonly string[];
+  readonly source: LlmModelsSource;
+  /** 拉取失败时的原因（已脱敏）；source = api 时为 null */
+  readonly warning: string | null;
+}
+
+export interface LlmTestResult {
+  readonly reply: string;
+  readonly model: string;
+  /** 往返耗时（毫秒） */
+  readonly elapsedMs: number;
+}
+
+/**
+ * 上一次成功拉到的模型清单。
+ *
+ * 只在内存里（跟密钥一样的待遇）。有了它，一次网络抽风不会把用户
+ * 正在用的模型清单清空 —— 只是把它标成"上次成功的"。
+ */
+let lastSuccessfulModels: readonly string[] | null = null;
 
 /** 取当前凭据（供网关发请求用）。没有就返回 null。 */
 export async function resolveCredentials(): Promise<LlmCredentials | null> {
   return provider.resolve('local');
+}
+
+/**
+ * 拉模型清单：能实时拉就实时拉，拉不到才退回上一次成功的（再退才轮到离线清单）。
+ *
+ * 实时拉取失败**不算错误** —— 这一步是给用户选模型用的，
+ * 断网时给一份能用的清单比直接报错有用。但失败原因必须如实带出去。
+ */
+export async function llmModels(): Promise<LlmModelsResult> {
+  const creds = await resolveCredentials();
+  // apiKey 在 KeyProvider 接口里是可选的（有些提供方不需要密钥），
+  // 这里收窄成"一定有"再往下走 —— 没有密钥就别去打扰官方接口。
+  if (!creds?.apiKey) {
+    throw new Error('还没有配置 API Key：先在「密钥来源」里粘贴，或用启动脚本从本机密文注入。');
+  }
+  const apiKey = creds.apiKey;
+  try {
+    const models = await listModelIds({
+      apiKey,
+      baseUrl: creds.baseUrl ?? MINIMAX_CN_BASE_URL,
+      model: creds.model,
+    });
+    lastSuccessfulModels = models;
+    return { models, source: 'api', warning: null };
+  } catch (err) {
+    return pickModelsAfterFailure({
+      lastSuccessful: lastSuccessfulModels,
+      fallback: MINIMAX_MODELS,
+      warning: scrub((err as Error).message),
+    });
+  }
+}
+
+/**
+ * 连通性测试：发一句话，把回话与耗时带回来。
+ *
+ * 密钥只在这一次请求里用一次，用完就只留在内存里。
+ */
+export async function llmTest(options: {
+  readonly prompt?: string | undefined;
+  readonly model?: string | undefined;
+  readonly effort?: string | undefined;
+}): Promise<LlmTestResult> {
+  const creds = await resolveCredentials();
+  if (!creds?.apiKey) {
+    throw new Error('还没有配置 API Key：先在「密钥来源」里粘贴，或用启动脚本从本机密文注入。');
+  }
+  const apiKey = creds.apiKey;
+  const prompt = options.prompt?.trim() || '用一句话打个招呼。';
+  const result = await chatOnce({
+    apiKey,
+    baseUrl: creds.baseUrl ?? MINIMAX_CN_BASE_URL,
+    model: options.model?.trim() || creds.model,
+    ...(options.effort ? { effort: options.effort } : {}),
+    prompt,
+  });
+  return { reply: result.reply, model: result.model, elapsedMs: result.elapsedMs };
 }

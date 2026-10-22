@@ -39,7 +39,7 @@ import {
   type PlanDocument,
   type PlanExecutionResult,
 } from '@cartouche/engine';
-import { llmStatus, scrub, setSessionApiKey } from './llm.ts';
+import { llmStatus, llmModels, llmTest, currentApiKey, scrub, setSessionApiKey } from './llm.ts';
 import { loadRegisteredRoots, registerRoot } from './roots.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -414,6 +414,57 @@ export function createEngineServer(): Server {
           json(200, llmStatus());
         } catch (err) {
           json(500, { error: 'internal', message: scrub((err as Error).message) });
+        }
+      })();
+      return;
+    }
+
+    // 模型清单：**实时**从官方拉。拉不到就退回离线清单，但必须说是哪一份。
+    if (url.pathname === '/api/llm/models' && req.method === 'GET') {
+      void (async () => {
+        try {
+          if (!currentApiKey()) {
+            json(400, {
+              error: 'llm_not_configured',
+              message: '还没有配置 API Key：先在「密钥来源」里粘贴，或用启动脚本从本机密文注入。',
+            });
+            return;
+          }
+          json(200, await llmModels());
+        } catch (err) {
+          json(502, { error: 'llm_unreachable', message: scrub((err as Error).message) });
+        }
+      })();
+      return;
+    }
+
+    // 连通性测试：发一句话，把回话与耗时带回来
+    if (url.pathname === '/api/llm/test' && req.method === 'POST') {
+      void (async () => {
+        let body: { prompt?: string; model?: string; effort?: string };
+        try {
+          const raw = (await readBody(req)).toString('utf8').trim();
+          body = raw ? (JSON.parse(raw) as typeof body) : {};
+        } catch {
+          json(400, { error: 'bad_request', message: '请求体必须是 JSON：{"prompt":"...","model":"...","effort":"..."}' });
+          return;
+        }
+        try {
+          if (!currentApiKey()) {
+            json(400, {
+              error: 'llm_not_configured',
+              message: '还没有配置 API Key：先在「密钥来源」里粘贴，或用启动脚本从本机密文注入。',
+            });
+            return;
+          }
+          const result = await llmTest({
+            prompt: body.prompt,
+            model: body.model,
+            effort: body.effort,
+          });
+          json(200, { ok: true, ...result });
+        } catch (err) {
+          json(502, { error: 'llm_test_failed', message: scrub((err as Error).message) });
         }
       })();
       return;
