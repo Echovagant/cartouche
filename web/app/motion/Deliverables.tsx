@@ -1,209 +1,175 @@
 'use client';
 
 /**
- * 交付物三联卡。
+ * 交付物三件实物（S5）。
  *
- * 原本这里是 GSAP ScrollTrigger 的 **pin + 横向位移**（滚动时卡片横着走）。
+ * 之前这里是 GSAP ScrollTrigger 的 **pin + 横向位移**（滚动时卡片横着走）。
  * 实测下来有两个问题，都不值得留：
  *   1. 固定高度 580px 的容器放不下卡片，底部被视口截掉，看起来像"被拉伸"；
  *   2. 横向位移会**接管滚轮**，页面在那一段不能正常上下滚。
  * 现在改成普通的响应式网格：内容一样，滚轮就是滚轮。
  *
+ * ── 三张图都是真的 ─────────────────────────────────────────────
+ *  - canvas-frame.jpg  出图工作台的实拍（1578×802）
+ *  - report.jpg        六段式自检报告的实拍（1400×702）
+ *  - export-pdf.png    **引擎自己导出的**那一份单页 PDF 的首页
+ *                      （引擎 /api/render/raster.png 出图 → 引擎
+ *                        /api/export/pdf 封 PDF → 首页栅格化）
+ *
+ * 手绘的示意 SVG 已经全部删掉：示意图里的面积、坐标、操作人、日期
+ * 都是编的，而用户明确要求「不伪造数据」。
  * 保留的只有**入场动画**（滚到时逐张淡入上移）——它不接管滚动。
  */
-import { useEffect, useRef } from 'react';
+import { useRef } from 'react';
 import gsap from 'gsap';
 import { ScrollTrigger } from 'gsap/ScrollTrigger';
-import { FilePdfIcon, ShieldCheckIcon, StackIcon } from '@phosphor-icons/react';
+import { useGSAP } from '@gsap/react';
 
-/** 干净数据文件：属性表 + 备份条 */
-function FilePreview() {
-  return (
-    <div className="font-mono text-[11px] leading-[1.5]">
-      <div className="mb-2 flex items-center gap-2 text-paper/70">
-        <span aria-hidden="true" className="text-accent-lit">
-          ▸
-        </span>{' '}
-        scan-2024.tff + .tfw + .prj
-      </div>
-      <div className="rounded border border-paper/10">
-        {[
-          ['名称', '测试图斑'],
-          ['编码', '1024'],
-          ['面积', '1 284.6 m²'],
-        ].map(([k, v]) => (
-          <div
-            key={k}
-            className="flex justify-between border-b border-paper/8 px-2.5 py-1.5 last:border-b-0"
-          >
-            <span className="text-paper/70">{k}</span>
-            <span className="text-paper/80">{v}</span>
-          </div>
-        ))}
-      </div>
-      <div className="mt-2 text-accent-lit">备份 scan-2024.tff.20261021-1052.bak 已生成</div>
-    </div>
-  );
+gsap.registerPlugin(useGSAP, ScrollTrigger);
+
+interface Deliverable {
+  readonly src: string;
+  readonly alt: string;
+  readonly width: number;
+  readonly height: number;
+  readonly title: string;
+  readonly body: string;
+  /** 一行等宽事实：这件东西到底是什么 */
+  readonly fact: string;
 }
 
-/** PDF 图件：缩略的图幅 */
-function SheetPreview() {
-  return (
-    <svg viewBox="0 0 320 150" className="h-full w-full" aria-hidden="true">
-      <rect x="6" y="6" width="308" height="138" fill="#fcfaf5" fillOpacity="0.94" />
-      <rect x="14" y="14" width="292" height="122" fill="none" stroke="#1c1a16" strokeOpacity="0.3" />
-      <path
-        d="M14 96c40-22 62 12 104-6s72-34 116-10 62 16 72 8"
-        fill="none"
-        stroke="#1c1a16"
-        strokeOpacity="0.22"
-      />
-      <path d="M60 40l84-9 8 58-88 7z" fill="#2f6f5e" fillOpacity="0.18" stroke="#2f6f5e" strokeOpacity="0.8" />
-      <rect x="196" y="88" width="104" height="42" fill="#fff" stroke="#1c1a16" strokeOpacity="0.3" />
-      <line x1="196" y1="102" x2="300" y2="102" stroke="#1c1a16" strokeOpacity="0.2" />
-      <text x="204" y="99" fontSize="8" fontFamily="ui-sans-serif, sans-serif" fill="#1c1a16" fillOpacity="0.7">
-        图签 Cartouche 出图
-      </text>
-      <text x="204" y="116" fontSize="7" fontFamily="ui-monospace, monospace" fill="#1c1a16" fillOpacity="0.72">
-        2026-10-21 · 张三
-      </text>
-      <rect x="24" y="116" width="26" height="5" fill="#1c1a16" fillOpacity="0.7" />
-      <rect x="50" y="116" width="26" height="5" fill="none" stroke="#1c1a16" strokeOpacity="0.7" />
-    </svg>
-  );
-}
-
-/**
- * 兼容性自检报告的示意缩略。
- *
- * 展示的是**一份干净报告**（六段全过）——这才是交付时应有的样子。
- * 之前这里画的是"有阻断问题"的版本，容易被读成"这工具还没解决这些问题"。
- */
-function ReportPreview() {
-  const rows = [
-    ['1. 文件格式', '栅格 · GTiff · 40×30', false],
-    ['2. 坐标系', 'CGCS2000 / 3° 带', false],
-    ['3. 几何有效性', '通过', false],
-    ['4. 伴随文件', '.tfw .wld 齐全', false],
-    ['5. ArcGIS 提示', '无', false],
-    ['6. 量化摘要', '未发现阻断', false],
-  ] as const;
-  return (
-    <div className="font-mono text-[11px] leading-[1.5]">
-      <div className="mb-1.5 text-paper/70">兼容性自检报告 · scan-2024.tff</div>
-      {rows.map(([k, v, bad]) => (
-        <div
-          key={k}
-          className="flex items-center justify-between border-b border-paper/8 py-0.5 last:border-b-0"
-        >
-          <span className="text-paper/70">{k}</span>
-          <span className={bad ? 'text-warn-lit' : 'text-accent-lit'}>{v}</span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-const ITEMS = [
+const ITEMS: readonly Deliverable[] = [
   {
-    icon: StackIcon,
-    tag: '干净数据文件',
-    title: '格式与坐标系原样保留',
-    body: '写回的是 .tff 还是 .shp，栅格 CRS 照样内嵌在世界文件里。ArcGIS Pro 打开，不多问一句。',
-    meta: ['原子写入', '自动备份', '占用检测'],
-    preview: <FilePreview />,
+    src: './site/canvas-frame.jpg',
+    alt: '出图工作台：栅格与矢量叠在图框中，图名、操作人、图例、比例尺与出图时间都印在图面上',
+    width: 1578,
+    height: 802,
+    title: '工作台：栅格与矢量同屏',
+    body: '图层叠在同一个图框里看，图名、图例、比例尺、出图时间印在图面上，不用切窗口对图。',
+    fact: '图框 · 图例 · 比例尺 · 标题栏',
   },
   {
-    icon: FilePdfIcon,
-    tag: 'PDF 图件',
-    title: '带图框与标题栏的成图',
-    body: '图名、图号、比例尺、图例、指北针一次画全，直接进汇报材料。',
-    meta: ['A4 横竖版', '150 DPI', '矢量底图 + 栅格底图'],
-    preview: <SheetPreview />,
+    src: './site/report.jpg',
+    alt: '兼容性自检报告：文件格式、坐标系、几何有效性、伴随文件、在 ArcGIS 里打开要注意什么、量化摘要',
+    width: 1400,
+    height: 702,
+    title: '六段式自检报告',
+    body: '文件格式、坐标系、几何有效性、伴随文件、在 ArcGIS 里打开要注意什么、量化摘要——六段逐条写清。',
+    fact: '六段自检 · 未发现阻断',
   },
   {
-    icon: ShieldCheckIcon,
-    tag: '兼容性自检报告',
-    title: '转给同事就能确认',
-    body: '六段式：文件格式、坐标系、几何有效性、伴随文件、在 ArcGIS 里打开要注意什么、量化摘要。',
-    meta: ['R-CRS-001 阻断项', '侧车文件清单', '几何有效性'],
-    preview: <ReportPreview />,
+    src: './site/export-pdf.png',
+    alt: '引擎导出的单页 PDF 首页：A4 横版，图框内是 Natural Earth 栅格的真实渲染',
+    width: 1053,
+    height: 745,
+    title: '单页 PDF 图件',
+    body: '当前视口封成单页 PDF，图框一起出，比例尺按缩放后的真实情况标，不用再套一遍模板。',
+    fact: 'A4 横版 · 单页 · 150 DPI',
   },
 ];
 
 export function Deliverables() {
   const gridRef = useRef<HTMLDivElement | null>(null);
 
-  // 入场动画：滚到时逐张淡入上移。**不 pin、不接管滚轮**。
-  useEffect(() => {
-    const grid = gridRef.current;
-    if (!grid) return;
-    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  useGSAP(
+    () => {
+      const mm = gsap.matchMedia();
 
-    gsap.registerPlugin(ScrollTrigger);
-    const ctx = gsap.context(() => {
-      const cards = gsap.utils.toArray<HTMLElement>('[data-pipeline="item"]', grid);
-      if (cards.length === 0) return;
-      gsap.from(cards, {
-        y: 28,
-        autoAlpha: 0,
-        duration: 0.7,
-        ease: 'power3.out',
-        stagger: 0.1,
-        scrollTrigger: { trigger: grid, start: 'top 85%' },
+      mm.add('(prefers-reduced-motion: no-preference)', () => {
+        const items = gsap.utils.toArray<HTMLElement>('[data-deliverable="item"]');
+        items.forEach((item, index) => {
+          const tl = gsap.timeline({
+            // 每件比上一件晚 140ms：这三件是要**看清**的，不是扫一眼就过
+            delay: index * 0.14,
+            scrollTrigger: { trigger: item, start: 'top 80%', once: true },
+          });
+          tl.fromTo(
+            item,
+            { y: 28, opacity: 0 },
+            { y: 0, opacity: 1, duration: 0.7, ease: 'power3.out' },
+          )
+            .fromTo(
+              item.querySelector('[data-deliverable="image"]'),
+              { opacity: 0 },
+              { opacity: 1, duration: 0.45, ease: 'power2.out' },
+              0,
+            )
+            .fromTo(
+              item.querySelector('[data-deliverable="title"]'),
+              { opacity: 0 },
+              { opacity: 1, duration: 0.45, ease: 'power2.out', immediateRender: true },
+              0.08,
+            )
+            .fromTo(
+              item.querySelector('[data-deliverable="body"]'),
+              { opacity: 0 },
+              { opacity: 1, duration: 0.45, ease: 'power2.out', immediateRender: true },
+              0.14,
+            )
+            .fromTo(
+              item.querySelector('[data-deliverable="fact"]'),
+              { opacity: 0 },
+              { opacity: 1, duration: 0.45, ease: 'power2.out', immediateRender: true },
+              0.2,
+            );
+        });
       });
-    }, grid);
 
-    return () => ctx.revert();
-  }, []);
+      return () => mm.revert();
+    },
+    { scope: gridRef },
+  );
 
   return (
     <div
       ref={gridRef}
-      className="mx-auto mt-12 grid max-w-6xl grid-cols-1 gap-4 px-5 sm:grid-cols-2 sm:px-8 lg:grid-cols-3"
+      className="container-deliverables relative z-10 mx-auto mt-12 max-w-[1440px] px-5 sm:px-8"
     >
-      {ITEMS.map((item) => {
-        const Icon = item.icon;
-        return (
+      <div className="deliverables-grid">
+        {ITEMS.map((item) => (
           <article
-            key={item.title}
-            data-pipeline="item"
-            className="group relative flex flex-col overflow-hidden rounded-panel border border-paper/12 bg-paper/6 p-7 backdrop-blur-sm transition-colors duration-500 hover:border-paper/25 hover:bg-paper/10"
+            key={item.src}
+            data-deliverable="item"
+            className="reveal flex flex-col rounded-panel border border-ink-line bg-ink-surface p-6"
           >
-            <div className="mb-6 flex items-center gap-3">
-              <span className="grid h-10 w-10 place-items-center rounded-full bg-paper/10 text-paper">
-                <Icon aria-hidden="true" size={19} weight="duotone" />
-              </span>
-              <span className="font-mono text-[11px] tracking-[0.16em] text-paper/75 uppercase">
-                {item.tag}
-              </span>
-            </div>
-            <h3 className="font-display text-[21px] leading-snug font-semibold tracking-tight text-paper">
+            <figure
+              data-deliverable="image"
+              className="aspect-[4/3] overflow-hidden rounded-lg border border-ink-line bg-ink/60 p-3"
+            >
+              <img
+                src={item.src}
+                alt={item.alt}
+                width={item.width}
+                height={item.height}
+                loading="lazy"
+                decoding="async"
+                className="h-full w-full object-contain"
+              />
+            </figure>
+
+            <h3
+              data-deliverable="title"
+              className="mt-6 font-display text-display-3 text-paper"
+            >
               {item.title}
             </h3>
-            <p className="mt-3 max-w-[38ch] text-[14.5px] leading-relaxed text-paper/80">
+            <p
+              data-deliverable="body"
+              className="mt-3 max-w-[40ch] text-body-sm leading-relaxed text-paper/85"
+            >
               {item.body}
             </p>
 
-            {/* 交付物的示意缩略：让卡片说的是"具体的东西"，不是抽象描述 */}
-            <div className="mt-7 h-52 shrink-0 overflow-hidden rounded-lg border border-paper/12 bg-ink/55 p-4">
-              {item.preview}
-            </div>
-
-            {/* mt-auto：正文行数不同也不影响标签贴底对齐 */}
-            <ul className="mt-auto flex flex-wrap gap-2 pt-6">
-              {item.meta.map((m) => (
-                <li
-                  key={m}
-                  className="rounded-full border border-paper/15 px-2.5 py-1 font-mono text-[11.5px] text-paper/70"
-                >
-                  {m}
-                </li>
-              ))}
-            </ul>
+            {/* 一行等宽事实：这件东西到底是什么 */}
+            <p
+              data-deliverable="fact"
+              className="mt-auto pt-6 font-mono text-mono-data text-accent-lit tnum"
+            >
+              {item.fact}
+            </p>
           </article>
-        );
-      })}
+        ))}
+      </div>
     </div>
   );
 }

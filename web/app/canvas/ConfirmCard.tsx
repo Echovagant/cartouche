@@ -21,6 +21,7 @@ import { useEffect, useState } from 'react';
 import { CheckCircleIcon, WarningIcon } from '@phosphor-icons/react';
 import type { EditOp, OpPreview } from './types';
 import { ActionButton } from './ui';
+import { ConfirmCardBody, formatPixelGate } from '../motion/ConfirmCardBody';
 
 /** 执行结束后的结果 */
 export interface ExecOutcome {
@@ -45,10 +46,6 @@ export interface ConfirmCardProps {
 
 /** 影响面超过这个比例就要二次确认 */
 const LARGE_IMPACT_RATIO = 0.5;
-
-function formatCount(n: number): string {
-  return n.toLocaleString('zh-CN');
-}
 
 export default function ConfirmCard({
   op,
@@ -101,7 +98,7 @@ export default function ConfirmCard({
     {
       label: '将影响的像元',
       value: preview
-        ? `${formatCount(preview.affectedPixels)} / ${formatCount(preview.totalPixels)} 像元（${(ratio * 100).toFixed(1)}%）`
+        ? formatPixelGate(preview.affectedPixels, preview.totalPixels, ratio)
         : '正在计算…',
     },
     {
@@ -122,44 +119,19 @@ export default function ConfirmCard({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-studio/78 p-6 backdrop-blur-sm">
-      <div
-        className="w-[540px] max-w-full rounded-panel border border-studio-line bg-studio-2 p-5"
-        style={{ boxShadow: 'var(--studio-stage-shadow)' }}
-      >
-        <div className="flex items-center gap-2.5">
-          <strong className="font-display text-[15px] font-semibold text-studio-ink">
-            确认这次改动
-          </strong>
-          <span className="rounded border border-studio-line bg-studio-3/70 px-1.5 py-0.5 font-mono text-[11px] text-studio-ink-2">
-            {op.op}
-          </span>
-          <span className="flex-1" />
-          {outcome ? null : (
+      <ConfirmCardBody
+        variant="studio"
+        title="确认这次改动"
+        opLabel={op.op}
+        gates={gates}
+        headerAction={
+          outcome ? null : (
             <ActionButton variant="quiet" onClick={onCancel} className="!px-2 !py-1 text-[11.5px]">
               取消
             </ActionButton>
-          )}
-        </div>
-
-        <ol className="mt-4 flex flex-col gap-2">
-          {gates.map((gate, index) => (
-            <li
-              key={gate.label}
-              className="flex items-start gap-2.5 rounded-lg border border-studio-line bg-studio/45 px-3 py-2"
-            >
-              <span className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-accent/20 font-mono text-[10px] text-accent">
-                {index + 1}
-              </span>
-              <div className="min-w-0 flex-1">
-                <div className="text-[11px] text-studio-ink-3">{gate.label}</div>
-                <div className="mt-0.5 font-mono text-[12.5px] break-all text-studio-ink">
-                  {gate.value}
-                </div>
-              </div>
-            </li>
-          ))}
-        </ol>
-
+          )
+        }
+      >
         {previewError ? (
           <div className="mt-3 rounded-lg border border-warn/40 bg-warn/12 px-3 py-2.5 text-[12.5px] leading-relaxed text-warn">
             <strong>预演失败：</strong>
@@ -226,7 +198,7 @@ export default function ConfirmCard({
             </>
           )}
         </div>
-      </div>
+      </ConfirmCardBody>
     </div>
   );
 }

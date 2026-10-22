@@ -58,6 +58,62 @@
   --studio-panel-shadow: -18px 0 50px rgb(28 26 22 / 0.22);
 }
 
+/**
+ * 官网（落地页）的运行时 token。
+ *
+ * 与画布的 --studio-* 分开：两者是两套**不同的表面**，
+ * 混在一处会让画布的浅/暗主题把官网的纸面/墨面一起带走。
+ *
+ * data-surface 由 ScrollChoreography 在深色段进出时写到 <html> 上
+ * （浅=纸面段，深=墨面段）——它是官网唯一的分段开关。
+ */
+:root {
+  /* 段与容器 */
+  --page-margin: clamp(1.25rem, 4vw, 4rem);
+
+  /* 动效时长：全站只用这几档。叙事级（--duration-narrative）全站 ≤ 3 处 */
+  --duration-instant: 75ms;
+  --duration-fast: 150ms;
+  --duration-base: 200ms;
+  --duration-slow: 300ms;
+  --duration-narrative: 500ms;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+
+  /* 材质分级：浅段（纸面） */
+  --home-grain-opacity: 0.045;
+  --home-grain-blend: multiply;
+  --home-vignette-start: 78%;
+  --home-vignette-rgb: 90 80 62;
+  --home-vignette-strength: 0.1;
+
+  /* 导航的文字色：浅段用深墨，深段翻成浅纸。
+     深色段上玻璃皮会换成墨底，若文字还沿用浅段那套深墨，就是"深底上的深字"——
+     实测 #4a463d 对 #1c1a16 只有 1.86:1，品牌名 #1c1a16 对同色底更是 1.00:1。 */
+  --nav-fg: var(--color-ink);
+  --nav-fg-hover: var(--color-ink);
+  --nav-fg-muted: var(--color-ink-2);
+  --nav-border: var(--color-line-2);
+  --nav-hover-bg: rgb(28 26 22 / 0.05);
+  --nav-warn: var(--color-warn);
+}
+
+/* 深段（墨面）：颗粒更弱、叠加混合；暗角来得更早、更重 */
+[data-surface='dark'] {
+  --home-grain-opacity: 0.035;
+  --home-grain-blend: overlay;
+  --home-vignette-start: 62%;
+  --home-vignette-rgb: 10 9 8;
+  --home-vignette-strength: 0.38;
+
+  /* 深段导航：文字翻成纸色。深底小字透明度不低于 0.85（见规范 §3.2 规则 2）。 */
+  --nav-fg: var(--color-paper);
+  --nav-fg-hover: var(--color-paper);
+  --nav-fg-muted: rgb(244 241 234 / 0.85);
+  --nav-border: rgb(244 241 234 / 0.2);
+  --nav-hover-bg: rgb(244 241 234 / 0.08);
+  --nav-warn: var(--color-warn-lit);
+}
+
 @theme {
   --color-paper: #f4f1ea;
   --color-paper-deep: #e9e4d7;
@@ -75,11 +131,19 @@
   --color-line: #e2dbcb;
   --color-line-2: #cfc6b1;
 
+  /* 深墨段（bg-ink #1c1a16）上的表面阶梯与描边。
+     深段的 hairline 一律用 paper/12，不用浅段的 line —— 浅色描边在墨底上
+     是一条"发亮的缝"，不是分隔线。 */
+  --color-ink-surface: rgb(244 241 234 / 0.06);
+  --color-ink-raised: rgb(244 241 234 / 0.1);
+  --color-ink-line: rgb(244 241 234 / 0.12);
+  --color-ink-line-2: rgb(244 241 234 / 0.2);
+
   --color-accent: #2f6f5e;
   --color-accent-deep: #245549;
   --color-accent-soft: #e7efec;
-  /* 深墨底（bg-ink #1c1a16）上的强调色：墨绿 #2f6f5e 压在深底上只有 2.76:1，
-     读不了。深底改用同一色相亮一档，纸面底仍然用 --color-accent。 */
+  /* 深墨底（bg-ink #1c1a16）上的强调色：墨绿 #2f6f5e 压在深底上只有 2.94:1，
+     读不了。深底改用同一色相亮一档（6.04:1），纸面底仍然用 --color-accent。 */
   --color-accent-lit: #4fa88b;
 
   --color-warn: #a6552f;
@@ -106,7 +170,60 @@
 
   --radius-panel: 1.25rem;
 
-  --shadow-diffuse: 0 20px 40px -15px rgb(28 26 22 / 0.08);
+  /* ── 字阶刻度 ──────────────────────────────────────────────────
+     一套字重只用 400/500/600/700：中文 300 会断笔，
+     Windows 回落到微软雅黑后字形还会漂。
+     张力：display-1 / body = 76/16 ≈ 4.75:1；display-2 / body ≈ 3:1。 */
+  --text-display-1: clamp(2.75rem, 5.8vw, 4.75rem);
+  --text-display-1--line-height: 1.04;
+  --text-display-1--font-weight: 700;
+  --text-display-1--letter-spacing: -0.035em;
+
+  --text-display-2: clamp(1.9rem, 3.6vw, 3rem);
+  --text-display-2--line-height: 1.1;
+  --text-display-2--font-weight: 700;
+  --text-display-2--letter-spacing: -0.03em;
+
+  --text-display-3: clamp(1.3rem, 2.1vw, 1.75rem);
+  --text-display-3--line-height: 1.2;
+  --text-display-3--font-weight: 600;
+  --text-display-3--letter-spacing: -0.02em;
+
+  /* 呼吸段的巨号等宽数字 */
+  --text-hero-figure: clamp(3.25rem, 7.5vw, 6.5rem);
+  --text-hero-figure--line-height: 1;
+  --text-hero-figure--font-weight: 600;
+  --text-hero-figure--letter-spacing: -0.02em;
+
+  --text-lead: clamp(1.05rem, 1.4vw, 1.25rem);
+  --text-lead--line-height: 1.5;
+
+  --text-body: 1rem;
+  --text-body--line-height: 1.65;
+
+  --text-body-sm: 0.9rem;
+  --text-body-sm--line-height: 1.6;
+
+  --text-label: 0.875rem;
+  --text-label--line-height: 1.4;
+  --text-label--font-weight: 500;
+
+  --text-eyebrow: 0.75rem;
+  --text-eyebrow--line-height: 1.3;
+  --text-eyebrow--font-weight: 500;
+  --text-eyebrow--letter-spacing: 0.18em;
+
+  --text-mono-data: 0.8125rem;
+  --text-mono-data--line-height: 1.5;
+  --text-mono-data--font-weight: 500;
+
+  /* ── 阴影：全站只留两条 ────────────────────────────────────────
+     --shadow-product 只给真实产品影像；
+     --shadow-nav 给玻璃导航。
+     --shadow-lift 仍保留（画布的主题开关在用），
+     但官网的卡片一律不再挂阴影——改用 surface + 1px hairline 分层。 */
+  --shadow-product: 0 24px 48px -24px rgb(28 26 22 / 0.18);
+  --shadow-nav: 0 18px 40px -24px rgb(28 26 22 / 0.35);
   --shadow-lift: 0 2px 10px -2px rgb(28 26 22 / 0.10), 0 1px 2px -1px rgb(28 26 22 / 0.06);
 
   --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
@@ -114,6 +231,31 @@
   --animate-shimmer: shimmer 1.8s linear infinite;
   --animate-breathe: breathe 3.2s ease-in-out infinite;
   --animate-sweep: sweep 5.5s var(--ease-out-expo) infinite;
+}
+
+@supports (color: oklch(0 0 0)) {
+  /* P3 屏上的同一组颜色（sRGB 基准值见下方注释，换算自 Ottosson OKLab 矩阵，
+     往返误差 0.00000）。放在 @theme 之后：同特异度、后声明者胜。 */
+  :root {
+    --color-paper: oklch(0.9585 0.0098 87.47); /* #f4f1ea */
+    --color-paper-deep: oklch(0.9192 0.0182 89.36); /* #e9e4d7 */
+    --color-surface: oklch(0.9853 0.0069 88.64); /* #fcfaf5 */
+    --color-surface-raised: oklch(1 0 0); /* #ffffff */
+    --color-ink: oklch(0.2186 0.0082 84.59); /* #1c1a16 */
+    --color-ink-2: oklch(0.3952 0.0157 86.89); /* #4a463d */
+    --color-ink-3: oklch(0.5224 0.0212 86.17); /* #6f695c */
+    --color-ink-4: oklch(0.6971 0.0255 88.27); /* #a49d8c */
+    --color-line: oklch(0.8926 0.0228 87.16); /* #e2dbcb */
+    --color-line-2: oklch(0.8282 0.0303 87.56); /* #cfc6b1 */
+    --color-accent: oklch(0.4947 0.0715 173.27); /* #2f6f5e */
+    --color-accent-deep: oklch(0.4117 0.0572 175.01); /* #245549 */
+    --color-accent-soft: oklch(0.9452 0.0094 171.79); /* #e7efec */
+    --color-accent-lit: oklch(0.6685 0.0969 169.45); /* #4fa88b */
+    --color-warn: oklch(0.5404 0.1185 44.39); /* #a6552f */
+    --color-warn-soft: oklch(0.9577 0.0163 46.57); /* #fbeee8 */
+    --color-warn-lit: oklch(0.6950 0.1043 52.4); /* #d08a5e */
+    --color-amber: oklch(0.6421 0.0842 79.62); /* #a8874f */
+  }
 }
 
 @keyframes shimmer {
@@ -139,6 +281,12 @@
   8% { opacity: 0.9; }
   88% { opacity: 0.55; }
   100% { transform: translateY(636px); opacity: 0; }
+}
+
+/* 减少动态效果时的替代入场：只淡入，不位移 */
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 @layer base {
@@ -212,18 +360,86 @@
     border: 1px solid rgb(255 255 255 / 0.55);
     box-shadow:
       inset 0 1px 0 rgb(255 255 255 / 0.75),
-      0 18px 40px -24px rgb(28 26 22 / 0.35);
+      var(--shadow-nav);
   }
 
-  /* 纸纹：固定的、不接收指针事件的伪元素层，绝不放在滚动容器里 */
+  /* 深色段上的玻璃必须换皮：浅色玻璃压在墨底上会发灰，
+     描边也读不出来（白描边太刺、纸色描边太亮）。
+     ⚠ 同样遵守"前缀在前、标准在后"（见上）。 */
+  [data-surface='dark'] .glass {
+    background: rgb(28 26 22 / 0.72);
+    -webkit-backdrop-filter: blur(14px) saturate(1.25);
+    backdrop-filter: blur(14px) saturate(1.25);
+    border: 1px solid rgb(244 241 234 / 0.12);
+    box-shadow:
+      inset 0 1px 0 rgb(244 241 234 / 0.08),
+      0 18px 40px -24px rgb(0 0 0 / 0.45);
+  }
+
+  /* 导航的文字与描边：跟着 <html data-surface> 翻。
+     这些是**组件类**而不是 Tailwind 工具类——工具类会被构建期固定成浅段那套
+     颜色，深段就没法翻。hover 态写在类里（Tailwind 不会为自定义类生成
+     hover: 变体）。 */
+  .nav-fg {
+    color: var(--nav-fg);
+  }
+  .nav-fg-muted {
+    color: var(--nav-fg-muted);
+  }
+  .nav-fg-muted:hover {
+    color: var(--nav-fg-hover);
+  }
+  .nav-divider {
+    background-color: var(--nav-border);
+  }
+  .nav-outline {
+    border-color: var(--nav-border);
+    color: var(--nav-fg);
+  }
+  .nav-outline:hover {
+    background-color: var(--nav-hover-bg);
+  }
+  .nav-item {
+    color: var(--nav-fg);
+  }
+  .nav-item:hover {
+    background-color: var(--nav-hover-bg);
+  }
+  /* 「开发中」小徽标：浅段用警示棕，深段换亮一档的 warn-lit */
+  .nav-warn {
+    color: var(--nav-warn);
+    border-color: color-mix(in srgb, var(--nav-warn) 45%, transparent);
+  }
+
+  /* 纸纹：固定的、不接收指针事件的伪元素层，绝不放在滚动容器里。
+     深浅两段的颗粒是分级的：浅段 multiply 0.045，深段 overlay 0.035
+     —— 深底上再叠一层不透明颗粒会糊掉字。 */
   .grain::after {
     content: '';
     position: fixed;
     inset: 0;
     z-index: 60;
     pointer-events: none;
-    opacity: 0.035;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E");
+    opacity: var(--home-grain-opacity);
+    mix-blend-mode: var(--home-grain-blend);
+    transition: opacity 400ms linear;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='128' height='128'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3'/%3E%3Cfilter%3E%3Crect width='128' height='128' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+
+  /* 官网的暗角：与颗粒同一套分级（浅段 78% 起步、0.10；深段 62% 起步、0.38）。
+     画布那一套仍用 .vignette + --studio-* 变量，两边互不干扰。 */
+  .page-vignette::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    background: radial-gradient(
+      118% 92% at 50% 46%,
+      transparent 42%,
+      rgb(var(--home-vignette-rgb) / calc(var(--home-vignette-strength) * 0.45)) var(--home-vignette-start),
+      rgb(var(--home-vignette-rgb) / var(--home-vignette-strength)) 100%
+    );
   }
 
   /* 顶部高光描边：给深色块一点"被光打到"的质感 */
@@ -308,6 +524,68 @@
   }
 
   /**
+   * 闸门叠压的层序。
+   *
+   * 原来这里是内联 style={{ zIndex: i + 1 }}——层序是**结构**，不是样式，
+   * 内联写法让"第几张盖第几张"这条规则没法被主题层统一接管。
+   * 改成 :nth-child 之后，叠压关系写在 CSS 里，组件里一行内联样式都没有。
+   */
+  .gate-stack > *:nth-child(1) { z-index: 1; }
+  .gate-stack > *:nth-child(2) { z-index: 2; }
+  .gate-stack > *:nth-child(3) { z-index: 3; }
+  .gate-stack > *:nth-child(4) { z-index: 4; }
+  .gate-stack > *:nth-child(5) { z-index: 5; }
+  .gate-stack > *:nth-child(6) { z-index: 6; }
+
+  /**
+   * S5 三联卡：用**容器查询**决定 1 列还是 3 列，替代 Tailwind 断点。
+   *
+   * 断点断的是"视口"，这段卡片的真实宽度取决于容器（1440px 上限、
+   * 左右内边距、页面边距），所以按视口断会算错。
+   */
+  .container-deliverables {
+    container-type: inline-size;
+    container-name: deliverables;
+  }
+
+  .deliverables-grid {
+    display: grid;
+    gap: 1rem;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  @container deliverables (min-width: 42rem) {
+    .deliverables-grid {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+  }
+
+  /**
+   * 段与段之间的分隔原语。
+   *
+   * 相邻两段同表面（纸→纸）时靠它断开，而不是再起一个 surface：
+   * 表面色变化是**唯一**的分段手段，分隔线只做"这里换话题了"的提示。
+   */
+  .homepage-separator {
+    height: 1px;
+    background: var(--color-line);
+  }
+
+  /**
+   * 揭示态的初始样子。
+   *
+   * 只写 opacity，不写 translate —— GSAP 动的是 transform（y），
+   * CSS 的 translate 属性与 transform 是**两条独立的合成路径**，
+   * 同时写会叠成双倍位移（24px + 24px = 48px），而且动画结束后
+   * CSS 的 translate 还在，最终停在偏移位置。
+   *
+   * 这里写 opacity: 0 是为了消 FOUC：JS 慢一点，内容也不会先可见再消失。
+   */
+  .reveal {
+    opacity: 0;
+  }
+
+  /**
    * 主题切换的一次性过渡。
    *
    * 切换那一瞬间挂上这个 class，让所有颜色**平滑过渡**而不是"啪"地换掉；
@@ -339,15 +617,95 @@
   }
 }
 
-/* 尊重系统的"减少动态效果"设置 */
+/**
+ * 尊重系统的"减少动态效果"设置 —— **分层降级，不是一刀切**。
+ *
+ * 第一层：叙事动效（入场、错峰、扫视）全部退化为"直接显示"。
+ * 第二层：hover / focus 的反馈**保留**。
+ *   旧写法把 transition-duration 一起压到 0.001ms，等于把
+ *   "点得到、看得见"的可用性反馈也杀了——那是可用性，不是装饰。
+ */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
   *::after {
-    animation-duration: 0.001ms !important;
+    animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
-    transition-duration: 0.001ms !important;
     scroll-behavior: auto !important;
+  }
+
+  .reveal,
+  .slide-in,
+  .scale-in {
+    transform: none !important;
+    opacity: 1 !important;
+    animation: fade-in 200ms linear both !important;
+  }
+
+  /* hover / focus 的反馈是可用性，不是装饰 —— 救回来 */
+  button,
+  a,
+  [role='button'] {
+    transition:
+      background-color 150ms linear,
+      color 150ms linear,
+      border-color 150ms linear,
+      outline-color 150ms linear !important;
+  }
+}
+
+/**
+ * 强制高对比模式（Windows 高对比 / forced-colors）。
+ *
+ * 系统接管配色后，渐变、噪点、暗角、半透明底全都失效或不可读：
+ * 噪点与暗角直接去掉（材质不是信息），描边改用系统色，
+ * 揭示态直接展开（动效在高对比下也不需要）。
+ */
+@media (forced-colors: active) {
+  .grain::after,
+  .page-vignette::before,
+  .film-grain::after,
+  .vignette::before,
+  .rim-light::before {
+    display: none !important;
+  }
+
+  .glass,
+  [data-surface='dark'] .glass {
+    background: Canvas !important;
+    border-color: CanvasText !important;
+    box-shadow: none !important;
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
+  }
+
+  .reveal,
+  .slide-in,
+  .scale-in {
+    opacity: 1 !important;
+    transform: none !important;
+  }
+
+  /* 导航文字色也跟着系统色走：深浅两段的 --nav-* 变量在强制配色下失效 */
+  .nav-fg,
+  .nav-fg-muted {
+    color: CanvasText !important;
+  }
+  .nav-divider,
+  .nav-outline {
+    border-color: CanvasText !important;
+    background-color: transparent !important;
+  }
+  .nav-warn {
+    color: CanvasText !important;
+    border-color: CanvasText !important;
+  }
+
+  [data-gate='card'],
+  [data-pipeline='item'],
+  [data-deliverable='item'],
+  [data-bento='cell'] {
+    border: 1px solid CanvasText !important;
   }
 }
 
@@ -356,9 +714,11 @@
  * 但打印/整页截图不会滚动，于是大片内容是隐形的。
  * 打印的读者要的是内容本身，不是仪式感。 */
 @media print {
+  .reveal,
   [data-bento='cell'],
   [data-gate='card'],
-  [data-pipeline='item'] {
+  [data-pipeline='item'],
+  [data-deliverable='item'] {
     opacity: 1 !important;
     visibility: visible !important;
     transform: none !important;
