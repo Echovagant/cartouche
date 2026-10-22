@@ -33,6 +33,8 @@ export function resolveOptions(options = {}) {
     pathValue: options.pathValue ?? process.env.PATH ?? '',
     pathSeparator: options.pathSeparator ?? delimiter,
     platform: options.platform ?? process.platform,
+    // 显式指定优先于 PATH 考古：CI 里 GDAL_BIN 就是给这一步用的
+    gdalBin: options.gdalBin ?? process.env.GDAL_BIN ?? '',
   };
 }
 
@@ -54,7 +56,10 @@ function firstExisting(dirs) {
  * 查找顺序：PATH → 已知安装目录。返回 null 表示未安装。
  */
 export function resolveGdalBin(options = {}) {
-  const { pathValue, pathSeparator, platform } = resolveOptions(options);
+  const { pathValue, pathSeparator, platform, gdalBin } = resolveOptions(options);
+
+  // 显式指定（GDAL_BIN）优先：CI 里已经把它指向 conda 环境的 bin
+  if (gdalBin && isGdalBin(gdalBin)) return gdalBin;
 
   const pathDirs = pathValue.split(pathSeparator).filter(Boolean);
   for (const dir of pathDirs) {
