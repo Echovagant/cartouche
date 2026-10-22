@@ -388,6 +388,131 @@ try {
     `HTTP ${outEscape.status}`,
   );
 
+  /* ── ③a-2：操作计划调度（栅格编辑闭环） ── */
+  if (existsSync(fixtureRaster)) {
+    const opRaster = `smoke-op-${Date.now()}.tif`;
+    await copyFile(fixtureRaster, join(wsRoot, opRaster));
+
+    // 取栅格的原生像元网格（前端靠它把地图坐标换算成像元坐标）
+    const gridRes = await fetch(
+      `${BASE}/api/raster/grid?path=${encodeURIComponent(opRaster)}`,
+    );
+    const gridJson = await gridRes.json();
+    check(
+      'GET /api/raster/grid 返回原生网格',
+      gridRes.ok
+        && typeof gridJson.width === 'number'
+        && typeof gridJson.height === 'number'
+        && Array.isArray(gridJson.geotransform),
+      JSON.stringify(gridJson).slice(0, 160),
+    );
+
+    // 预演：不落盘，但给出精确的像元数
+    const previewRes = await fetch(`${BASE}/api/op/preview`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        op: 'raster.paint',
+        params: {
+          target: opRaster,
+          region: { minX: 5, minY: 5, maxX: 15, maxY: 15 },
+          color: '#00FF00',
+        },
+      }),
+    });
+    const previewJson = await previewRes.json();
+    check(
+      'POST /api/op/preview 给出影响像元数',
+      previewRes.ok && previewJson.affectedPixels > 0 && previewJson.totalPixels > 0,
+      JSON.stringify(previewJson).slice(0, 160),
+    );
+
+    // 预演之后文件必须没被动过（预演 ≠ 执行）
+    const afterPreview = await fetch(
+      `${BASE}/api/render/raster.png?path=${encodeURIComponent(opRaster)}&width=40&height=30`,
+    );
+    check('预演不会改文件（仍能出图）', afterPreview.ok, `HTTP ${afterPreview.status}`);
+
+    // 未实现的 op 要明确报 400，不能假装成功
+    const unimplemented = await fetch(`${BASE}/api/op/preview`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        op: 'feature.setAttributes',
+        params: { target: opRaster, where: 'a=1', set: { b: 2 } },
+      }),
+    });
+    check(
+      '未实现的 op 预演返回 400 并说明"尚未支持"',
+      unimplemented.status === 400 && /尚未支持/.test((await unimplemented.json()).message ?? ''),
+      `HTTP ${unimplemented.status}`,
+    );
+
+    // 绝对路径目标必须被拒（不能借它逃出工作区）
+    const escape = await fetch(`${BASE}/api/op/execute`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        op: 'raster.paint',
+        params: {
+          target: 'C:/Windows/System32/drivers/etc/hosts',
+          region: { minX: 0, minY: 0, maxX: 2, maxY: 2 },
+          color: '#00FF00',
+        },
+      }),
+    });
+    check('POST /api/op/execute 拒绝绝对路径', escape.status === 400, `HTTP ${escape.status}`);
+
+    // 缺 op 要 400
+    const noOp = await fetch(`${BASE}/api/op/execute`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ params: {} }),
+    });
+    check('POST /api/op/execute 缺少 op 返回 400', noOp.status === 400, `HTTP ${noOp.status}`);
+
+    // 真执行：改了文件、给出影响、并把留痕写进项目
+    const execRes = await fetch(`${BASE}/api/op/execute`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        op: 'raster.paint',
+        params: {
+          target: opRaster,
+          region: { minX: 5, minY: 5, maxX: 15, maxY: 15 },
+          color: '#00FF00',
+        },
+        projectRoot: tmpProject,
+        confirmed: true,
+      }),
+    });
+    const execJson = await execRes.json();
+    check(
+      'POST /api/op/execute 执行成功并给出量化影响',
+      execRes.ok
+        && execJson.ok === true
+        && execJson.completed === 1
+        && execJson.results?.[0]?.impact?.affectedPixels > 0
+        && Boolean(execJson.results?.[0]?.impact?.backupPath),
+      JSON.stringify(execJson).slice(0, 200),
+    );
+
+    // 留痕要落进项目（③a-2 的"可交差"靠它）
+    const histAfter = await fetch(`${BASE}/api/project/history?path=${encodeURIComponent(tmpProject)}`);
+    const histAfterJson = await histAfter.json();
+    // 按目标找那一条：项目里可能已经有别的 op 留下的留痕（上面 ③a-1 那条）
+    const painted = (histAfterJson.entries ?? []).find(
+      (e) => e.op === 'raster.paint' && e.target === opRaster,
+    );
+    check(
+      '执行后留痕写进项目 history',
+      Boolean(painted) && painted.ok === true && painted.impact?.affectedPixels > 0,
+      JSON.stringify(painted ?? {}).slice(0, 200),
+    );
+
+    await rm(join(wsRoot, opRaster), { force: true });
+  }
+
   console.log(`\n  ${failed ? BAD : OK} 冒烟测试${failed ? '未通过' : '通过'}${RESET}\n`);
 } catch (err) {
   console.error(`  ${BAD} 冒烟测试异常: ${err.message}`);

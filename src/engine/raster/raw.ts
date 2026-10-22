@@ -50,7 +50,14 @@ function parseEnviHeader(text: string): {
   return { samples, lines, bands, interleave, dataType };
 }
 
-function checksumOf(bands: readonly Uint8Array[]): string {
+/**
+ * 波段内容的校验和（波段顺序拼接）。
+ *
+ * 导出它是为了**预演**：预演时像素在内存里算完就丢，
+ * 但确认卡要给出"改完之后长什么样"的凭据 —— 同一个算法算出来的校验和
+ * 才能和真实执行后的校验和对得上，否则预演给的是个假数字。
+ */
+export function checksumOf(bands: readonly Uint8Array[]): string {
   const h = createHash('sha256');
   for (const b of bands) h.update(b);
   return h.digest('hex');

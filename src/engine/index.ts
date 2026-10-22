@@ -37,6 +37,24 @@ export type {
 export { ProjectStore, PROJECT_DIR_NAME } from './project/index.ts';
 export type { ProjectOutput, ProjectHistoryEntry } from './project/index.ts';
 
+/* ── ③a-2：操作计划调度（逐条执行 · 量化影响 · 失败不回滚） ── */
+
+export {
+  executePlan,
+  previewOp,
+  normalizePlan,
+  listImplementedOps,
+} from './ops/index.ts';
+export type {
+  OperationSpec,
+  PlanDocument,
+  PlanInput,
+  OpImpact,
+  OpExecutionRecord,
+  PlanExecutionResult,
+  ExecutorDeps,
+} from './ops/index.ts';
+
 export { resolveGdal, gdalEnv, candidateBinDirs } from './gdal/env.ts';
 export type { GdalLocation } from './gdal/env.ts';
 export { runTool, tools, classifyError } from './gdal/runner.ts';
