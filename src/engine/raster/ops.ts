@@ -146,6 +146,26 @@ export class RasterEditor {
     return readRasterPixels(this.#loc, this.#abs(rel));
   }
 
+  /**
+   * 写回前的格式闸门。
+   *
+   * 写回统一走 `gdal_translate -of GTiff`（见 raw.ts），也就是**产出的一定是 GeoTIFF 字节**。
+   * 如果原文件不是 GeoTIFF，就会出现"内容换了、扩展名没换"的坏结果：
+   * 一个 HFA 的 .img 被写成 GeoTIFF，ArcGIS 按 HFA 去解析，直接打不开。
+   *
+   * 与其悄悄把文件改坏，不如在动手之前就拒绝，并把原因说清楚。
+   * （2026-10-22 实测：.png / .img / .vrt 改完都会变成 GeoTIFF 字节。）
+   */
+  #assertWritebackSafe(target: string, driver: string): void {
+    if (driver === 'GTiff') return;
+    throw new Error(
+      `这个文件是 ${driver} 格式，不能原样写回：写回时统一产出 GeoTIFF，` +
+        `文件名却还是原来的扩展名，ArcGIS 打开会失败。` +
+        `目前只有 GeoTIFF 族（.tff / .tif）支持改图；` +
+        `这个文件请先转成 GeoTIFF 再改。`,
+    );
+  }
+
   /** 像素级改动的通用流程：算 → 写临时文件 → 原子替换 → 回读校验 */
   async #applyPixels(
     op: string,
@@ -154,6 +174,7 @@ export class RasterEditor {
     options?: { readonly dryRun?: boolean },
   ): Promise<RasterOpResult> {
     const before = await this.#read(target);
+    this.#assertWritebackSafe(target, before.driver);
     const newBands = mutate(before);
 
     // 预演：算到这里就够了，像元数是**精确值**（不是估算），
@@ -225,6 +246,7 @@ export class RasterEditor {
     produce: (temp: string) => Promise<void>,
   ): Promise<RasterOpResult> {
     const before = await this.#read(target);
+    this.#assertWritebackSafe(target, before.driver);
     const temp = this.#tempPath(target, 'tmp.tif');
     await produce(temp);
     const { backupPath } = await replaceFileAtomically(this.#store, { target, tempPath: temp });

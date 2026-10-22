@@ -25,6 +25,14 @@ export interface RasterPixels {
   readonly geotransform: number[] | null;
   /** 坐标系 WKT */
   readonly crs: string | null;
+  /**
+   * GDAL 驱动短名（如 `GTiff` / `HFA` / `PNG` / `VRT`）。
+   *
+   * 写回时统一用 `gdal_translate -of GTiff` 产出，所以**只有 GTiff 能原样写回**——
+   * 别的驱动写出来的是 GeoTIFF 字节，扩展名却还是原来的，ArcGIS 直接打不开。
+   * 引擎据此在动手前就拒绝，而不是把文件改坏。
+   */
+  readonly driver: string;
   /** 内容校验和（波段顺序拼接） */
   readonly checksum: string;
 }
@@ -78,6 +86,7 @@ export async function readRasterPixels(
     bands?: unknown[];
     geoTransform?: number[];
     coordinateSystem?: { wkt?: string };
+    driverShortName?: string;
   };
   const width = info.size?.[0] ?? 0;
   const height = info.size?.[1] ?? 0;
@@ -128,6 +137,7 @@ export async function readRasterPixels(
     bands,
     geotransform: info.geoTransform ? [...info.geoTransform] : null,
     crs: info.coordinateSystem?.wkt ?? null,
+    driver: String(info.driverShortName ?? 'GTiff'),
     checksum: checksumOf(bands),
   };
 }
