@@ -83,14 +83,28 @@ function assertNorthUp(gt: readonly number[], label: string): void {
 }
 
 /**
- * 提示语必须以 GDAL 原文为准：
- * 只有原文里出现 positive NS resolution 时才谈方向问题，否则只如实转述。
+ * 提示语必须以 GDAL 原文为准。
+ *
+ * gdalbuildvrt 跳过源的原因不止一种，混成一句"最常见的原因是文件不存在"
+ * 会把人引到错的方向上 —— 逐条按原文分派。
  */
 function skipHint(raw: string): string {
   if (/positive NS resolution/i.test(raw)) {
     return '被跳过的那个源是南向上（正 NS 分辨率）的栅格；VRT 合成只支持北向上，请先把它转成北向上。';
   }
-  return '请按上面的 GDAL 原文处理被跳过的源（最常见的原因是文件不存在或不可读）。';
+  if (/heterogeneous projection/i.test(raw)) {
+    return '被跳过的那个源与另一个源的坐标系不一致；VRT 合成要求两个源在同一坐标系里，请先重投影。';
+  }
+  if (/heterogeneous band data type/i.test(raw)) {
+    return '被跳过的那个源与另一个源的波段类型不一致（如 UInt16 对 Byte）；合成要求波段类型相同，请先统一。';
+  }
+  if (/heterogeneous band color interpretation/i.test(raw)) {
+    return '被跳过的那个源与另一个源的颜色解释不一致（如 Red 对 Undefined）；合成要求颜色解释一致，请先统一。';
+  }
+  if (/can't open|cannot open/i.test(raw)) {
+    return '被跳过的那个源打不开（文件不存在或不可读）；请按上面的 GDAL 原文检查路径。';
+  }
+  return '请按上面的 GDAL 原文处理被跳过的源。';
 }
 
 /**
@@ -159,6 +173,7 @@ interface RasterMeta {
   readonly height: number;
   readonly geotransform: readonly number[];
   readonly bandType: string | null;
+  readonly bandCount: number;
 }
 
 async function readMeta(loc: GdalLocation, path: string): Promise<RasterMeta> {
@@ -181,6 +196,7 @@ async function readMeta(loc: GdalLocation, path: string): Promise<RasterMeta> {
     height,
     geotransform: info.geoTransform,
     bandType: info.bands?.[0]?.type ?? null,
+    bandCount: info.bands?.length ?? 0,
   };
 }
 
@@ -212,6 +228,11 @@ async function assertOutputMatchesOriginal(
   if (out.bandType !== original.bandType) {
     throw new Error(
       `合成产出的波段类型（${out.bandType ?? '未知'}）与原图（${original.bandType ?? '未知'}）不一致。`,
+    );
+  }
+  if (out.bandCount !== original.bandCount) {
+    throw new Error(
+      `合成产出的波段数（${out.bandCount}）与原图（${original.bandCount}）不一致。`,
     );
   }
 }
