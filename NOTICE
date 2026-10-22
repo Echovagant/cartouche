@@ -12,5 +12,8 @@ Copyright 2026 图签 Cartouche 贡献者
 - Vercel AI SDK — Apache-2.0, https://ai-sdk.dev
 - Next.js — MIT License, https://nextjs.org
 - geos-wasm (GEOS compiled to WebAssembly) — LGPL-2.1, https://geos-wasm.netlify.app
+- GSAP / @gsap/react — GSAP Standard "No Charge" License, https://gsap.com/standard-license
+- Geist / Geist Mono — SIL Open Font License 1.1, https://github.com/vercel/geist-font
+- Phosphor Icons — MIT License, https://phosphoricons.com
 
 本项目不包含、不分发任何 Esri 专有软件或数据。ArcGIS 是 Esri 的注册商标。
