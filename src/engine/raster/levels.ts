@@ -3,6 +3,9 @@
  *
  * linear-stretch：按每波段的实际值域做线性拉伸（扫描件偏暗时用它）
  * gamma：伽马校正（gamma>1 压暗中间调，gamma<1 提亮中间调）
+ *
+ * 三种方法都在各自算完之后**再叠加 brightness / contrast**，
+ * 所以界面上的亮度/对比度滑块在任何方法下都是活的。
  */
 export interface LevelsOptions {
   readonly method?: 'linear-stretch' | 'gamma' | 'manual';
@@ -48,13 +51,15 @@ export function adjustLevels(
     }
     if (max === min) {
       for (let i = 0; i < band.length; i++) out[i] = band[i]!;
-      return applyManual(out, 0, contrast);
+      return applyManual(out, brightness, contrast);
     }
     const scale = 255 / (max - min);
     for (let i = 0; i < band.length; i++) {
       out[i] = clamp255(Math.round((band[i]! - min) * scale));
     }
-    return applyManual(out, 0, contrast);
+    // 拉伸之后**照样要吃 brightness** —— 否则"亮度"滑块在默认的 linear-stretch
+    // 下是个死控件：滑块动了，像元一个都没变，预演还报"影响 0 个像元"。
+    return applyManual(out, brightness, contrast);
   });
 }
 
