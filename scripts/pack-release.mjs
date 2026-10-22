@@ -42,7 +42,7 @@ const INCLUDE = [
   'package-lock.json',
   'tsconfig.json',
   'README.md',
-  'docs/QUICKSTART.md',
+  'QUICKSTART.md',
   'LICENSE',
   'NOTICE',
   '.env.example',
