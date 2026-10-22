@@ -120,7 +120,7 @@ Restore $rel5 $b5
 Write-Output ("  已还原，hash 一致: " + ((Hash $rel5) -eq $h5))
 
 # 变异 6：exists() 把"访问被拒"当成"不存在"（恢复旧的危险语义）
-# ⚠️ 目标文件在 2026-10-21 的 ③a-1 重构里从 workspace/index.ts 拆到了
+# ⚠️ 目标文件在 2026-10-21 的一次重构里从 workspace/index.ts 拆到了
 #    workspace/errors.ts —— 变异点必须跟着代码走，否则正则匹配不到，
 #    脚本会报"变异未生效"并**跳过这一项**（那一项就等于没测）。
 $rel6 = 'src\engine\workspace\errors.ts'

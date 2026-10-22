@@ -272,7 +272,7 @@ test('计划归一化：单条 op 与计划文档走同一条路', () => {
   assert.equal(doc.intent, '把标注涂绿');
 });
 
-test('已实现的 op 清单：矢量编辑类不在其中（③a-3 另立项）', () => {
+test('已实现的 op 清单：矢量编辑类不在其中（矢量编辑类 op 尚未实现）', () => {
   const ops = listImplementedOps();
   assert.ok(ops.includes('raster.paint'));
   assert.ok(ops.includes('raster.adjustLevels'));

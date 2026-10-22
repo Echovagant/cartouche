@@ -1,5 +1,5 @@
 /**
- * T32：CIM → MapLibre 渲染描述转换。
+ * CIM → MapLibre 渲染描述转换。
  */
 export {
   cimToMapLibreLayers,

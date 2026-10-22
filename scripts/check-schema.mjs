@@ -22,7 +22,7 @@ console.log(`  ${OK} ops.schema.json 可解析`);
 console.log(`  ${OK} 声明 ${ops.length} 个操作：`);
 for (const op of ops) console.log(`       ${DIM}·${RESET} ${op}`);
 
-// 必填操作是否齐全 —— 这些是 M0' V4（AI 基准）要用到的最小集合
+// 必填操作是否齐全 —— 这些是 AI 基准要用到的最小集合
 const required = ['dataset.open', 'dataset.healthCheck', 'raster.replaceRegion', 'feature.setAttributes', 'feature.editGeometry', 'vector.repairGeometry'];
 const missing = required.filter((r) => !ops.includes(r));
 if (missing.length === 0) {

@@ -1,7 +1,7 @@
 /**
  * GDAL 运行时定位与环境变量。
  *
- * 关键教训（M0' 实测）：不设置 GDAL_DATA / PROJ_LIB 时，GDAL 会输出
+ * 关键教训（实测）：不设置 GDAL_DATA / PROJ_LIB 时，GDAL 会输出
  * "Cannot find tms_NZTM2000.json (GDAL_DATA is not defined)" 之类的警告，
  * 部分驱动会**静默加载失败**。因此所有 GDAL 调用都必须带上这里构造的环境。
  *

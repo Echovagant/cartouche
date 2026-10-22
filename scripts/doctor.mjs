@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 环境自检：一次性报告"本机现在具备什么、还缺什么、M0' 七项验证各自处于什么状态"。
+ * 环境自检：一次性报告"本机现在具备什么、还缺什么、七项就绪度各自处于什么状态"。
  * 用法：npm run doctor
  */
 import { existsSync, readdirSync } from 'node:fs';
@@ -106,8 +106,8 @@ console.log(line('Windows SDK', sdks.length > 0, sdks.length ? sdks.join(', ') :
 console.log(line('MinGW gcc', hasTool('gcc'), '备选工具链（Tauri 默认用 MSVC）'));
 console.log(`  ${DIM}注：GDAL 用预编译二进制，以上均不参与 GDAL 的使用${RESET}`);
 
-// ── 4. M0' 七项就绪度 ──────────────────────────────────────
-section("M0' 七项验证 · 当前就绪度");
+// ── 4. 七项就绪度 ──────────────────────────────────────
+section("七项就绪度 · 当前状态");
 const gdalReady = Boolean(gdalBin);
 const filegdbOk = driverInfo.find((d) => d.name === 'OpenFileGDB')?.ok ?? false;
 const readiness = [
