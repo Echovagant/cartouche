@@ -21,3 +21,11 @@ export { blendBands } from './blend.ts';
 export { inpaintRegion } from './inpaint.ts';
 export { adjustLevels } from './levels.ts';
 export type { LevelsOptions } from './levels.ts';
+
+export {
+  windowForRegion,
+  windowGeotransform,
+  localRegion,
+  windowBytes,
+} from './window.ts';
+export type { RasterWindow, RasterFrame } from './window.ts';
