@@ -237,9 +237,15 @@ export default function Home() {
             ))}
             <a
               href="ai.html"
-              className="hidden rounded-full px-3 py-1.5 text-[13px] whitespace-nowrap text-ink-2 transition-colors hover:text-ink sm:block"
+              className="hidden items-center gap-1.5 rounded-full px-3 py-1.5 text-[13px] whitespace-nowrap text-ink-2 transition-colors hover:text-ink sm:inline-flex"
             >
               AI 接入
+              <span
+                className="rounded-full border border-warn/45 px-1.5 py-px font-mono text-[11px] leading-none text-warn"
+                title="模型接入已可用；用一句话改图还在做"
+              >
+                开发中
+              </span>
             </a>
             <MagneticLink
               href="canvas.html"
@@ -729,7 +735,7 @@ export default function Home() {
                 links: [
                   { label: '改前确认', href: '#gates' },
                   { label: '格式支持', href: '#formats' },
-                  { label: 'AI 接入', href: 'ai.html' },
+                  { label: 'AI 接入（开发中）', href: 'ai.html' },
                 ],
               },
               {

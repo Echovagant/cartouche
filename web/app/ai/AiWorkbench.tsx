@@ -95,10 +95,21 @@ export default function AiWorkbench() {
       </header>
 
       <main className="mx-auto max-w-3xl px-5 py-8">
-        <h1 className="font-display text-[26px] font-semibold tracking-tight">AI 接入</h1>
+        <h1 className="font-display text-[26px] font-semibold tracking-tight">
+          AI 接入
+          <span className="ml-3 align-middle rounded-full border border-amber/45 px-2 py-0.5 font-mono text-[11px] font-normal text-amber">
+            开发中
+          </span>
+        </h1>
         <p className="mt-2 max-w-xl text-[13px] leading-relaxed text-studio-ink-2">
           把密钥交给本机引擎，挑一个模型，然后发一句话试试通不通。
           密钥不出这台机器，也不进仓库。
+        </p>
+        <p className="mt-3 max-w-xl text-[12.5px] leading-relaxed text-studio-ink-3">
+          <span className="text-studio-ink-2">现在能用的是「模型接入」这一段：</span>
+          配密钥、实时拉模型清单、发一句话测连通。
+          <span className="text-studio-ink-2">「用一句话改图」还没做</span>
+          —— 引擎侧的操作计划与四道闸门已就绪，界面还在做，所以这里先不承诺。
         </p>
 
         {llm.error ? (
