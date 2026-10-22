@@ -27,6 +27,13 @@ export interface RasterInfo {
   readonly width: number;
   readonly height: number;
   readonly bandCount: number;
+  /**
+   * 每个波段的类型（'Byte' / 'UInt16' …），拿不到时给 '未知'。
+   *
+   * 为什么要单独带：交差报告是给 GIS 同事看的，"有 3 个波段"说不清数值范围。
+   * 8 位与 16 位的数值含义完全不同，对方必须一眼看出这张图是哪种位深。
+   */
+  readonly bandTypes: readonly string[];
   readonly crs: CrsInfo;
   readonly geotransform: number[] | null;
   readonly origin: [number, number] | null;
@@ -161,6 +168,12 @@ export async function probeDataset(
       const gt = Array.isArray(j.geoTransform) ? (j.geoTransform as number[]) : null;
       const nodataRaw = (bands[0] as Record<string, unknown> | undefined)?.noDataValue;
       const nodata = typeof nodataRaw === 'number' ? nodataRaw : null;
+      // 波段类型来自 gdalinfo -json 的 bands[].type（'Byte' / 'UInt16' …）。
+      // 取不到就写「未知」：猜一个类型比不写更危险 —— 报告会把猜错的值照抄给 GIS 同事。
+      const bandTypes = bands.map((b) => {
+        const t = (b as Record<string, unknown> | undefined)?.type;
+        return typeof t === 'string' && t.length > 0 ? t : '未知';
+      });
       return {
         dataset: {
           kind: 'raster',
@@ -169,6 +182,7 @@ export async function probeDataset(
           width: size[0],
           height: size[1],
           bandCount: bands.length,
+          bandTypes,
           crs,
           geotransform: gt,
           origin: gt && gt.length >= 6 ? [gt[0] ?? 0, gt[3] ?? 0] : null,

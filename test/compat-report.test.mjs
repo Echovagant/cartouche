@@ -18,6 +18,8 @@ function rasterDataset(overrides = {}) {
     width: 100,
     height: 80,
     bandCount: 3,
+    // 波段类型是探查结果的必需字段：8 位影像写 Byte，16 位写 UInt16。
+    bandTypes: ['Byte', 'Byte', 'Byte'],
     crs: { present: true, epsg: 32631, source: 'embedded', wkt: 'PROJCRS[...]' },
     geotransform: [0.001, 0, 120.3, 0, -0.001, 30.54],
     origin: [120.3, 30.54],
@@ -270,4 +272,73 @@ test('报告开头就写明文件、检查时间与用途（转给 GIS 同事即
   assert.ok(markdown.includes('2026-10-21 10:00'));
   assert.ok(markdown.includes('张三'));
   assert.ok(markdown.includes('无需安装本软件'));
+});
+
+/* ────────── 波段类型（A2-4） ────────── */
+
+test('8 位栅格：类型写进「文件格式」，且不出现 16 位说明', () => {
+  const { markdown } = renderCompatReport({
+    path: 'x.tif',
+    dataset: rasterDataset({ bandTypes: ['Byte', 'Byte', 'Byte'] }),
+    health: health(),
+  });
+  assert.ok(markdown.includes('类型 Byte'), '报告里应写明波段类型 Byte');
+  // 8 位影像写 16 位说明就是噪音：报告是给普通 GIS 同事看的，不是类型词典。
+  assert.ok(!markdown.includes('16 位'), '8 位影像不应出现 16 位说明');
+});
+
+test('16 位栅格：类型写 UInt16，并在注意事项里说明降位行为', () => {
+  const { markdown } = renderCompatReport({
+    path: 'x.tif',
+    dataset: rasterDataset({ bandTypes: ['UInt16', 'UInt16', 'UInt16'] }),
+    health: health(),
+  });
+  assert.ok(markdown.includes('类型 UInt16'), '报告里应写明波段类型 UInt16');
+  assert.ok(markdown.includes('16 位无符号'), '应说明这是 16 位无符号影像');
+  assert.ok(markdown.includes('导出 PNG / PDF 时降为 8 位显示'), '应说明导出时才降位');
+});
+
+test('16 位说明放在「在 ArcGIS 中打开需要注意」段落里，不塞进正文', () => {
+  const { markdown } = renderCompatReport({
+    path: 'x.tif',
+    dataset: rasterDataset({ bandTypes: ['UInt16'] }),
+    health: health(),
+  });
+  const notes = markdown.slice(
+    markdown.indexOf('在 ArcGIS 中打开需要注意'),
+    markdown.indexOf('## 1.'),
+  );
+  assert.ok(notes.includes('16 位无符号'), '16 位说明应出现在注意事项段落里');
+  assert.ok(
+    !markdown.slice(markdown.indexOf('## 1.'), markdown.indexOf('## 2.')).includes('16 位无符号'),
+    '16 位说明不应堆在「文件格式」正文里',
+  );
+});
+
+test('多波段同类型：类型只写一次，不写成 Byte、Byte、Byte', () => {
+  const { markdown } = renderCompatReport({
+    path: 'x.tif',
+    dataset: rasterDataset({ bandTypes: ['Byte', 'Byte', 'Byte'] }),
+    health: health(),
+  });
+  assert.ok(markdown.includes('类型 Byte'), '应写明类型 Byte');
+  assert.ok(!markdown.includes('Byte、Byte、Byte'), '同类型不应重复列出');
+});
+
+test('各波段类型不一致：顿号分隔', () => {
+  const { markdown } = renderCompatReport({
+    path: 'x.tif',
+    dataset: rasterDataset({ bandTypes: ['Byte', 'UInt16', 'Byte'] }),
+    health: health(),
+  });
+  assert.ok(markdown.includes('类型 Byte、UInt16'), '不同类型应用顿号分隔');
+});
+
+test('波段类型拿不到：写「未知」，不编造类型', () => {
+  const { markdown } = renderCompatReport({
+    path: 'x.tif',
+    dataset: rasterDataset({ bandTypes: [] }),
+    health: health(),
+  });
+  assert.ok(markdown.includes('类型 未知'), '拿不到类型时应写「未知」');
 });

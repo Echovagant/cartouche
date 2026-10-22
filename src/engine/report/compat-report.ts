@@ -162,6 +162,30 @@ function describeOperations(ops: readonly CompatOperation[] | undefined): string
 }
 
 /**
+ * 波段类型的摘要。
+ *
+ * 为什么要去重：多波段 RGB 影像各波段类型本来就一样，
+ * 写成「Byte、Byte、Byte」是噪音而不是信息 —— 报告是给 GIS 同事看的，
+ * 一眼要能看出"这是 8 位图"还是"这是 16 位图"。
+ * 只有各波段类型真的不一致时，才用顿号分开写。
+ */
+function describeBandTypes(bandTypes: readonly string[] | undefined): string {
+  if (!bandTypes || bandTypes.length === 0) return '未知';
+  return [...new Set(bandTypes)].join('、');
+}
+
+/**
+ * 这份影像是不是 16 位无符号。
+ *
+ * 为什么只认 UInt16：本引擎只支持 Byte 与 UInt16 两种无符号类型，
+ * Int16 / UInt32 这类本工具会直接拒绝读写（见 raster/raw.ts 的类型校验）。
+ * 对着它们写"本工具按 16 位读写"就是骗人 —— 所以判据要卡死在 UInt16 上。
+ */
+function is16Bit(bandTypes: readonly string[] | undefined): boolean {
+  return Array.isArray(bandTypes) && bandTypes.includes('UInt16');
+}
+
+/**
  * 生成兼容性自检报告（Markdown）。
  */
 export function renderCompatReport(input: CompatReportInput): CompatReport {
@@ -177,6 +201,17 @@ export function renderCompatReport(input: CompatReportInput): CompatReport {
   if (crs.arcgisNote) notes.push(crs.arcgisNote);
   if (sidecars.arcgisNote) notes.push(sidecars.arcgisNote);
   if (geometry.note) notes.push(geometry.note);
+
+  // 16 位影像的降位说明。
+  // 只在真的是 16 位时出现：8 位影像也写这条，通篇"16 位"就成了噪音。
+  // 之所以必须写：读写全程 16 位保真，但导出 PNG / PDF 会降成 8 位显示，
+  // 对方只看导出图会以为原图本来就是 8 位。
+  if (dataset.kind === 'raster' && is16Bit(dataset.bandTypes)) {
+    notes.push(
+      '影像为 **16 位无符号（UInt16）**：本工具按 16 位读写，改动不会降位；' +
+        '导出 PNG / PDF 时降为 8 位显示。',
+    );
+  }
 
   // 编码提醒（矢量）
   if (dataset.kind === 'vector' && dataset.encoding && !/^utf-?8$/i.test(dataset.encoding)) {
@@ -199,7 +234,7 @@ export function renderCompatReport(input: CompatReportInput): CompatReport {
 
   const formatLine =
     dataset.kind === 'raster'
-      ? `栅格 · 驱动 \`${dataset.driver}\` · ${dataset.width}×${dataset.height} · ${dataset.bandCount} 波段`
+      ? `栅格 · 驱动 \`${dataset.driver}\` · ${dataset.width}×${dataset.height} · ${dataset.bandCount} 波段 · 类型 ${describeBandTypes(dataset.bandTypes)}`
       : `矢量 · 驱动 \`${dataset.driver}\` · ${dataset.featureCount} 个要素 · ${dataset.geometryType ?? '未知几何'} · ${dataset.fields.length} 个字段`;
 
   const md: string[] = [];
