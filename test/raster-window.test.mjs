@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
@@ -84,11 +84,11 @@ function runGdal(tool, args, what) {
 const enviCoord = (n) => (Number.isInteger(n) ? `${n}.0` : String(n));
 
 /**
- * 造一张 40x30 的 GTiff：每个像元值 = valueAt(x, y, band)。
+ * 造一张栅格：每个像元值 = valueAt(x, y, band)。
  *
  * map info 的参考点是 1 基的像元号（ENVI 约定），所以参考点取 (1.0, 1.0)、
- * 参考像元的位置取 (0, 30)：GDAL 读进来后整图原点正好落在 (0, 30)、像元 1x1，
- * 也就是这张图铺满 [0,40]×[0,30]。
+ * 参考像元的位置取 (0, h)：GDAL 读进来后整图原点正好落在 (0, h)、像元 1x1，
+ * 也就是这张图铺满 [0,w]×[0,h]。
  *
  * southUp=true 时改用 -a_ullr 造**南向上**（正 NS 分辨率）的图。
  *
@@ -99,9 +99,12 @@ const enviCoord = (n) => (Number.isInteger(n) ? `${n}.0` : String(n));
  * colorinterp 给 'red,green,blue' 时在转成 GTiff 后**补一次** -colorinterp：
  * ENVI 本身不带颜色解释信息，不补的话 3 波段出来是 Undefined/Undefined/Undefined
  * （实测），与彩色原图合成时会被 gdalbuildvrt 判为异构。
+ *
+ * width/height 可调：体积上限的用例需要一张"整图远大于窗口"的大图，
+ * 而小图（默认 40×30）造不出那个比例。
  */
-function makeRaster(file, valueAt, { southUp = false, dataType = 'Byte', bands = 1, colorinterp = null } = {}) {
-  const w = 40, h = 30;
+function makeRaster(file, valueAt, { southUp = false, dataType = 'Byte', bands = 1, colorinterp = null, width = 40, height = 30 } = {}) {
+  const w = width, h = height;
   const bytesPerSample = dataType === 'UInt16' ? 2 : 1;
   const data = Buffer.alloc(w * h * bands * bytesPerSample);
   for (let b = 0; b < bands; b++) {
@@ -118,7 +121,7 @@ function makeRaster(file, valueAt, { southUp = false, dataType = 'Byte', bands =
     ['ENVI',`bands = ${bands}`,'header offset = 0','file type = ENVI Standard',
      `data type = ${dataType === 'UInt16' ? 12 : 1}`,'interleave = bsq','byte order = 0',`lines = ${h}`,`samples = ${w}`,
      'header size = 0', 'pixel size = 1.0000000000e+000',
-     'map info = {Geographic Lat/Lon, 1.0, 1.0, 0.0, 30.0, 1.0, 1.0, units=degrees}',''].join('\n'),
+     'map info = {Geographic Lat/Lon, 1.0, 1.0, 0.0, ' + enviCoord(h) + ', 1.0, 1.0, units=degrees}',''].join('\n'),
     'latin1');
   const args = ['-of','GTiff'];
   if (southUp) args.push('-a_ullr', '0', '0', String(w), String(h));
@@ -547,6 +550,277 @@ test('合成：UInt16 原图配 Byte 窗口时报错，要说清是波段类型�
         return true;
       },
     );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/* ────────── RasterEditor 走窗口路径（局部操作只读窗口） ────────── */
+
+const { LocalFolderStore } = await import(
+  pathToFileURL(join(root, 'src', 'engine', 'workspace', 'index.ts')).href
+);
+const { RasterEditor } = await import(eng('ops.ts'));
+const { readRasterPixels, readRasterWindow, readRasterFrame } = await import(eng('raw.ts'));
+const { inpaintRegion } = await import(eng('inpaint.ts'));
+const { buildAlphaMask } = await import(eng('mask.ts'));
+const { blendBands } = await import(eng('blend.ts'));
+
+/** 载入 GDAL 位置（窗口路径要真调 GDAL，没有 GDAL 就没法测） */
+async function loadEditor(dir, deps = {}) {
+  const { resolveGdal } = await import(pathToFileURL(join(root, 'src', 'engine', 'gdal', 'env.ts')).href);
+  const loc = resolveGdal();
+  assert.ok(loc, '本机需装好 GDAL');
+  const store = new LocalFolderStore(dir);
+  return { loc, store, editor: new RasterEditor({ loc, store, ...deps }) };
+}
+
+/* 体积上限那组用例的关键数字：
+ *   整图 2048×1536×1 波段×8 位 = 3 145 728 字节（3 MB）
+ *   窗口 64×64×1×1            =     4 096 字节
+ *   上限                      = 1 048 576 字节（1 MB）
+ * 上限**比整图小、比窗口大** —— 于是"整读整图"的实现必然撞上限，
+ * 只有"只读窗口"的实现才能过。这才是区分新旧实现的那把尺子。 */
+const BIG_W = 2048;
+const BIG_H = 1536;
+const LIMIT = 1024 * 1024;
+const BIG_REGION = { minX: 100, minY: 100, maxX: 164, maxY: 164 };
+const BIG_VALUE = (x, y) => (x * 7 + y * 3) & 0xff;
+
+test('窗口路径：整图超过上限也能局部涂色，且窗口外逐像素不变', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cartouche-winop-'));
+  try {
+    const tif = join(dir, 'big.tif');
+    makeRaster(tif, BIG_VALUE, { width: BIG_W, height: BIG_H });
+
+    const { loc, editor } = await loadEditor(dir, { maxWindowBytes: LIMIT });
+    const wholeBytes = BIG_W * BIG_H * 1 * 1;
+    const winBytes = 64 * 64 * 1 * 1;
+    console.log(
+      `[体积上限] 上限 ${LIMIT} 字节；整图 ${BIG_W}×${BIG_H} = ${wholeBytes} 字节；` +
+      `窗口 64×64 = ${winBytes} 字节`,
+    );
+    assert.ok(wholeBytes > LIMIT, '整图必须大于上限，这条用例才说明得了问题');
+    assert.ok(winBytes < LIMIT, '窗口必须小于上限');
+
+    const before = await readRasterPixels(loc, tif);
+    const res = await editor.paint({ target: 'big.tif', region: BIG_REGION, color: [200, 100, 50] });
+    const after = await readRasterPixels(loc, tif);
+
+    assert.equal(res.verified, true, '窗口路径也要通过回读校验');
+    assert.equal(after.width, BIG_W, '尺寸不能变');
+    assert.equal(after.height, BIG_H, '尺寸不能变');
+    assert.equal(after.pixelType, 'Byte', '类型不能变');
+
+    // 窗口内：涂成目标颜色
+    const idx = (x, y) => y * after.width + x;
+    assert.equal(after.bands[0][idx(120, 120)], 200, '窗口内应被涂成目标颜色');
+    assert.equal(after.bands[0][idx(100, 100)], 200, '区域左上角也要涂到');
+    assert.equal(after.bands[0][idx(163, 163)], 200, '区域右下角也要涂到');
+
+    // 窗口外逐像素不变（这是窗口化最容易出错的地方：整图被重算了）
+    let outsideDiff = 0;
+    let firstDiff = null;
+    for (let y = 0; y < BIG_H; y++) {
+      for (let x = 0; x < BIG_W; x++) {
+        const inside = x >= BIG_REGION.minX && x < BIG_REGION.maxX &&
+          y >= BIG_REGION.minY && y < BIG_REGION.maxY;
+        if (inside) continue;
+        const was = before.bands[0][idx(x, y)];
+        const now = after.bands[0][idx(x, y)];
+        if (was !== now) {
+          outsideDiff++;
+          if (!firstDiff) firstDiff = { x, y, was, now };
+        }
+      }
+    }
+    assert.equal(
+      outsideDiff, 0,
+      `窗口外必须逐像素不变（实际 ${outsideDiff} 个差异，例如 ${JSON.stringify(firstDiff)}）`,
+    );
+    console.log('[窗口外逐像素比对] 差异数 =', outsideDiff, '（抽查 (99,100)=', after.bands[0][idx(99, 100)],
+      ' (164,100)=', after.bands[0][idx(164, 100)], ' (100,99)=', after.bands[0][idx(100, 99)], '）');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('体积上限：全局操作超限时明确报错，不是 OOM', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cartouche-winop-'));
+  try {
+    const tif = join(dir, 'big.tif');
+    makeRaster(tif, BIG_VALUE, { width: BIG_W, height: BIG_H });
+    const { editor } = await loadEditor(dir, { maxWindowBytes: LIMIT });
+
+    await assert.rejects(
+      () => editor.adjustLevels({ target: 'big.tif', method: 'linear-stretch' }),
+      (err) => {
+        console.log('[超限时的错误信息]\n' + err.message);
+        assert.match(err.message, /超过上限/, '要说明是超过上限');
+        assert.match(err.message, /3 MB/, '要报出实际需要的 MB');
+        assert.match(err.message, /1 MB/, '要报出上限的 MB');
+        assert.match(err.message, /局部操作请缩小范围/, '要给出下一步该怎么做');
+        return true;
+      },
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('校验和口径：窗口路径报的是窗口范围的校验和', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cartouche-winop-'));
+  try {
+    const tif = join(dir, 'big.tif');
+    makeRaster(tif, BIG_VALUE, { width: BIG_W, height: BIG_H });
+    const { loc, editor } = await loadEditor(dir, { maxWindowBytes: LIMIT });
+
+    const win = { x: BIG_REGION.minX, y: BIG_REGION.minY, w: 64, h: 64 };
+    const winBefore = await readRasterWindow(loc, tif, win);
+    const wholeBefore = await readRasterPixels(loc, tif);
+
+    const res = await editor.paint({ target: 'big.tif', region: BIG_REGION, color: [200, 100, 50] });
+    const winAfter = await readRasterWindow(loc, tif, win);
+
+    // 窗口口径：前后都是**窗口**的校验和，两者才可比
+    assert.equal(res.checksumBefore, winBefore.checksum, 'checksumBefore 必须是窗口的校验和');
+    assert.equal(res.checksumAfter, winAfter.checksum, 'checksumAfter 必须是窗口的校验和');
+    assert.notEqual(res.checksumBefore, res.checksumAfter, '涂色后窗口内容应当变了');
+    assert.notEqual(res.checksumBefore, wholeBefore.checksum, '窗口口径不能是整图的校验和');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('校验和口径：整图路径报的是整图的校验和', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cartouche-winop-'));
+  try {
+    const tif = join(dir, 'small.tif');
+    makeRaster(tif, BIG_VALUE);
+    const { loc, editor } = await loadEditor(dir);
+
+    const wholeBefore = await readRasterPixels(loc, tif);
+    const res = await editor.adjustLevels({ target: 'small.tif', method: 'linear-stretch' });
+    const wholeAfter = await readRasterPixels(loc, tif);
+
+    assert.equal(res.checksumBefore, wholeBefore.checksum, '整图路径的 checksumBefore 必须是整图的');
+    assert.equal(res.checksumAfter, wholeAfter.checksum, '整图路径的 checksumAfter 必须是整图的');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('预演：窗口路径的预演一个字节都不写盘', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cartouche-winop-'));
+  try {
+    const tif = join(dir, 'big.tif');
+    makeRaster(tif, BIG_VALUE, { width: BIG_W, height: BIG_H });
+    const { editor } = await loadEditor(dir, { maxWindowBytes: LIMIT });
+
+    const bytesBefore = readFileSync(tif);
+    const res = await editor.paint(
+      { target: 'big.tif', region: BIG_REGION, color: [200, 100, 50] },
+      { dryRun: true },
+    );
+
+    assert.equal(res.dryRun, true, '要标明这是预演');
+    assert.ok(res.affectedPixels > 0, '预演要给出像元数');
+    assert.equal(res.backupPath, null, '预演不该产生备份');
+    assert.deepEqual(readFileSync(tif), bytesBefore, '预演不能改文件');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('16 位影像走窗口路径：产出仍是 16 位，窗口内是预期值', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cartouche-winop-'));
+  try {
+    // 2048×1024×1 波段×16 位 = 4 194 304 字节（4 MB）
+    const tif = join(dir, 'u16.tif');
+    makeRaster(tif, (x, y) => (x * 13 + y * 7) % 4096, {
+      dataType: 'UInt16', width: 2048, height: 1024,
+    });
+    // 上限 3 MB：按 1 字节/样点算是 2 MB（能过），按 2 字节算是 4 MB（过不了）——
+    // 所以这条用例同时锁住"字节宽度按像素类型算"这条规则。
+    const { loc, editor } = await loadEditor(dir, { maxWindowBytes: 3 * 1024 * 1024 });
+
+    await assert.rejects(
+      () => editor.adjustLevels({ target: 'u16.tif', method: 'linear-stretch' }),
+      (err) => {
+        assert.match(err.message, /4 MB/, '16 位整图要按 4 MB 算（2 字节/样点）');
+        assert.match(err.message, /3 MB/, '要报出上限');
+        return true;
+      },
+    );
+
+    // 局部涂色：窗口 64×64×2 = 8192 字节，可以走
+    const res = await editor.paint({ target: 'u16.tif', region: BIG_REGION, color: [200, 100, 50] });
+    assert.equal(res.verified, true, '16 位也要通过回读校验');
+
+    const frame = await readRasterFrame(loc, tif);
+    assert.equal(frame.pixelType, 'UInt16', '产出必须仍是 16 位，不能被压成 8 位');
+
+    const win = await readRasterWindow(loc, tif, { x: 100, y: 100, w: 64, h: 64 });
+    assert.equal(win.pixelType, 'UInt16');
+    assert.equal(win.bands[0][20 * 64 + 20], 200 * 257, '窗口内应是放大到 16 位口径的色值');
+    assert.equal(win.bands[0][0], 200 * 257, '区域左上角也要涂到');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('修补：窗口外扩的余量够用，结果与整图算出来的一致', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cartouche-winop-'));
+  try {
+    const tif = join(dir, 'm.tif');
+    makeRaster(tif, BIG_VALUE);
+    const { loc, editor } = await loadEditor(dir);
+
+    const region = { minX: 10, minY: 8, maxX: 20, maxY: 14 };
+    const before = await readRasterPixels(loc, tif);
+    // 参照答案：直接在整图上算一遍修补
+    const expected = inpaintRegion(
+      before.bands, before.width, before.height, before.bandCount, region, 8, 'Byte',
+    );
+
+    await editor.inpaint({ target: 'm.tif', region, radiusPx: 4 });
+    const after = await readRasterPixels(loc, tif);
+
+    let diff = 0;
+    for (let i = 0; i < expected[0].length; i++) {
+      if (after.bands[0][i] !== expected[0][i]) diff++;
+    }
+    assert.equal(diff, 0, `窗口路径的修补结果必须与整图一致（差异 ${diff} 个像元）`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('区域替换：羽化向外生长，窗口留足余量，边缘过渡与整图一致', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cartouche-winop-'));
+  try {
+    const target = join(dir, 't.tif');
+    const source = join(dir, 's.tif');
+    makeRaster(target, BIG_VALUE);
+    makeRaster(source, (x, y) => (x * 11 + y * 5 + 40) & 0xff);
+    const { loc, editor } = await loadEditor(dir);
+
+    const region = { minX: 10, minY: 8, maxX: 20, maxY: 14 };
+    const featherPx = 3;
+    const before = await readRasterPixels(loc, target);
+    const src = await readRasterPixels(loc, source);
+    // 参照答案：整图上按羽化掩膜混合
+    const alpha = buildAlphaMask(before.width, before.height, region, featherPx);
+    const expected = blendBands(before.bands, src.bands, alpha, before.bandCount, 'Byte');
+
+    await editor.replaceRegion({ source: 's.tif', target: 't.tif', region, featherPx });
+    const after = await readRasterPixels(loc, target);
+
+    let diff = 0;
+    for (let i = 0; i < expected[0].length; i++) {
+      if (after.bands[0][i] !== expected[0][i]) diff++;
+    }
+    assert.equal(diff, 0, `羽化边缘必须与整图一致（差异 ${diff} 个像元）`);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
