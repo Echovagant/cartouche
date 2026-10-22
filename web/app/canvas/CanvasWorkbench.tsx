@@ -20,6 +20,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import AttributeTable from './AttributeTable';
 import { CanvasBoot, ExportDevelop, LayerArrival, SelectionShutter } from './CanvasMotion';
+import ConfirmCard, { type ExecOutcome } from './ConfirmCard';
+import EditToolbar from './EditToolbar';
 import LayerPanel from './LayerPanel';
 import MapCanvas, { type MapCanvasHandle } from './MapCanvas';
 import ProjectPicker from './ProjectPicker';
@@ -27,14 +29,28 @@ import Toolbar from './Toolbar';
 import { MarkdownView } from './markdown';
 import { ThemeToggle } from './ThemeToggle';
 import { ActionButton, TextField } from './ui';
+import { useEditTools } from './useEditTools';
 import { useEngine, type CompatReportPayload } from './useEngine';
 import { useProjects } from './useProjects';
 import {
+  type EditOp,
   type LayerKind,
+  type LevelsParams,
   type MapLayer,
+  type OpPreview,
   type ProjectManifest,
   type SelectedFeature,
 } from './types';
+
+/** 确认卡的状态：一次预演 + 一次执行的全过程 */
+interface ConfirmState {
+  readonly op: EditOp;
+  readonly preview: OpPreview | null;
+  readonly previewing: boolean;
+  readonly error: string | null;
+  readonly executing: boolean;
+  readonly outcome: ExecOutcome | null;
+}
 
 /** 本地时间戳：出图时间与导出文件名都用它 */
 function formatNow(): string {
@@ -420,14 +436,21 @@ export default function CanvasWorkbench() {
   /* ───────── 导出 PDF ───────── */
 
   const exportPdf = engine.exportPdf;
-  const handleExportPdf = useCallback(async () => {
+
+  /**
+   * 把当前视口封成 PDF 并触发下载。
+   *
+   * 导出 PDF 与"改动后重新出图"是同一条链路（取画面 → 交引擎封 PDF → 下载），
+   * 所以抽成一个函数：工具栏的「导出 PDF」和"改完栅格自动出新版"共用它，
+   * 免得两处各写一遍、以后改标题栏口径时漏改一处。
+   */
+  const exportView = useCallback(async (): Promise<
+    { readonly ok: true; readonly filename: string } | { readonly ok: false; readonly error: string }
+  > => {
     // 出图时间要在取画面**之前**定下来：它要写进这一张图的标题栏
     const stamp = formatNow();
     const shot = mapHandleRef.current?.exportJpeg({ quality: 0.92, producedAt: stamp });
-    if (!shot) {
-      setBanner('地图还没准备好，稍后再试一次。');
-      return;
-    }
+    if (!shot) return { ok: false, error: '地图还没准备好，稍后再试一次。' };
     const res = await exportPdf({
       jpeg: shot.jpeg,
       width: shot.width,
@@ -435,21 +458,27 @@ export default function CanvasWorkbench() {
       title,
       operator,
     });
-    if (!res.ok) {
-      setBanner(`导出失败：${res.error}`);
-      return;
-    }
+    if (!res.ok) return { ok: false, error: res.error };
     setProducedAt(stamp);
     const filename = `cartouche-${fileStamp()}.pdf`;
     downloadBlob(res.data, filename);
-    setBanner(null);
     // 既存进项目目录（.cartouche/outputs/），再触发下载 —— 交差时能直接找到上一版
     if (projectPath) {
       void writeOutput(projectPath, filename, res.data).catch((err) => {
         setBanner(`PDF 已下载，但没存进项目目录：${(err as Error).message}`);
       });
     }
+    return { ok: true, filename };
   }, [exportPdf, title, operator, projectPath, writeOutput]);
+
+  const handleExportPdf = useCallback(async () => {
+    const res = await exportView();
+    if (!res.ok) {
+      setBanner(`导出失败：${res.error}`);
+      return;
+    }
+    setBanner(null);
+  }, [exportView]);
 
   /* ───────── 兼容性报告 ───────── */
 
@@ -470,6 +499,181 @@ export default function CanvasWorkbench() {
     setReportOpen(true);
     setBanner(null);
   }, [activeLayer, fetchCompatReport]);
+
+  /* ───────── 栅格编辑（③a-2） ───────── */
+
+  /**
+   * 被编辑的那张栅格。
+   *
+   * 只认**用户明确选中**的那一层（activeLayerId），不做"退回最后一层"的兜底：
+   * 改错文件是这件工具里唯一不可逆的事，宁可让人多点一下。
+   */
+  const editTarget = useMemo(
+    () => layers.find((layer) => layer.id === activeLayerId && layer.kind === 'raster') ?? null,
+    [layers, activeLayerId],
+  );
+
+  const [editColor, setEditColor] = useState('#d9480f');
+  const [brushWidth, setBrushWidth] = useState(6);
+  const [levels, setLevels] = useState<LevelsParams>({
+    method: 'linear-stretch',
+    brightness: 0,
+    contrast: 1,
+  });
+  const [confirmState, setConfirmState] = useState<ConfirmState | null>(null);
+
+  /**
+   * 预演一条操作：确认卡的数据全部来自引擎的预演，不是前端自己估的。
+   *
+   * 预演失败就把服务端的中文错误原样带进确认卡，并且**不给执行按钮**——
+   * 影响面都算不出来，这次就不该执行。
+   */
+  const previewOp = useCallback(
+    async (op: EditOp) => {
+      setConfirmState({
+        op,
+        preview: null,
+        previewing: true,
+        error: null,
+        executing: false,
+        outcome: null,
+      });
+      const res = await engine.previewOp(op);
+      setConfirmState((prev) => {
+        // 预演期间用户可能已经关掉了卡，这时不要把结果塞回一个已经不存在的状态
+        if (!prev || prev.op !== op) return prev;
+        if (!res.ok) return { ...prev, previewing: false, error: res.error };
+        return { ...prev, previewing: false, preview: res.data, error: null };
+      });
+    },
+    [engine.previewOp],
+  );
+
+  const editTools = useEditTools({
+    targetPath: editTarget?.path ?? null,
+    fetchGrid: engine.fetchRasterGrid,
+    getViewport: () => mapHandleRef.current?.getViewport() ?? null,
+    brushWidth,
+    onBrushEnd: () => {
+      const built = editToolsRef.current?.buildBrushOp(editColorRef.current);
+      if (!built) return;
+      if (!built.ok) {
+        setBanner(built.message);
+        return;
+      }
+      setBanner(null);
+      void previewOp(built.op);
+    },
+  });
+
+  // 笔迹抬手时要立刻用当前颜色去预演，而那一刻 React 的 state 还没更新，
+  // 所以把这两个值放进 ref 供回调读取（和 useEditTools 里的处理同一个道理）。
+  const editToolsRef = useRef(editTools);
+  editToolsRef.current = editTools;
+  const editColorRef = useRef(editColor);
+  editColorRef.current = editColor;
+
+  /** 框选之后：涂色 or 擦除 */
+  const handleBoxAction = useCallback(
+    (kind: 'paint' | 'erase') => {
+      const built = editTools.buildRegionOp(kind, editColor);
+      if (!built.ok) {
+        setBanner(built.message);
+        return;
+      }
+      setBanner(null);
+      void previewOp(built.op);
+    },
+    [editTools.buildRegionOp, editColor, previewOp],
+  );
+
+  /** 调色：按当前参数预演一次 */
+  const handlePreviewLevels = useCallback(() => {
+    if (!editTarget) {
+      setBanner('先选一个栅格图层');
+      return;
+    }
+    const op: EditOp = {
+      op: 'raster.adjustLevels',
+      params: {
+        target: editTarget.path,
+        method: levels.method,
+        brightness: levels.brightness,
+        contrast: levels.contrast,
+      },
+      label: '亮度对比度调整',
+    };
+    setBanner(null);
+    void previewOp(op);
+  }, [editTarget, levels, previewOp]);
+
+  /**
+   * 执行：确认卡上点「确认执行」。
+   *
+   * 顺序有讲究：先让地图重新出图（拿到改动后的画面），再导 PDF——
+   * 反过来的话导出来的是改动前的图，等于白导一次。
+   */
+  const handleConfirmExecute = useCallback(async () => {
+    const current = confirmState;
+    if (!current || current.executing) return;
+    setConfirmState((prev) => (prev ? { ...prev, executing: true, outcome: null } : prev));
+    const res = await engine.executeOp(current.op);
+    if (!res.ok) {
+      setConfirmState((prev) =>
+        prev ? { ...prev, executing: false, error: res.error } : prev,
+      );
+      return;
+    }
+    const data = res.data;
+    const failed =
+      data.failedAt !== undefined ? data.results[data.failedAt] : data.results.find((r) => !r.ok);
+    if (!data.ok || failed) {
+      // 前面成功的条目已经落盘了，不会回滚——这句话必须说清楚，
+      // 否则用户会以为"什么都没发生"而重复操作，把文件改得更乱。
+      const parts: string[] = [];
+      if (failed?.unimplemented) parts.push('该操作尚未支持');
+      if (failed?.error) parts.push(failed.error);
+      if (data.completed > 0) parts.push('已完成的条目已生效，失败的条目没有回滚');
+      setConfirmState((prev) =>
+        prev
+          ? {
+              ...prev,
+              executing: false,
+              outcome: {
+                tone: 'error',
+                message: parts.join('。') || '操作没有完成',
+              },
+            }
+          : prev,
+      );
+      return;
+    }
+
+    // 成功：刷新地图 → 导出新版 → 刷新"最近项目"摘要
+    await mapHandleRef.current?.refresh();
+    const exported = await exportView();
+    const next = buildManifest();
+    if (projectPath && next) rememberProject(projectPath, next);
+    editToolsRef.current.resetGesture();
+    setConfirmState((prev) =>
+      prev
+        ? {
+            ...prev,
+            executing: false,
+            outcome: {
+              tone: exported.ok ? 'ok' : 'warn',
+              message: exported.ok
+                ? `已完成「${current.op.label}」。地图已刷新，改动后的图已导出为 ${exported.filename}。`
+                : `已完成「${current.op.label}」。地图已刷新，但导出 PDF 失败：${exported.error}`,
+            },
+          }
+        : prev,
+    );
+  }, [confirmState, engine.executeOp, exportView, projectPath, rememberProject]);
+
+  const closeConfirm = useCallback(() => {
+    setConfirmState(null);
+  }, []);
 
   /* ───────── 渲染 ───────── */
 
@@ -563,6 +767,31 @@ export default function CanvasWorkbench() {
         onReloadHealth={engine.reloadHealth}
       />
 
+      <EditToolbar
+        tool={editTools.tool}
+        onToolChange={editTools.setTool}
+        blocked={editTools.blocked}
+        color={editColor}
+        onColorChange={setEditColor}
+        brushWidth={brushWidth}
+        onBrushWidthChange={setBrushWidth}
+        hasBox={editTools.hasBox}
+        onBoxAction={(kind) => {
+          handleBoxAction(kind);
+        }}
+        levels={levels}
+        onLevelsChange={setLevels}
+        onPreviewLevels={() => {
+          handlePreviewLevels();
+        }}
+        busy={
+          engine.isPending('preview') ||
+          engine.isPending('execute') ||
+          (confirmState?.previewing ?? false) ||
+          (confirmState?.executing ?? false)
+        }
+      />
+
       {fileProtocol ? (
         <div className="border-b border-amber/35 bg-amber/10 px-4 py-2.5 text-[12.5px] leading-relaxed text-studio-ink-2">
           <strong className="text-studio-ink">当前是用 file:// 直接打开的，地图画不出来。</strong>
@@ -626,6 +855,9 @@ export default function CanvasWorkbench() {
                 setSelected(features);
                 setSelectedIndex(0);
               }}
+              editTool={editTools.tool}
+              editPreview={editTools.preview}
+              onEditGesture={editTools.onGesture}
             />
             <LayerArrival stageRef={stageRef} layerCount={layers.length} />
             <SelectionShutter stageRef={stageRef} selectedCount={selected.length} />
@@ -683,6 +915,21 @@ export default function CanvasWorkbench() {
             <MarkdownView source={report.markdown} />
           </div>
         </aside>
+      ) : null}
+
+      {confirmState ? (
+        <ConfirmCard
+          op={confirmState.op}
+          preview={confirmState.preview}
+          previewing={confirmState.previewing}
+          previewError={confirmState.error}
+          executing={confirmState.executing}
+          outcome={confirmState.outcome}
+          onConfirm={() => {
+            void handleConfirmExecute();
+          }}
+          onCancel={closeConfirm}
+        />
       ) : null}
       </div>
     </>

@@ -24,6 +24,12 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type {
+  EditOp,
+  OpExecuteResult,
+  OpPreview,
+  RasterGrid,
+} from './types';
 
 /** 引擎服务地址；next.config.mjs 已通过 env 注入，静态导出后仍是硬编码值 */
 export const ENGINE_BASE = process.env.NEXT_PUBLIC_ENGINE_BASE_URL ?? 'http://127.0.0.1:8787';
@@ -103,6 +109,12 @@ export interface EngineApi {
   readonly rasterUrl: (path: string, options: RasterUrlOptions) => string;
   readonly fetchCompatReport: (path: string) => Promise<Result<CompatReportPayload>>;
   readonly exportPdf: (payload: PdfPayload) => Promise<Result<Blob>>;
+  /** 取栅格的原生像元网格（把屏幕坐标换算成像元坐标的唯一依据） */
+  readonly fetchRasterGrid: (path: string) => Promise<Result<RasterGrid>>;
+  /** 预演一条操作：只算影响面，不落盘 */
+  readonly previewOp: (op: EditOp) => Promise<Result<OpPreview>>;
+  /** 执行一条操作（真的改文件） */
+  readonly executeOp: (op: EditOp) => Promise<Result<OpExecuteResult>>;
 }
 
 /** 统一的取 JSON：把"连不上"和"服务端报错"翻译成可读的中文 */
@@ -288,8 +300,116 @@ export function useEngine(root?: string | null): EngineApi {
     [run],
   );
 
-  const isPending = useCallback((key: string) => pending[key] === true, [pending]);
+  /**
+   * 取栅格的原生像元网格。
+   *
+   * 画笔/框选要把屏幕坐标换算成**目标栅格的像元坐标**，
+   * 唯一可靠的依据是 GDAL 的仿射变换（geotransform）与栅格自身的坐标系（crs）。
+   * 前端自己按经纬度"猜"像元位置一定会有偏差。
+   */
+  const fetchRasterGrid = useCallback(
+    (path: string) =>
+      run('grid', async () => {
+        const params = new URLSearchParams({ path });
+        if (root) params.set('root', root);
+        const data = await requestJson<RasterGrid>(`${ENGINE_BASE}/api/raster/grid?${params.toString()}`);
+        return {
+          width: data.width,
+          height: data.height,
+          ...(data.bandCount === undefined ? {} : { bandCount: data.bandCount }),
+          geotransform: [
+            data.geotransform[0],
+            data.geotransform[1],
+            data.geotransform[2],
+            data.geotransform[3],
+            data.geotransform[4],
+            data.geotransform[5],
+          ] as [number, number, number, number, number, number],
+          // 坐标系的判定整段透传：前端只认引擎给的 is4326 结论
+          crs: {
+            present: data.crs?.present === true,
+            epsg: data.crs?.epsg ?? null,
+            authority: data.crs?.authority ?? null,
+            source: data.crs?.source ?? 'none',
+            wkt: data.crs?.wkt ?? null,
+            is4326: data.crs?.is4326 === true,
+          },
+          epsg: data.epsg ?? data.crs?.epsg ?? null,
+        };
+      }),
+    [run, root],
+  );
 
+  /**
+   * 预演一条操作：引擎算好影响面返回，**不落盘**。
+   *
+   * 这一步是"四道闸门"的第一道：用户看到的像元数、目标文件、备份文件名
+   * 都来自这里，不是前端自己估的。
+   */
+  const previewOp = useCallback(
+    (op: EditOp) =>
+      run('preview', async () => {
+        const res = await fetch(`${ENGINE_BASE}/api/op/preview`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ op: op.op, params: op.params, ...(root ? { root } : {}) }),
+        });
+        if (!res.ok) {
+          let detail = `HTTP ${res.status}`;
+          try {
+            const body = (await res.json()) as { message?: string };
+            if (body?.message) detail = body.message;
+          } catch {
+            /* 错误体不是 JSON，保留状态码 */
+          }
+          throw new Error(detail);
+        }
+        return (await res.json()) as OpPreview;
+      }),
+    [run, root],
+  );
+
+  /**
+   * 执行一条操作：真的改文件。
+   *
+   * `root` 与 `projectRoot` 都给成项目根：前者用来定位相对路径，
+   * 后者决定留痕（history.jsonl）与清单写到哪里。
+   *
+   * `confirmed: true` 是"用户已经在确认卡上点过确认"的标记，
+   * 引擎会把它记进留痕的 impact 里（审计用）——所以只能在确认之后才发。
+   *
+   * 注意语义：某条 op 失败时**前面已生效的条目不会回滚**，
+   * 所以返回体里的 completed / failedAt 要如实转达，不能当成"整体失败"。
+   */
+  const executeOp = useCallback(
+    (op: EditOp) =>
+      run('execute', async () => {
+        const res = await fetch(`${ENGINE_BASE}/api/op/execute`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            op: op.op,
+            params: op.params,
+            confirmed: true,
+            ...(root ? { root, projectRoot: root } : {}),
+          }),
+        });
+        if (!res.ok) {
+          let detail = `HTTP ${res.status}`;
+          try {
+            const body = (await res.json()) as { message?: string };
+            if (body?.message) detail = body.message;
+          } catch {
+            /* 错误体不是 JSON，保留状态码 */
+          }
+          throw new Error(detail);
+        }
+        return (await res.json()) as OpExecuteResult;
+      }),
+    [run, root],
+  );
+
+  const isPending = useCallback((key: string) => pending[key] === true, [pending]);
   return useMemo(
     () => ({
       base: ENGINE_BASE,
@@ -306,6 +426,9 @@ export function useEngine(root?: string | null): EngineApi {
       rasterUrl,
       fetchCompatReport,
       exportPdf,
+      fetchRasterGrid,
+      previewOp,
+      executeOp,
     }),
     [
       health,
@@ -319,6 +442,9 @@ export function useEngine(root?: string | null): EngineApi {
       rasterUrl,
       fetchCompatReport,
       exportPdf,
+      fetchRasterGrid,
+      previewOp,
+      executeOp,
     ],
   );
 }
