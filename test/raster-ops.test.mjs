@@ -231,3 +231,36 @@ test('栅格操作：读回像元后能拿到校验和', async () => {
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test('栅格操作：读像素时会报出驱动名（写回闸门靠它判断）', async () => {
+  const { dir, marked } = await setup();
+  try {
+    const px = await readRasterPixels(loc, marked);
+    assert.equal(px.driver, 'GTiff', 'GeoTIFF 样本应报出 GTiff');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('写回闸门：非 GeoTIFF 的文件明确拒绝，且原文件一个字节不动', async () => {
+  // 2026-10-22 实测的坑：写回统一走 `gdal_translate -of GTiff`，
+  // 所以一个 HFA 的 .img 改完会变成 GeoTIFF 字节、扩展名却还是 .img —— ArcGIS 打不开。
+  // 引擎必须在动手前就拒绝，而不是把文件改坏。
+  const { dir, editor, marked } = await setup();
+  try {
+    const png = join(dir, 'marked.png');
+    const tr = await gdal.translate(['-of', 'PNG', marked, png]);
+    assert.equal(tr.ok, true, 'PNG 样本应生成成功');
+    const before = await readFile(png);
+
+    await assert.rejects(
+      () => editor.paint({ target: 'marked.png', region: REGION, color: '#00FF00' }),
+      /不能原样写回/,
+    );
+
+    const after = await readFile(png);
+    assert.deepEqual(after, before, '被拒绝后原文件必须一个字节都不动');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
