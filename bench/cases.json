@@ -5,7 +5,7 @@
   "authoring": {
     "draftedBy": "AI（基于可行性报告中的 JTBD 推导）",
     "needsHumanReview": true,
-    "reviewNote": "本集为 AI 起草版，措辞按基层作业人员的口语习惯构造；上线前应请 1~2 位真实作业人员逐条核对，尤其核对 preconditions.state 与期望结果是否符合现场实况。"
+    "reviewNote": "本集措辞按基层作业人员的口语习惯构造；上线前应请 1~2 位真实作业人员逐条核对，尤其核对 preconditions.state 与期望结果是否符合现场实况。"
   },
   "scoring": {
     "schemaCompliance": {
