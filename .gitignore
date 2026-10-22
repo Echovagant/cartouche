@@ -33,9 +33,22 @@ tools/
 vendor/gdal/
 .conda/
 
-# 内部工作稿（可行性分析、计划书、路线图）——属于过程材料，不随公开仓库发布，
-# 归档到仓库外即可；仓库内只保留面向使用者的 README 与 NOTICE。
+# 内部工作稿：只保留面向使用者的文档（README / NOTICE），
+# 其余过程材料放在仓库外归档。
 docs/
+
+# 本地备份：改写 README 前的副本，不进仓库
+README_副本.md
+
+# AI 助手与设计技能的本地痕迹（工具产物，不进仓库）
+.superpowers/
+.claude/
+.cursor/
+.aider/
+.cline/
+.impeccable/
+AGENTS.md
+CLAUDE.md
 
 # 界面截图（验收/交付用）。放在仓库根而不是 web/out/，
 # 因为 `next build` 会**清空 web/out/**，放在那儿每次构建都被冲掉。
