@@ -326,7 +326,7 @@
       "expected": {
         "ops": [
           { "op": "dataset.open", "params": { "targets": ["dataset://sentinel2-2024Q2.tif", "dataset://counties.shp"] } },
-          { "op": "raster.clip", "params": { "target": "dataset://sentinel2-2024Q2.tif", "clip": "layer://counties", "mode": "inside" } },
+          { "op": "raster.clip", "params": { "target": "dataset://sentinel2-2024Q2.tif", "clip": "dataset://counties.shp", "mode": "inside" } },
           { "op": "feature.summarize", "params": { "target": "layer://counties", "groupBy": ["NAME_3"], "aggregates": ["area"], "areaUnit": "km2" } },
           { "op": "export.report", "params": { "kind": "csv", "target": "layer://counties", "include": ["impact-metrics"], "format": "csv" } }
         ],

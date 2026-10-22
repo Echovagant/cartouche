@@ -155,11 +155,15 @@ const IMPLEMENTED: Readonly<Record<string, OpHandler>> = {
     previewable: true,
     run: async (editor, params, dryRun) => {
       const bbox = readBbox(params);
+      // region 缺省时必须给 undefined，不能给一个零区域：
+      // 零区域会把「region ?? bbox 换算」里的 bbox 分支挡掉，
+      // 结果是预演与执行都报 ok，却一个像元都没改。
+      const region = requireRegion(params, { optional: true });
       return editor.replaceRegion(
         {
           source: requireRelPath(params, 'source'),
           target: requireTarget(params),
-          region: requireRegion(params, { optional: true }),
+          ...(region ? { region } : {}),
           ...(bbox ? { bbox } : {}),
         },
         { dryRun },
@@ -507,14 +511,23 @@ function requireColor(params: Readonly<Record<string, unknown>>): string | reado
  * 区域：两种形状。
  *   - `{ minX, minY, maxX, maxY }` —— 原生像元坐标
  *   - `[minX, minY, maxX, maxY]` —— 地理范围（目标坐标系），由 normalizeParams 换算
+ *
+ * optional 形态缺参时返回 **undefined**（不是零区域）：
+ * 零区域会让下游的「region ?? 其它来源」分支永远走不到，
+ * 把「没给范围」变成「改了 0 像元却报成功」。
  */
+function requireRegion(params: Readonly<Record<string, unknown>>): PixelRegion;
+function requireRegion(
+  params: Readonly<Record<string, unknown>>,
+  opts: { readonly optional: true },
+): PixelRegion | undefined;
 function requireRegion(
   params: Readonly<Record<string, unknown>>,
   opts?: { readonly optional?: boolean },
-): PixelRegion {
+): PixelRegion | undefined {
   const raw = params['region'];
   if (raw === undefined || raw === null) {
-    if (opts?.optional) return { minX: 0, minY: 0, maxX: 0, maxY: 0 };
+    if (opts?.optional) return undefined;
     throw new Error('缺少参数 region（要改动的像元区域）');
   }
   if (Array.isArray(raw)) {
