@@ -68,25 +68,44 @@ function runFixture(dir) {
 
 // ── 清单本身的判定逻辑 ───────────────────────────────────────
 
+/**
+ * 清单会往 stdout 打印 ●/■。单元测试故意造一个失败项，
+ * 若让它打出来，CI 日志里就会混进 ■ 标记——
+ * 扫日志的人（和以后想"顺手改绿"的人）容易误判成真失败，这里静音。
+ */
+function silently(fn) {
+  const orig = console.log;
+  console.log = () => {};
+  try {
+    return fn();
+  } finally {
+    console.log = orig;
+  }
+}
+
 test('checklist：全部通过时 finish() 返回 true，且不动退出码', () => {
   const before = process.exitCode;
-  const list = createChecklist({ title: '单测' });
-  list.add('a', true, 'ok');
-  list.add('b', true, 'ok');
-  assert.equal(list.total, 2);
-  assert.equal(list.failed.length, 0);
-  assert.equal(list.finish(), true);
+  silently(() => {
+    const list = createChecklist({ title: '单测' });
+    list.add('a', true, 'ok');
+    list.add('b', true, 'ok');
+    assert.equal(list.total, 2);
+    assert.equal(list.failed.length, 0);
+    assert.equal(list.finish(), true);
+  });
   assert.equal(process.exitCode, before, '全部通过时不该改退出码');
 });
 
 test('checklist：有失败项时 finish() 返回 false，并把退出码置为 1', () => {
   const before = process.exitCode;
-  const list = createChecklist({ title: '单测' });
-  list.add('good', true, 'ok');
-  list.add('bad', false, '坏了');
-  assert.equal(list.failed.length, 1);
-  assert.equal(list.failed[0].name, 'bad');
-  assert.equal(list.finish(), false);
+  silently(() => {
+    const list = createChecklist({ title: '单测' });
+    list.add('good', true, 'ok');
+    list.add('bad', false, '坏了');
+    assert.equal(list.failed.length, 1);
+    assert.equal(list.failed[0].name, 'bad');
+    assert.equal(list.finish(), false);
+  });
   assert.equal(process.exitCode, 1, '失败项必须变成非零退出码');
   process.exitCode = before; // 复位，别把失败带出测试进程
 });
