@@ -510,6 +510,30 @@ try {
       JSON.stringify(painted ?? {}).slice(0, 200),
     );
 
+    // 前端自动保存会带着**旧的** operations 回来（打开项目时读进内存的那份）。
+    // 服务端不能被这份旧数据覆盖掉刚记下的操作日志 —— 否则用户回头看项目
+    // 会发现"我明明改过图，怎么没有记录"。
+    const staleManifest = {
+      ...getMJson.manifest,
+      sheet: { ...getMJson.manifest.sheet, title: '被前端改过的标题' },
+      operations: [],
+    };
+    const stalePut = await fetch(`${BASE}/api/project/manifest`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ path: tmpProject, manifest: staleManifest }),
+    });
+    const afterStale = await fetch(`${BASE}/api/project/manifest?path=${encodeURIComponent(tmpProject)}`);
+    const afterStaleJson = await afterStale.json();
+    const keptOps = afterStaleJson.manifest?.operations ?? [];
+    check(
+      '清单 PUT 合并 operations：前端带旧的回来也抹不掉服务端记录',
+      stalePut.ok
+        && keptOps.some((o) => o.op === 'raster.paint' && o.target === opRaster)
+        && afterStaleJson.manifest?.sheet?.title === '被前端改过的标题',
+      JSON.stringify(keptOps).slice(0, 200),
+    );
+
     await rm(join(wsRoot, opRaster), { force: true });
   }
 

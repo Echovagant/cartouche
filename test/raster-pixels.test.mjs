@@ -155,3 +155,25 @@ test('提亮：不改几何信息（只动像素）', () => {
   assert.equal(out.length, 1);
   assert.equal(out[0].length, 2);
 });
+
+test('提亮：linear-stretch 也要吃 brightness（否则亮度滑块是死的）', () => {
+  // 值域已经铺满 0..255 的图，linear-stretch 本身就是恒等变换。
+  // 如果 brightness 被丢掉，用户拖亮度滑块时像元一个都不会变 ——
+  // 界面上的控件看着能动，实际什么也没发生，预演还会报"影响 0 个像元"。
+  const px = [new Uint8Array([0, 64, 128, 255])];
+  const flat = adjustLevels(px, { method: 'linear-stretch' });
+  assert.deepEqual([...flat[0]], [0, 64, 128, 255], '值域铺满时拉伸应是恒等变换');
+
+  const brighter = adjustLevels(px, { method: 'linear-stretch', brightness: 0.2 });
+  assert.ok(brighter[0][0] > flat[0][0], '亮度滑块要真的把像元提亮');
+  assert.equal(brighter[0][3], 255, '已经到顶的像元被夹住，不会溢出');
+  for (const v of brighter[0]) {
+    assert.ok(v >= 0 && v <= 255, `越界：${v}`);
+  }
+});
+
+test('提亮：整幅同值（max === min）时 brightness 同样生效', () => {
+  const px = [new Uint8Array([100, 100, 100])];
+  const out = adjustLevels(px, { method: 'linear-stretch', brightness: 0.2 });
+  assert.ok(out[0][0] > 100, '没有值域可拉时，亮度也要能加上去');
+});

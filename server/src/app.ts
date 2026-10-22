@@ -18,6 +18,7 @@ import {
   type CompatOperation,
   type ProjectHistoryEntry,
   type ProjectManifest,
+  type ProjectOperation,
   type WorkspaceAdapter,
 } from '@cartouche/engine';
 import {
@@ -196,6 +197,36 @@ function prepareOps(
   }
 
   return { store: chosen ?? store, ops: rewritten };
+}
+
+/**
+ * 合并清单里的 operations：**服务端的记录是权威的、只增不减的操作日志。**
+ *
+ * 前端打开项目时会把清单读进内存，之后任何一次自动保存（加图层 / 改标题 / 改透明度）
+ * 都会把内存里那份 operations 一起 PUT 回来 —— 那一份是**旧的**，
+ * 里面没有 `/api/op/execute` 刚写进去的条目。整份覆盖就会把操作日志悄悄抹掉，
+ * 用户回头看项目就发现"我明明改过图，怎么没有记录"。
+ *
+ * 所以这里只做并集：服务端已有的全部保留，客户端多出来的补在后面。
+ * 同一条按 at + op + target 认重，不会重复。
+ */
+function mergeOperations(
+  existing: readonly ProjectOperation[],
+  incoming: readonly ProjectOperation[],
+): ProjectOperation[] {
+  const merged: ProjectOperation[] = [...existing];
+  const seen = new Set(existing.map(operationKey));
+  for (const op of incoming) {
+    const key = operationKey(op);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(op);
+  }
+  return merged;
+}
+
+function operationKey(op: ProjectOperation): string {
+  return `${op.at} ${op.op} ${op.target}`;
 }
 
 /**
@@ -622,8 +653,15 @@ export function createEngineServer(): Server {
             json(400, { error: 'bad_request', message: '缺少 manifest：把要保存的项目清单一起发来' });
             return;
           }
-          await projects.writeManifest(body.path, body.manifest);
-          json(200, { ok: true });
+          // operations 是**只增不减的日志**：前端自动保存带回来的那份可能是旧的，
+          // 直接整份覆盖会把服务端刚记下的操作抹掉。这里做并集（见 mergeOperations）。
+          const existing = await projects.readManifest(body.path);
+          const operations = mergeOperations(
+            existing?.operations ?? [],
+            Array.isArray(body.manifest.operations) ? body.manifest.operations : [],
+          );
+          await projects.writeManifest(body.path, { ...body.manifest, operations });
+          json(200, { ok: true, operations: operations.length });
         } catch (err) {
           json(400, { error: 'bad_request', message: scrub((err as Error).message) });
         }
