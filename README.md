@@ -1,5 +1,7 @@
 # 图签 Cartouche
 
+[![CI](https://github.com/Echovagant/cartouche/actions/workflows/ci.yml/badge.svg)](https://github.com/Echovagant/cartouche/actions/workflows/ci.yml)
+
 > 改一处标注，不必先学一整套 ArcGIS。
 
 ![图签 Cartouche](assets/landing.jpg)
