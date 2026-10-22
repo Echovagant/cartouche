@@ -25,6 +25,44 @@ export interface GeoBounds {
   readonly maxY: number;
 }
 
+/**
+ * 自由形状掩膜：每像元一个不透明度。
+ *
+ * 矩形（PixelRegion）表达不了"画笔划过的那些点"——
+ * 那条笔画可能是个 L 形、个圈，套进矩形就变成了大面积误涂。
+ * 所以画笔走这条路：把笔迹栅格化成逐像元的不透明度，
+ * 再叠加在矩形之上（两者是**与**的关系）。
+ */
+export interface PixelMask {
+  readonly width: number;
+  readonly height: number;
+  /** 长度 = width × height，取值 0~1 */
+  readonly alpha: Float32Array;
+}
+
+/**
+ * 把逐像元字节（0~255）转成掩膜。
+ *
+ * 字节来自前端画笔的栅格化结果（base64 解码而来）。
+ * 这里只做**数值映射**，不做任何解释 —— 字节的含义由前端约定：
+ * 0 = 完全不着色，255 = 完全着色。
+ */
+export function buildPixelMask(width: number, height: number, bytes: Uint8Array): PixelMask {
+  const alpha = new Float32Array(width * height);
+  const n = Math.min(alpha.length, bytes.length);
+  for (let i = 0; i < n; i++) {
+    alpha[i] = (bytes[i] ?? 0) / 255;
+  }
+  return { width, height, alpha };
+}
+
+/** 取某像元的掩膜不透明度；越界或没有掩膜时返回 1（= 不限制） */
+export function maskAlphaAt(mask: PixelMask | undefined, x: number, y: number): number {
+  if (!mask) return 1;
+  if (x < 0 || y < 0 || x >= mask.width || y >= mask.height) return 0;
+  return mask.alpha[y * mask.width + x] ?? 0;
+}
+
 /** 像元是否落在区域内 */
 export function isInside(region: PixelRegion, x: number, y: number): boolean {
   return x >= region.minX && x < region.maxX && y >= region.minY && y < region.maxY;

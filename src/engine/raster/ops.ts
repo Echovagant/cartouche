@@ -16,8 +16,15 @@ import { tools } from '../gdal/runner.ts';
 import type { GdalLocation } from '../gdal/env.ts';
 import { replaceFileAtomically } from '../gdal/writeback.ts';
 import type { WorkspaceAdapter } from '../workspace/index.ts';
-import { readRasterPixels, writeRasterPixels, type RasterPixels } from './raw.ts';
-import { buildAlphaMask, geoToPixelRegion, type GeoBounds, type PixelRegion } from './mask.ts';
+import { readRasterPixels, writeRasterPixels, checksumOf, type RasterPixels } from './raw.ts';
+import {
+  buildAlphaMask,
+  geoToPixelRegion,
+  maskAlphaAt,
+  type GeoBounds,
+  type PixelMask,
+  type PixelRegion,
+} from './mask.ts';
 import { blendBands } from './blend.ts';
 import { inpaintRegion } from './inpaint.ts';
 import { adjustLevels, type LevelsOptions } from './levels.ts';
@@ -35,6 +42,14 @@ export interface RasterOpResult {
   readonly width: number;
   readonly height: number;
   readonly bandCount: number;
+  /**
+   * true = 这是**预演**的结果，文件**没有**被写过。
+   *
+   * 确认卡要在动手之前就报出"会影响多少像元"，但那时还没落盘。
+   * 所以预演走的是同一条计算路径，只是把写盘那一步去掉 ——
+   * 否则预演给出的像元数是估的，和真执行对不上，确认卡就成了摆设。
+   */
+  readonly dryRun?: boolean;
 }
 
 export interface RasterDeps {
@@ -68,6 +83,8 @@ interface PaintRequest {
   readonly region: PixelRegion;
   /** '#RRGGBB' 或 [r,g,b]；'sample-from-edge' 表示从区域外沿取色 */
   readonly color: string | readonly number[];
+  /** 自由形状掩膜（画笔）；与矩形区域是「与」的关系 */
+  readonly mask?: PixelMask;
 }
 
 interface ClipRequest {
@@ -134,9 +151,37 @@ export class RasterEditor {
     op: string,
     target: string,
     mutate: (px: RasterPixels) => Uint8Array[],
+    options?: { readonly dryRun?: boolean },
   ): Promise<RasterOpResult> {
     const before = await this.#read(target);
     const newBands = mutate(before);
+
+    // 预演：算到这里就够了，像元数是**精确值**（不是估算），
+    // 但不写盘、不备份、不替换 —— 确认卡要在用户点头之前什么都别动。
+    if (options?.dryRun) {
+      let affected = 0;
+      const a = before.bands[0];
+      const b = newBands[0];
+      if (a && b) {
+        for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) affected++;
+      }
+      return {
+        op,
+        target: this.#abs(target),
+        affectedPixels: affected,
+        totalPixels: before.width * before.height,
+        checksumBefore: before.checksum,
+        checksumAfter: checksumOf(newBands),
+        backupPath: null,
+        // 预演没有回读校验这一说：文件根本没动
+        verified: false,
+        width: before.width,
+        height: before.height,
+        bandCount: before.bandCount,
+        dryRun: true,
+      };
+    }
+
     const temp = this.#tempPath(target, 'tmp.tif');
     await writeRasterPixels(this.#loc, temp, {
       width: before.width,
@@ -207,20 +252,20 @@ export class RasterEditor {
   }
 
   /** 擦除标注色块：有干净底图就从底图取像素，没有就用边界内插 */
-  async erase(req: EraseRequest): Promise<RasterOpResult> {
+  async erase(req: EraseRequest, options?: { readonly dryRun?: boolean }): Promise<RasterOpResult> {
     if (req.source) {
       return this.replaceRegion({
         source: req.source,
         target: req.target,
         region: req.region,
         featherPx: 0,
-      });
+      }, options);
     }
-    return this.inpaint({ target: req.target, region: req.region, radiusPx: 4 });
+    return this.inpaint({ target: req.target, region: req.region, radiusPx: 4 }, options);
   }
 
   /** 用另一张图替换指定区域（可羽化过渡） */
-  async replaceRegion(req: ReplaceRegionRequest): Promise<RasterOpResult> {
+  async replaceRegion(req: ReplaceRegionRequest, options?: { readonly dryRun?: boolean }): Promise<RasterOpResult> {
     const before = await this.#read(req.target);
     const source = await this.#read(req.source);
 
@@ -237,34 +282,40 @@ export class RasterEditor {
     if (!region) throw new Error('必须给出替换范围（region 或 bbox）');
 
     const alpha = buildAlphaMask(before.width, before.height, region, req.featherPx ?? 0);
-    return this.#applyPixels('raster.replaceRegion', req.target, (px) =>
-      blendBands(px.bands, source.bands, alpha, px.bandCount),
+    return this.#applyPixels(
+      'raster.replaceRegion',
+      req.target,
+      (px) => blendBands(px.bands, source.bands, alpha, px.bandCount),
+      options,
     );
   }
 
   /** 边界内插修补 */
-  async inpaint(req: InpaintRequest): Promise<RasterOpResult> {
+  async inpaint(req: InpaintRequest, options?: { readonly dryRun?: boolean }): Promise<RasterOpResult> {
     const iterations = Math.max(1, Math.round((req.radiusPx ?? 4) * 2));
-    return this.#applyPixels('raster.inpaint', req.target, (px) =>
-      inpaintRegion(px.bands, px.width, px.height, px.bandCount, req.region, iterations),
+    return this.#applyPixels(
+      'raster.inpaint',
+      req.target,
+      (px) => inpaintRegion(px.bands, px.width, px.height, px.bandCount, req.region, iterations),
+      options,
     );
   }
 
   /** 亮度 / 对比度调整 */
-  async adjustLevels(req: { target: string } & LevelsOptions): Promise<RasterOpResult> {
+  async adjustLevels(req: { target: string } & LevelsOptions, options?: { readonly dryRun?: boolean }): Promise<RasterOpResult> {
     return this.#applyPixels('raster.adjustLevels', req.target, (px) => {
-      const options: LevelsOptions = {
+      const levels: LevelsOptions = {
         method: req.method ?? 'linear-stretch',
         ...(req.brightness !== undefined ? { brightness: req.brightness } : {}),
         ...(req.contrast !== undefined ? { contrast: req.contrast } : {}),
         ...(req.gamma !== undefined ? { gamma: req.gamma } : {}),
       };
-      return adjustLevels(px.bands, options);
-    });
+      return adjustLevels(px.bands, levels);
+    }, options);
   }
 
   /** 区域涂色 */
-  async paint(req: PaintRequest): Promise<RasterOpResult> {
+  async paint(req: PaintRequest, options?: { readonly dryRun?: boolean }): Promise<RasterOpResult> {
     const parsed = parseColor(req.color);
     return this.#applyPixels('raster.paint', req.target, (px) => {
       let rgb: [number, number, number];
@@ -279,13 +330,19 @@ export class RasterEditor {
         for (let y = 0; y < px.height; y++) {
           for (let x = 0; x < px.width; x++) {
             if (x >= req.region.minX && x < req.region.maxX && y >= req.region.minY && y < req.region.maxY) {
-              out[y * px.width + x] = value;
+              // 有掩膜时按不透明度混合：mask=255 的效果与原来的硬写一致，
+              // 所以加掩膜不会改变"纯矩形涂色"这条老路子的行为。
+              const a = maskAlphaAt(req.mask, x, y);
+              if (a <= 0) continue;
+              const idx = y * px.width + x;
+              const old = out[idx] ?? 0;
+              out[idx] = Math.round(old + (value - old) * a);
             }
           }
         }
         return out;
       });
-    });
+    }, options);
   }
 
   /** 裁切（按地理范围或矢量范围） */

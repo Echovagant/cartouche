@@ -29,6 +29,13 @@ import {
   vectorToGeoJson,
   datasetExtent,
   buildPdfFromJpeg,
+  executePlan,
+  previewOp,
+  normalizePlan,
+  listImplementedOps,
+  type OperationSpec,
+  type PlanDocument,
+  type PlanExecutionResult,
 } from '@cartouche/engine';
 import { llmStatus, scrub, setSessionApiKey } from './llm.ts';
 import { loadRegisteredRoots, registerRoot } from './roots.ts';
@@ -149,6 +156,108 @@ function foldCase(p: string): string {
 function defaultProjectName(p: string): string {
   const parts = p.split(/[\\/]+/).filter(Boolean);
   return parts[parts.length - 1] ?? p;
+}
+
+/**
+ * 把计划里每条 op 的目标**重写成相对已登记根的路径**，并给出对应的 store。
+ *
+ * 客户端给的是「相对项目根」的路径，引擎要的是「相对已登记根」的路径 ——
+ * 中间隔着一次根解析，路径安全也在这层做（绝对路径、逃出根的 `..` 一律 400）。
+ *
+ * 一次操作里的所有目标必须在**同一个已登记根**之下：不同根意味着不同的
+ * store，而调度器只有一把 store，混着来会写到别处去。
+ */
+function prepareOps(
+  root: string | null,
+  ops: readonly OperationSpec[],
+): { store: WorkspaceAdapter; ops: OperationSpec[] } {
+  let chosen: WorkspaceAdapter | null = null;
+  let chosenRootId = '';
+  const rewritten: OperationSpec[] = [];
+
+  for (const op of ops) {
+    const raw = op.params?.['target'];
+    if (typeof raw !== 'string' || raw.trim() === '') {
+      // 没有目标就原样交回去，让调度器按 op 报「缺少参数 target」
+      rewritten.push(op);
+      continue;
+    }
+    const rel = raw.replace(/^(?:dataset|layer|summary):\/\//, '');
+    const t = resolveTarget(root, rel);
+    const rid = projects.locate(t.absolute).rootId;
+    if (chosen === null) {
+      chosen = t.store;
+      chosenRootId = rid;
+    } else if (rid !== chosenRootId) {
+      throw new Error('一次操作里的所有目标必须在同一个已登记根之下');
+    }
+    rewritten.push({ ...op, params: { ...op.params, target: t.relative } });
+  }
+
+  return { store: chosen ?? store, ops: rewritten };
+}
+
+/**
+ * 执行完把结果写进项目：留痕（history.jsonl）+ 清单的 operations。
+ *
+ * **写不进去也不能让整次执行变成失败** —— 那会让用户以为没改、于是再点一次，
+ * 反而把图改了两遍。所以这里吞掉异常，改由调用方把 warning 带回给用户。
+ */
+async function recordOperations(
+  projectRoot: string,
+  result: PlanExecutionResult,
+  confirmed: boolean,
+): Promise<string | null> {
+  const at = new Date().toISOString();
+  try {
+    for (const r of result.results) {
+      const entry: ProjectHistoryEntry = {
+        at,
+        op: r.op,
+        target: r.target,
+        ok: r.ok,
+        ...(r.impact
+          ? {
+              impact: {
+                affectedPixels: r.impact.affectedPixels,
+                totalPixels: r.impact.totalPixels,
+                affectedRatio: r.impact.affectedRatio,
+                backupPath: r.impact.backupPath,
+                // 人工确认这一道闸门也进留痕：交差时要能说清"谁点的确认"
+                confirmed,
+              },
+            }
+          : {}),
+        ...(r.error ? { error: r.error } : {}),
+      };
+      await projects.appendHistory(projectRoot, entry);
+    }
+    const manifest = await projects.readManifest(projectRoot);
+    if (manifest) {
+      const operations = [
+        ...manifest.operations,
+        ...result.results.map((r) => ({
+          at,
+          op: r.op,
+          target: r.target,
+          ok: r.ok,
+          ...(r.impact
+            ? {
+                impact: {
+                  affectedPixels: r.impact.affectedPixels,
+                  totalPixels: r.impact.totalPixels,
+                  affectedRatio: r.impact.affectedRatio,
+                },
+              }
+            : {}),
+        })),
+      ];
+      await projects.writeManifest(projectRoot, { ...manifest, operations, updatedAt: at });
+    }
+    return null;
+  } catch (err) {
+    return `操作已经执行成功，但写留痕/清单时出了岔子：${scrub((err as Error).message)}`;
+  }
 }
 
 export function createEngineServer(): Server {
@@ -586,6 +695,134 @@ export function createEngineServer(): Server {
           json(200, { ok: true, relative });
         } catch (err) {
           json(400, { error: 'bad_request', message: scrub((err as Error).message) });
+        }
+      })();
+      return;
+    }
+
+    /* ───────── ③a-2：操作计划调度（栅格编辑闭环） ───────── */
+
+    if (url.pathname === '/api/raster/grid' && req.method === 'GET') {
+      void (async () => {
+        try {
+          if (!gdalLoc) {
+            json(503, { error: 'gdal_unavailable', message: '未找到 GDAL 运行时，取不到栅格网格；请先运行 npm run doctor' });
+            return;
+          }
+          const rel = url.searchParams.get('path') ?? '';
+          const root = url.searchParams.get('root');
+          const abs = resolveWorkspacePath(root, rel);
+          const probe = await probeDataset(gdalLoc, abs);
+          const ds = probe.dataset;
+          if (!ds || ds.kind !== 'raster') {
+            json(400, { error: 'bad_request', message: '该数据集不是栅格，或打不开' });
+            return;
+          }
+          json(200, {
+            width: ds.width,
+            height: ds.height,
+            bandCount: ds.bandCount,
+            geotransform: ds.geotransform,
+            // 给前端一句能直接判断的 CRS 摘要：
+            // 前端要把地图坐标换算成原生像元，坐标系不是 4326 时换算不了
+            crs: ds.crs.epsg ? `EPSG:${ds.crs.epsg}` : (ds.crs.authority ? ds.crs.authority : null),
+            crsWkt: ds.crs.wkt ?? null,
+            epsg: ds.crs.epsg ?? null,
+          });
+        } catch (err) {
+          const bad = err instanceof PathEscapeError ? 400 : 500;
+          json(bad, { error: bad === 400 ? 'bad_request' : 'internal', message: scrub((err as Error).message) });
+        }
+      })();
+      return;
+    }
+
+    if (url.pathname === '/api/op/preview' && req.method === 'POST') {
+      void (async () => {
+        try {
+          if (!gdalLoc) {
+            json(503, { error: 'gdal_unavailable', message: '未找到 GDAL 运行时，无法预演；请先运行 npm run doctor' });
+            return;
+          }
+          const body = JSON.parse((await readBody(req)).toString('utf8') || '{}') as {
+            op?: string;
+            params?: Record<string, unknown>;
+            root?: string;
+          };
+          if (!body.op) {
+            json(400, { error: 'bad_request', message: '缺少 op：告诉引擎要做哪个操作' });
+            return;
+          }
+          const spec: OperationSpec = { op: body.op, params: body.params ?? {} };
+          const prepared = prepareOps(body.root ?? null, [spec]);
+          const record = await previewOp({ loc: gdalLoc, store: prepared.store }, prepared.ops[0]!);
+          if (!record.ok) {
+            // 预演失败不是"服务端出错"，是把原因原样告诉用户（未实现的 op 也走这里）
+            json(400, { error: 'bad_request', message: record.error ?? '预演失败', ...record });
+            return;
+          }
+          json(200, {
+            op: record.op,
+            target: record.target,
+            affectedPixels: record.impact?.affectedPixels ?? 0,
+            totalPixels: record.impact?.totalPixels ?? 0,
+            affectedRatio: record.impact?.affectedRatio ?? 0,
+            backupPath: record.impact?.backupPath ?? null,
+            verified: record.impact?.verified ?? false,
+          });
+        } catch (err) {
+          const bad = err instanceof PathEscapeError ? 400 : 500;
+          json(bad, { error: bad === 400 ? 'bad_request' : 'internal', message: scrub((err as Error).message) });
+        }
+      })();
+      return;
+    }
+
+    if (url.pathname === '/api/op/execute' && req.method === 'POST') {
+      void (async () => {
+        try {
+          if (!gdalLoc) {
+            json(503, { error: 'gdal_unavailable', message: '未找到 GDAL 运行时，无法执行；请先运行 npm run doctor' });
+            return;
+          }
+          const body = JSON.parse((await readBody(req)).toString('utf8') || '{}') as {
+            plan?: PlanDocument | OperationSpec;
+            op?: string;
+            params?: Record<string, unknown>;
+            root?: string;
+            projectRoot?: string;
+            confirmed?: boolean;
+          };
+          // 两种形状都收：完整计划，或单条快捷写法
+          let input: PlanDocument | OperationSpec;
+          if (body.plan) {
+            input = body.plan;
+          } else if (body.op) {
+            input = { op: body.op, params: body.params ?? {} };
+          } else {
+            // 请求本身就不对 → 400（不是服务端出错）
+            json(400, { error: 'bad_request', message: '缺少 plan（或 op + params）' });
+            return;
+          }
+          const plan = normalizePlan(input);
+          if (plan.ops.length === 0) {
+            json(400, { error: 'bad_request', message: '计划里一条操作都没有' });
+            return;
+          }
+          const prepared = prepareOps(body.root ?? null, plan.ops);
+          const result: PlanExecutionResult = await executePlan(
+            { loc: gdalLoc, store: prepared.store },
+            { ...plan, ops: prepared.ops },
+          );
+          // 留痕 + 清单同步（有项目根时才写）
+          let warning: string | null = null;
+          if (body.projectRoot) {
+            warning = await recordOperations(body.projectRoot, result, body.confirmed === true);
+          }
+          json(200, { ...result, ...(warning ? { warning } : {}) });
+        } catch (err) {
+          const bad = err instanceof PathEscapeError ? 400 : 500;
+          json(bad, { error: bad === 400 ? 'bad_request' : 'internal', message: scrub((err as Error).message) });
         }
       })();
       return;
