@@ -116,11 +116,24 @@ if (Mutate $rel 'const alpha = buildAlphaMask(before.width, before.height, regio
 Restore $rel $b
 Write-Output ("      已还原 hash 一致: " + ((Hash $rel) -eq $h))
 
+# 7) 提亮：linear-stretch 不再吃 brightness（亮度滑块退化成死控件）
+#    2026-10-22 修的真 bug：调色面板默认方法就是 linear-stretch，
+#    而它把 brightness 丢掉了 —— 滑块动了像元一个都没变，预演还报"影响 0 个像元"。
+#    这条变异就是把修复回退掉，测试必须把它抓住。
+$rel = 'src\engine\raster\levels.ts'
+$b = Backup $rel; $h = Hash $rel
+if (Mutate $rel 'return applyManual(out, brightness, contrast);' 'return applyManual(out, 0, contrast);') {
+  Write-Output "--- 变异 7：linear-stretch 不吃 brightness ---"
+  $ok7 = Report '亮度滑块' (RunTests)
+} else { $ok7 = $null }
+Restore $rel $b
+Write-Output ("      已还原 hash 一致: " + ((Hash $rel) -eq $h))
+
 Write-Output "`n--- 还原后复跑 ---"
 $final = RunTests
 ($final -split "`n" | Select-String -Pattern '^. (tests|pass|fail) ') | ForEach-Object { Write-Host ("  " + $_.ToString().Trim()) }
-$caught = @($ok1,$ok2,$ok3,$ok4,$ok5,$ok6) | Where-Object { $_ }
-$voided = @($ok1,$ok2,$ok3,$ok4,$ok5,$ok6) | Where-Object { $_ -eq $null }
-Write-Host ("  变异捕获率: " + $caught.Count + "/6（另有 " + $voided.Count + " 项作废：变异点已失效，需更新脚本）`n")
+$caught = @($ok1,$ok2,$ok3,$ok4,$ok5,$ok6,$ok7) | Where-Object { $_ }
+$voided = @($ok1,$ok2,$ok3,$ok4,$ok5,$ok6,$ok7) | Where-Object { $_ -eq $null }
+Write-Host ("  变异捕获率: " + $caught.Count + "/7（另有 " + $voided.Count + " 项作废：变异点已失效，需更新脚本）`n")
 Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
-if ($caught.Count -lt (6 - $voided.Count)) { exit 1 }
+if ($caught.Count -lt (7 - $voided.Count)) { exit 1 }
