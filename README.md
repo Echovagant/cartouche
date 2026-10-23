@@ -1,4 +1,4 @@
-# 图签 Cartouche
+# 图签 Cartouche · 本机运行的地图出图工具
 
 [![CI](https://github.com/Echovagant/cartouche/actions/workflows/ci.yml/badge.svg)](https://github.com/Echovagant/cartouche/actions/workflows/ci.yml)
 
@@ -8,6 +8,9 @@
 
 **图签**是一套跑在**本机**的地图出图工具。读图、改图、**原子写回**原文件，
 并在交差之前把**兼容性体检**做掉——ArcGIS 照常打开原图件。
+
+> 这里的「图签」指地图上的**图面要素框饰**（cartouche：图名、图例、比例尺那一圈），
+> 不是设计单位的资质，也不是图档签章。
 
 ## 亮点
 

@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 快速开始（QUICKSTART）
+    url: https://github.com/Echovagant/cartouche/blob/main/QUICKSTART.md
+    about: 十分钟跑通：装 GDAL → 起引擎 → 开画布
+  - name: 项目主页
+    url: https://echovagant.github.io/cartouche/
+    about: 功能一览与界面演示

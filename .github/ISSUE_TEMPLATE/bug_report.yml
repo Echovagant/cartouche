@@ -1,0 +1,44 @@
+name: 缺陷报告
+description: 功能不对、数据被改坏、出图不对
+labels: ["缺陷"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: 现象
+      description: 实际发生了什么，期望是什么。
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: 复现步骤
+      description: 从打开工具到出问题的每一步。涉及具体图件时请说明格式与大小。
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: file
+    attributes:
+      label: 涉及的图件情况
+      description: |
+        格式（.tff/.tif/.img/.vrt/.shp…）、大小、是否带 .prj/.cpg、坐标系是什么。
+        如果是**数据被改坏**，请说明原文件是否还能打开。
+      render: text
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 报错原文或引擎日志
+      render: text
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 请确认
+      options:
+        - label: 我已经跑过 `npm run doctor`，环境是通的
+        - label: 涉及的数据不是受保护的 Esri 专有数据
