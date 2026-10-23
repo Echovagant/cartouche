@@ -1,0 +1,75 @@
+name: Deploy site
+
+# 把静态站发到 GitHub Pages。
+#
+# 为什么单独一条工作流而不是塞进 CI：
+#   - 站点的可用性不该被「测试红」卡住（发版与质量门禁是两件事）；
+#   - Pages 需要 id-token 权限，把写权限混进 CI 会让每一次 push 都带着它。
+#
+# 产物落在 Pages 站点根目录 → 项目站地址就是
+#   https://echovagant.github.io/cartouche/
+# 与 web/app/layout.tsx 里 SITE_URL / metadataBase 绑定的子路径一致。
+#
+# 资源路径用的是相对路径（next.config.mjs 的 assetPrefix: './'），
+# 所以产物放在子路径下也能正确解析 —— 不需要 basePath。
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'web/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/deploy-site.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# 同一时间只跑一个部署；新的推掉旧的
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: 构建静态站
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 构建静态站点
+        run: npm run build:web
+
+      - name: 放行 .nojekyll
+        # Pages 默认走 Jekyll，会把下划线开头的目录（_next）当成要忽略的东西。
+        # 有了 .nojekyll 就原样发布。deploy-pages 本身不过 Jekyll，
+        # 但这个文件留着更保险 —— 换发布方式时不会突然白屏。
+        run: touch web/out/.nojekyll
+
+      - name: 上传构建产物
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: web/out
+
+  deploy:
+    name: 发布到 GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: 部署
+        id: deployment
+        uses: actions/deploy-pages@v4
