@@ -31,6 +31,13 @@ import {
 import { probeDataset, type DatasetInfo } from '../gdal/probe.ts';
 import { runHealthCheck } from '../health/checks.ts';
 import { renderCompatReport } from '../report/compat-report.ts';
+import {
+  exportImage,
+  exportReport,
+  isImageExportFormat,
+  IMAGE_EXPORT_EXTENSIONS,
+  IMAGE_EXPORT_FORMATS,
+} from '../export/index.ts';
 import type { GdalLocation } from '../gdal/env.ts';
 import type { WorkspaceAdapter } from '../workspace/index.ts';
 
@@ -203,6 +210,36 @@ const HEALTH_CHECK_RULES: Readonly<Record<string, readonly string[]>> = {
 const SNAPSHOT_ROOT = '_snapshots';
 
 /**
+ * 产出物目录（工作区相对路径）。
+ *
+ * 为什么落在隐藏目录里：导出物是**派生结果**，不是用户的数据。
+ * 混在数据目录里，用户一打开文件夹就分不清哪个是原图、哪个是导出的图；
+ * 放进 `.cartouche/outputs/` 与项目清单（project/store.ts）里的产出物口径一致。
+ */
+const OUTPUT_ROOT = '.cartouche/outputs';
+
+/**
+ * 契约里 export.report 的 kind 取值全集。
+ *
+ * 与 IMAGE_EXPORT_FORMATS 一样，这里抄一份而不是读 ops.schema.json：
+ * 引擎的运行时产物（dist）不带 schema 文件。
+ */
+const REPORT_KINDS: readonly string[] = [
+  'csv', 'change-report', 'health-report', 'audit-log', 'compat-report',
+];
+
+/** 契约里 export.report 的 format 取值全集 */
+const REPORT_FORMATS: readonly string[] = ['csv', 'html', 'pdf', 'json'];
+
+/** 报告格式 → 文件扩展名 */
+const REPORT_EXTENSIONS: Readonly<Record<string, string>> = {
+  csv: 'csv',
+  html: 'html',
+  pdf: 'pdf',
+  json: 'json',
+};
+
+/**
  * 数据伴随文件的后缀白名单。
  *
  * 判定口径：与主文件**同名**（同一主名）、后缀不同、且后缀在下表里。
@@ -227,9 +264,9 @@ const DATA_SIDECAR_SUFFIXES: readonly string[] = [
  * 已实现的 op。
  *
  * 这里只登记**引擎里真的能跑**的。schema 里的 23 个 op 里，矢量编辑类
- * （feature.* / vector.* 共 6 个）尚未实现；export.* 要等渲染 / 报告管线
- * 把"产出文件"的语义定下来。dataset.* 的三个（打开 / 体检 / 快照）在这里落地 ——
- * 它们**不改像元**，走的是非栅格型结果那条路。
+ * （feature.* / vector.* 共 6 个）尚未实现；export.* 的两个（出图 / 出报告）
+ * 在这里落地 —— 它们**不改像元**，产出的是文件，走的是非栅格型结果那条路。
+ * dataset.* 的三个（打开 / 体检 / 快照）同样是值结果。
  */
 const IMPLEMENTED: Readonly<Record<string, OpHandler>> = {
   'dataset.open': {
@@ -381,6 +418,124 @@ const IMPLEMENTED: Readonly<Record<string, OpHandler>> = {
           includeSidecars,
           files: [outputPath, ...copiedSidecars],
           sidecars: copiedSidecars,
+          dryRun,
+        },
+      };
+    },
+  },
+  'export.image': {
+    label: '导出图片',
+    previewable: true,
+    countsChangedPixels: false,
+    run: async (_editor, params, dryRun, deps) => {
+      const rel = requireTarget(params);
+      const format = readString(params, 'format');
+      if (format === undefined) {
+        throw new Error(`缺少参数 format（可选：${IMAGE_EXPORT_FORMATS.join('、')}）`);
+      }
+      if (!isImageExportFormat(format)) {
+        throw new Error(
+          `不支持的导出格式：${format}（可选：${IMAGE_EXPORT_FORMATS.join('、')}）`,
+        );
+      }
+      const dpi = readNumber(params, 'dpi');
+      if (dpi !== undefined && (!Number.isInteger(dpi) || dpi < 72 || dpi > 1200)) {
+        throw new Error(`dpi 必须是 72~1200 之间的整数，实为 ${dpi}`);
+      }
+      const bbox = readBbox4326(params);
+      const layers = params['layers'];
+      if (layers !== undefined && layers !== null) {
+        if (!Array.isArray(layers)) {
+          throw new Error('参数 layers 必须是数组');
+        }
+        if (layers.length > 0) {
+          // layers 指的是图层标识，引擎这一侧没有图层树 —— 明确说"尚未支持"，
+          // 不拿单幅栅格冒充合成结果。
+          throw new Error(
+            '多图层合成（layers）尚未支持：引擎只认 dataset:// 开头的工作区相对路径，没有图层树。',
+          );
+        }
+      }
+      // 文件名带执行时刻：同一份数据要能反复导出而不互相覆盖。
+      const outputPath = `${OUTPUT_ROOT}/${stemOf(rel)}-${timestamp()}.${IMAGE_EXPORT_EXTENSIONS[format]}`;
+      const res = await exportImage({
+        loc: deps.loc,
+        store: deps.store,
+        target: rel,
+        format,
+        outputPath,
+        dryRun,
+        ...(bbox ? { bbox } : {}),
+        ...(dpi !== undefined ? { dpi } : {}),
+      });
+      return {
+        kind: 'value',
+        summary:
+          `${dryRun ? '将导出图片' : '已导出图片'}：${rel} → ${outputPath}` +
+          `（${format.toUpperCase()}，${res.width}×${res.height}）`,
+        outputPath,
+        data: {
+          target: rel,
+          format,
+          outputPath,
+          width: res.width,
+          height: res.height,
+          byteLength: res.byteLength,
+          ...(bbox ? { bbox } : {}),
+          ...(dpi !== undefined ? { dpi } : {}),
+          dryRun,
+        },
+      };
+    },
+  },
+  'export.report': {
+    label: '导出报告',
+    previewable: true,
+    countsChangedPixels: false,
+    run: async (_editor, params, dryRun, deps) => {
+      const kind = readString(params, 'kind');
+      if (kind === undefined) {
+        throw new Error(`缺少参数 kind（可选：${REPORT_KINDS.join('、')}）`);
+      }
+      if (!REPORT_KINDS.includes(kind)) {
+        throw new Error(`不支持的报告类型：${kind}（可选：${REPORT_KINDS.join('、')}）`);
+      }
+      const format = readString(params, 'format') ?? 'html';
+      if (!REPORT_FORMATS.includes(format)) {
+        throw new Error(`不支持的报告格式：${format}（可选：${REPORT_FORMATS.join('、')}）`);
+      }
+      // 契约里 target 是可选的，但引擎实现的每一种报告都要有对象：
+      // 兼容性自检、体检、属性表导出都得针对一个数据集。
+      const rel = requireRelPath(params, 'target');
+      const include = readOptionalStringArray(params, 'include');
+      const outputPath = `${OUTPUT_ROOT}/${stemOf(rel)}-${timestamp()}.${REPORT_EXTENSIONS[format] ?? 'txt'}`;
+      const res = await exportReport({
+        loc: deps.loc,
+        store: deps.store,
+        target: rel,
+        kind: kind as Parameters<typeof exportReport>[0]['kind'],
+        format: format as Parameters<typeof exportReport>[0]['format'],
+        outputPath,
+        dryRun,
+        ...(include ? { include } : {}),
+      });
+      return {
+        kind: 'value',
+        summary: `${dryRun ? '将导出报告' : '已导出报告'}：${rel} → ${outputPath}（${res.summary}）`,
+        outputPath,
+        data: {
+          target: rel,
+          kind,
+          format,
+          outputPath,
+          summary: res.summary,
+          // 正文只给 Markdown 类的报告；kind='csv' 的正文是整张属性表，
+          // 可能有成千上万行，塞进结果里会把确认卡撑爆。
+          ...(kind === 'csv' ? {} : { body: res.body }),
+          ...(res.hasBlocker !== undefined ? { hasBlocker: res.hasBlocker } : {}),
+          ...(res.manualChecks ? { manualChecks: res.manualChecks } : {}),
+          ...(res.findings ? { findings: res.findings } : {}),
+          ...(include ? { include } : {}),
           dryRun,
         },
       };
@@ -1203,6 +1358,55 @@ function readBbox(params: Readonly<Record<string, unknown>>): GeoBounds | undefi
     maxX: Math.max(nums[0]!, nums[2]!),
     maxY: Math.max(nums[1]!, nums[3]!),
   };
+}
+
+/**
+ * export.image 的 bbox：EPSG:4326 的 [minX,minY,maxX,maxY]。
+ *
+ * 为什么不像 readBbox 那样"给不了就当没有"：
+ * 那条口径适合**可选**参数，而这里的 bbox 一旦给了就是"只导这一块"。
+ * 形状不对却当成没给 → 悄悄导了整幅，用户拿到的是错的范围，而且毫无提示。
+ */
+function readBbox4326(params: Readonly<Record<string, unknown>>): [number, number, number, number] | undefined {
+  const raw = params['bbox'];
+  if (raw === undefined || raw === null) return undefined;
+  if (!Array.isArray(raw) || raw.length !== 4) {
+    throw new Error('bbox 必须是四个数字：[minX,minY,maxX,maxY]（EPSG:4326 经纬度）');
+  }
+  const nums = raw.map((x) => Number(x));
+  if (!nums.every((x) => Number.isFinite(x))) {
+    throw new Error('bbox 必须是四个数字：[minX,minY,maxX,maxY]（EPSG:4326 经纬度）');
+  }
+  const [minX, minY, maxX, maxY] = nums as [number, number, number, number];
+  if (maxX <= minX || maxY <= minY) {
+    throw new Error(
+      `bbox 的范围不合法（要求 minX<maxX 且 minY<maxY，顺序为 [minX,minY,maxX,maxY]）：${nums.join(', ')}`,
+    );
+  }
+  return [minX, minY, maxX, maxY];
+}
+
+/**
+ * 可选的字符串数组参数（如 export.report 的 include）。
+ *
+ * 给了就每一项都得是非空字符串：形状不对的参数如果被当成"没给"，
+ * 报告就会少掉调用方要的内容，而调用方毫不知情。
+ */
+function readOptionalStringArray(
+  params: Readonly<Record<string, unknown>>,
+  key: string,
+): string[] | undefined {
+  const raw = params[key];
+  if (raw === undefined || raw === null) return undefined;
+  if (!Array.isArray(raw)) throw new Error(`参数 ${key} 必须是字符串数组`);
+  const out: string[] = [];
+  for (const x of raw) {
+    if (typeof x !== 'string' || x.trim() === '') {
+      throw new Error(`参数 ${key} 的每一项都必须是非空字符串`);
+    }
+    out.push(x);
+  }
+  return out;
 }
 
 /** 自由形状掩膜（画笔）：base64 的逐像元字节 */
