@@ -29,6 +29,9 @@ import {
   type PixelRegion,
 } from '../raster/mask.ts';
 import { probeDataset, type DatasetInfo } from '../gdal/probe.ts';
+import { runVectorQuery } from '../vector/query.ts';
+import { runVectorAddField } from '../vector/field.ts';
+import { runVectorSpatialJoin } from '../vector/spatial-join.ts';
 import { runHealthCheck } from '../health/checks.ts';
 import { renderCompatReport } from '../report/compat-report.ts';
 import {
@@ -540,6 +543,28 @@ const IMPLEMENTED: Readonly<Record<string, OpHandler>> = {
         },
       };
     },
+  },
+  'vector.query': {
+    label: '属性查询',
+    previewable: true,
+    // 不改像元：命中 0 条是合法结果（条件太窄），不是"什么都没做"
+    countsChangedPixels: false,
+    run: async (_editor, params, _dryRun, deps) =>
+      runVectorQuery(params, { loc: deps.loc, store: deps.store }),
+  },
+  'vector.addField': {
+    label: '计算字段',
+    previewable: true,
+    countsChangedPixels: false,
+    run: async (_editor, params, dryRun, deps) =>
+      runVectorAddField(params, { loc: deps.loc, store: deps.store }, dryRun),
+  },
+  'vector.spatialJoin': {
+    label: '空间连接',
+    previewable: true,
+    countsChangedPixels: false,
+    run: async (_editor, params, dryRun, deps) =>
+      runVectorSpatialJoin(params, { loc: deps.loc, store: deps.store }, dryRun),
   },
   'raster.paint': {
     label: '涂色',

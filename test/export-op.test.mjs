@@ -129,11 +129,13 @@ async function outputEntries(dir) {
 
 /* ── 1. 登记 ─────────────────────────────────────────────────── */
 
-test('export.image 与 export.report 都进了已实现清单（共 13 个 op）', () => {
+test('export.image 与 export.report 都进了已实现清单', () => {
   const ops = listImplementedOps();
   assert.ok(ops.includes('export.image'));
   assert.ok(ops.includes('export.report'));
-  assert.equal(ops.length, 13, `实际：${ops.join('、')}`);
+  // 清单是「引擎真能跑的 op」，加一个 op 就要改这个数 ——
+  // 写死是有意的：少登记了会被这条拦住，多登记了也会被这条拦住。
+  assert.equal(ops.length, 16, `实际：${ops.join('、')}`);
 });
 
 /* ── 2. export.image ────────────────────────────────────────── */

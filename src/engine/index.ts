@@ -157,6 +157,43 @@ export type {
 } from './style/index.ts';
 
 export { renderCompatReport } from './report/index.ts';
+
+export {
+  evaluateExpression,
+  parseExpression,
+  translatePlainChinese,
+} from './expression/index.ts';
+export type { ExprNode, ExprValue, ExpressionErrorCode } from './expression/index.ts';
+export { ExpressionError, PlainChineseError } from './expression/index.ts';
+
+export {
+  readFeatures,
+  writeFeatures,
+  probeLayer,
+  runVectorQuery,
+  runVectorAddField,
+  runVectorSpatialJoin,
+} from './vector/index.ts';
+export type {
+  FeatureGeometry,
+  FeatureRecord,
+  LayerInfo,
+  ReadFeaturesOptions,
+  ReadFeaturesResult,
+  WriteFeaturesOptions,
+  WriteFeaturesResult,
+} from './vector/index.ts';
+export { VectorError } from './vector/index.ts';
+
+export { spatialJoin, toOpData, JOIN_COUNT_FIELD } from './spatial/index.ts';
+export { SpatialJoinError } from './spatial/index.ts';
+export type {
+  FeatureLike,
+  JoinAggregate,
+  SpatialJoinOptions,
+  SpatialJoinResult,
+  SpatialRelation,
+} from './spatial/index.ts';
 export type { CompatOperation, CompatReport, CompatReportInput } from './report/index.ts';
 
 export {

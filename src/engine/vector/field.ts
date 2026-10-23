@@ -66,6 +66,13 @@ function findWrittenField(
 export async function runVectorAddField(
   params: Readonly<Record<string, unknown>>,
   deps: VectorOpDeps,
+  /**
+   * 预演：只算不写。
+   *
+   * 为什么必须有：预演是确认卡上那一下「先看看会改多少」——
+   * 预演完文件却变了，用户看到的和确认卡上写的不一样，整个确认流程就废了。
+   */
+  dryRun = false,
 ): Promise<OpValueResult> {
   const rawTarget = readString(params, 'target');
   if (rawTarget === undefined) throw new Error('缺少参数 target（要改的图层，dataset:// 开头）');
@@ -127,6 +134,24 @@ export async function runVectorAddField(
     return { properties, geometry: f.geometry };
   });
 
+  // 预演：不写盘，只报出会改什么
+  if (dryRun) {
+    return {
+      kind: 'value',
+      summary:
+        `将加字段「${fieldName}」：${updated} 条要素会赋值（共 ${read.features.length} 条）` +
+        `（预演：没有写盘）`,
+      data: {
+        fieldName,
+        updated,
+        total: read.features.length,
+        requestedName: fieldName,
+        target: targetRel,
+        dryRun: true,
+      },
+    };
+  }
+
   const write = await writeFeatures(deps.loc, deps.store, {
     target: targetRel,
     features: nextFeatures,
@@ -167,6 +192,12 @@ export async function runVectorAddField(
   }
 
   const caveats: string[] = [];
+  // ⚠️ 一个要素都没改到 = 这次什么也没发生。列是加了，可里面全是空值 ——
+  //    用户看到"加好了"，回头一看一列空的，会以为是自己数据有问题。
+  //    这里明确说出来，不静默。
+  if (updated === 0) {
+    caveats.push('没有任何要素符合条件，这一列全是空值');
+  }
   if (writtenField !== fieldName) {
     caveats.push(`Shapefile 的列名被规范化成了「${writtenField}」`);
   }
