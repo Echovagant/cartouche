@@ -203,12 +203,15 @@ function nearestExistingDir(dir: string): string {
  * @param minFreeBytes 保留下限：可用空间要满足"实际需求"与"下限"里更大的那个
  * @param purpose 这笔空间是干什么用的：写回 / 建金字塔。
  *   报错里要说清是哪一笔 —— "磁盘不够"配一句"写回"的话，看的人会去找错的地方。
+ * @param breakdown 需求的构成（人话）。给了就把"这份额度花在哪"一并说清，
+ *   而不是只甩一个总数让人自己猜。
  */
 export function assertFreeSpace(
   absPath: string,
   neededBytes: number,
   minFreeBytes = 0,
   purpose: '写回' | '建金字塔' = '写回',
+  breakdown?: string,
 ): void {
   const dir = dirname(absPath);
   const probeDir = nearestExistingDir(dir);
@@ -233,12 +236,17 @@ export function assertFreeSpace(
   const where = probeDir === dir
     ? `目标所在磁盘（${dir}）`
     : `目标所在磁盘（${probeDir}；目标目录 ${dir} 还不存在，按它所在的卷算）`;
-  const detail = [`本次实际需求 ${humanBytes(neededBytes)}`];
+  const detail: string[] = [];
+  if (breakdown) detail.push(breakdown);
+  else detail.push(`本次实际需求 ${humanBytes(neededBytes)}`);
   if (minFreeBytes > 0) detail.push(`保留下限 ${humanBytes(minFreeBytes)}`);
+  // 下限比实际需求还大时要说清是下限在起作用 ——
+  // 不然「本次需要 8.00 PB（本次实际需求 6.0 MB）」这种话会让人以为算错了。
+  const which = minFreeBytes > neededBytes ? '（受保留下限约束）' : '';
   throw new Error(
     `磁盘空间不足，无法安全${purpose}。\n` +
       `${where}当前可用 ${humanBytes(available)}；` +
-      `本次${purpose}需要 ${humanBytes(required)}（${detail.join('、')}）。\n` +
+      `本次${purpose}需要 ${humanBytes(required)}${which}（${detail.join('、')}）。\n` +
       (purpose === '建金字塔'
         ? '建金字塔要写一个 .ovr 旁挂文件；空间不够就会写到一半失败、留下半个文件，' +
           '这份金字塔还是坏的。\n'
@@ -246,6 +254,45 @@ export function assertFreeSpace(
           '用户手上的图件就处于不明状态。\n') +
       '建议：把工程换到可用空间更大的盘；或清理该盘上的旧文件腾出空间；或缩小操作范围。',
   );
+}
+
+/**
+ * 写回这一步真正需要的磁盘空间。
+ *
+ * 为什么不能只按"一份整图"算：
+ *   - **原地替换**：临时文件（未压缩整图）与**备份副本**（原文件的字节级拷贝）
+ *     同时在盘上 —— 峰值是两份。只算一份的话，磁盘看着够，
+ *     实际写到一半就满了，留下半个备份 + 半个临时文件，
+ *     用户手上是两份残骸加一份完好的原文件，谁也不知道该信哪份。
+ *   - **另存为**：临时文件直接 rename 到新路径，不复制；原文件也不备份
+ *     （原文件没被改，备份它没有意义）—— 峰值只有一份。
+ *
+ * 备份按**原文件的真实大小**算，而不是未压缩尺寸：
+ * 备份是原文件的字节级拷贝，用压缩后的真实大小才准 ——
+ * 拿未压缩尺寸去估会把余量算得比实际紧（一份未压缩 10 GB、
+ * 实际只有 300 MB 的压缩影像，备份只占 300 MB）。
+ */
+function writebackSpace(
+  targetAbs: string,
+  wholeBytes: number,
+  copyMode: boolean,
+): { readonly bytes: number; readonly detail: string } {
+  if (copyMode) {
+    return { bytes: wholeBytes, detail: `临时文件 ${humanBytes(wholeBytes)}` };
+  }
+  let backupBytes = 0;
+  try {
+    backupBytes = statSync(targetAbs).size;
+  } catch {
+    // 读不到大小（不存在 / 被独占）：按 0 算。
+    // 目标真不存在时本来就没有备份；读不到也不该凭空拒绝一次合法操作 ——
+    // 剩下的风险由 minFreeBytes 那个下限兜着。
+    backupBytes = 0;
+  }
+  return {
+    bytes: wholeBytes + backupBytes,
+    detail: `临时文件 ${humanBytes(wholeBytes)} + 备份副本 ${humanBytes(backupBytes)}`,
+  };
 }
 
 /**
@@ -659,7 +706,8 @@ export class RasterEditor {
     const dest = outputPath ?? target;
     // 磁盘余量护栏：临时文件与原图同尺寸 ⇒ 需求按**整图**算。
     // 放在写临时文件之前 —— 写下去才发现装不下，就只剩半个文件了。
-    assertFreeSpace(this.#abs(dest), wholeBytes, this.#minFreeBytes);
+    const need = writebackSpace(this.#abs(target), wholeBytes, Boolean(outputPath));
+    assertFreeSpace(this.#abs(dest), need.bytes, this.#minFreeBytes, '写回', need.detail);
     const temp = this.#tempPath(dest, 'tmp.tif');
     await writeRasterPixels(this.#loc, temp, {
       width: before.width,
@@ -799,7 +847,8 @@ export class RasterEditor {
     // 所以需求按**整图**算；按窗口算会放行一个必然写满磁盘的操作。
     // 这与体积护栏（maxWindowBytes）语义不同：那个管内存、按窗口算；这个管磁盘、按整图算。
     const wholeBytes = frame.width * frame.height * meta.bandCount * BYTES_PER_SAMPLE[meta.pixelType];
-    assertFreeSpace(this.#abs(dest), wholeBytes, this.#minFreeBytes);
+    const need = writebackSpace(this.#abs(target), wholeBytes, Boolean(outputPath));
+    assertFreeSpace(this.#abs(dest), need.bytes, this.#minFreeBytes, '写回', need.detail);
     const winTmp = this.#tempPath(dest, 'win.tif');
     const mergedTmp = this.#tempPath(dest, 'merged.tif');
     let backupPath: string | null = null;

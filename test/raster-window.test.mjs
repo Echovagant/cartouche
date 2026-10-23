@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync, readdirSync, statfsSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync, readdirSync, statfsSync, statSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
@@ -991,9 +991,19 @@ test('磁盘余量：窗口路径报出的需求是整图大小，不是窗口�
       () => editor.paint({ target: 'big.tif', region: BIG_REGION, color: [200, 100, 50] }),
       (err) => {
         console.log('[窗口路径的磁盘需求]\n' + err.message);
-        assert.match(err.message, /本次实际需求 3\.0 MB/, '需求必须按整图算（3.0 MB）');
+        // 需求按**整图**算，不按窗口算
+        assert.match(err.message, /临时文件 3\.0 MB/, '需求必须按整图算（临时文件 3.0 MB）');
         assert.doesNotMatch(err.message, /4\.0 KB/, '不能报窗口大小（4.0 KB）');
         assert.doesNotMatch(err.message, /4 096 字节/, '不能报窗口大小');
+        // 原地替换的峰值是**两份**：临时文件 + 备份副本。
+        // 只算一份的话，磁盘看着够，实际写到一半就满了 —— 那正是这道护栏要防的事。
+        assert.match(err.message, /备份副本/, '必须把备份副本算进需求');
+        const backupBytes = statSync(tif).size;
+        assert.match(
+          err.message,
+          new RegExp(`备份副本 ${(backupBytes / 1024 ** 2).toFixed(1)} MB`),
+          '备份副本按原文件的真实大小算',
+        );
         return true;
       },
     );
