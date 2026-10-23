@@ -27,8 +27,16 @@ const { executePlan } = await import(eng('ops/index.ts'));
 
 const loc = resolveGdal();
 
-/** 越界的绝对路径（Windows 上真实存在的东西） */
-const HOSTS = 'C:/Windows/System32/drivers/etc/hosts';
+/**
+ * 越界的绝对路径。
+ *
+ * 必须**按平台取**：POSIX 的 `path.isAbsolute('C:/Windows/...')` 是 false，
+ * 在 ubuntu 上它会被当成一个普通相对文件名拼到根下面，闸门根本不触发，
+ * 断言必然落空（2026-10-23 CI 实测：Windows 上过，ubuntu 上挂）。
+ * 两边各取一个真实存在、且必定落在临时根之外的系统文件。
+ */
+const HOSTS =
+  process.platform === 'win32' ? 'C:/Windows/System32/drivers/etc/hosts' : '/etc/hosts';
 
 /* ── 1. 工作区适配器：绝对路径也要判根 ──────────────────── */
 
