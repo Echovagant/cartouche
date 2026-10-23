@@ -32,6 +32,9 @@ import { probeDataset, type DatasetInfo } from '../gdal/probe.ts';
 import { runVectorQuery } from '../vector/query.ts';
 import { runVectorAddField } from '../vector/field.ts';
 import { runVectorSpatialJoin } from '../vector/spatial-join.ts';
+import { runVectorReproject } from '../vector/reproject.ts';
+import { runVectorRenameFields } from '../vector/rename-fields.ts';
+import { runVectorRecode } from '../vector/recode.ts';
 import { runHealthCheck } from '../health/checks.ts';
 import { renderCompatReport } from '../report/compat-report.ts';
 import {
@@ -565,6 +568,27 @@ const IMPLEMENTED: Readonly<Record<string, OpHandler>> = {
     countsChangedPixels: false,
     run: async (_editor, params, dryRun, deps) =>
       runVectorSpatialJoin(params, { loc: deps.loc, store: deps.store }, dryRun),
+  },
+  'vector.reproject': {
+    label: '重投影',
+    previewable: true,
+    countsChangedPixels: false,
+    run: async (_editor, params, dryRun, deps) =>
+      runVectorReproject(params, { loc: deps.loc, store: deps.store }, dryRun),
+  },
+  'vector.renameFields': {
+    label: '重命名字段',
+    previewable: true,
+    countsChangedPixels: false,
+    run: async (_editor, params, dryRun, deps) =>
+      runVectorRenameFields(params, { loc: deps.loc, store: deps.store }, dryRun),
+  },
+  'vector.recode': {
+    label: '重编码',
+    previewable: true,
+    countsChangedPixels: false,
+    run: async (_editor, params, dryRun, deps) =>
+      runVectorRecode(params, { loc: deps.loc, store: deps.store }, dryRun),
   },
   'raster.paint': {
     label: '涂色',
