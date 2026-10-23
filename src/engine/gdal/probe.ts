@@ -134,18 +134,60 @@ export function isLongitudeLatitude(crs: CrsInfo, geotransform: readonly number[
   return ox >= -180 && ox <= 180 && oy >= -90 && oy <= 90;
 }
 
+/**
+ * 把 gdalinfo 给的 coordinateSystem 归一化成引擎内部的 CRS 描述。
+ *
+ * 为什么不能只看 `id`：GDAL 3.13 的 `gdalinfo -json` 里，
+ * `coordinateSystem.id` **经常整个不存在**（实测 embedded.tff / roundtrip.tff 都是），
+ * 只剩一段 WKT。而 `id` 存在时又可能是两种形状：
+ *   - 字符串："EPSG:4326"
+ *   - 对象：{ authority: "EPSG", code: 4326 }
+ * 三种都得认 —— 只认字符串的话，交差体检报告会把明明有 EPSG 的数据
+ * 写成"自定义/未标注 EPSG"。那是给 GIS 同事看的结论，写错了比不写更糟。
+ *
+ * 兜底从 WKT 里取 `ID["EPSG",N]`，且必须取**最后一个**：
+ * 投影坐标系的 WKT 里 BASEGEOGCRS 自带的 ID（基准地理 CRS，如 4326）排在前面，
+ * 投影 CRS 自己的 ID（如 32631）在最后。取第一个会把 UTM 图误判成 4326。
+ * （与 export/raster-image.ts 的 sourceEpsg 同一口径。）
+ */
 function parseCrs(raw: unknown, source: CrsInfo['source']): CrsInfo {
   if (!raw || typeof raw !== 'object') return { present: false, source: 'none' };
   const obj = raw as Record<string, unknown>;
   const wkt = typeof obj.wkt === 'string' ? obj.wkt : undefined;
-  const id = typeof obj.id === 'string' ? obj.id : undefined;
-  if (!wkt && !id) return { present: false, source: 'none' };
-  const epsgMatch = id?.match(/^EPSG:(\d+)$/);
+
+  let authority: string | undefined;
+  let epsg: number | undefined;
+
+  // id 的两种形状都要认
+  if (typeof obj.id === 'string') {
+    authority = obj.id;
+    const m = /^EPSG:(\d+)$/i.exec(obj.id.trim());
+    if (m) epsg = Number(m[1]);
+  } else if (obj.id && typeof obj.id === 'object') {
+    const idObj = obj.id as Record<string, unknown>;
+    const auth = typeof idObj.authority === 'string' ? idObj.authority : undefined;
+    const code = typeof idObj.code === 'number' ? idObj.code : undefined;
+    if (auth && code !== undefined) {
+      authority = `${auth}:${code}`;
+      if (/^EPSG$/i.test(auth)) epsg = code;
+    }
+  }
+
+  // 兜底：id 整个不存在时，从 WKT 里取最后一个 ID["EPSG",N]
+  if (epsg === undefined && wkt) {
+    const ids = [...wkt.matchAll(/ID\["EPSG",(\d+)\]/g)].map((m) => Number(m[1]));
+    if (ids.length > 0) {
+      epsg = ids[ids.length - 1]!;
+      authority = authority ?? `EPSG:${epsg}`;
+    }
+  }
+
+  if (!wkt && !authority) return { present: false, source: 'none' };
   return {
     present: true,
     ...(wkt ? { wkt } : {}),
-    ...(epsgMatch ? { epsg: Number(epsgMatch[1]) } : {}),
-    ...(id ? { authority: id } : {}),
+    ...(epsg !== undefined ? { epsg } : {}),
+    ...(authority ? { authority } : {}),
     source,
   };
 }
