@@ -187,6 +187,31 @@ test('PDF 封装：结构合法、含一页、含图像', async () => {
   assert.ok(info.objectCount >= 5, '对象数应至少 5 个');
 });
 
+test('PDF 封装：页面尺寸可指定（出图版式选 A3 / 竖版时图幅要跟着变）', async () => {
+  const jpeg = await makeJpeg();
+  const mm2pt = (mm) => (mm / 25.4) * 72;
+  // A4 横向（默认）
+  const a4 = buildPdfFromJpeg(jpeg, 160, 120);
+  // A3 横向：420×297 mm
+  const a3 = buildPdfFromJpeg(jpeg, 160, 120, {
+    pageWidthPt: mm2pt(420),
+    pageHeightPt: mm2pt(297),
+  });
+  const a4Text = new TextDecoder('latin1').decode(a4);
+  const a3Text = new TextDecoder('latin1').decode(a3);
+  assert.ok(
+    a4Text.includes('/MediaBox [0 0 841.89 595.28]'),
+    `A4 横向的 MediaBox 不对：${a4Text.match(/\/MediaBox[^\]]*\]/)?.[0]}`,
+  );
+  assert.ok(
+    a3Text.includes('/MediaBox [0 0 1190.55 841.89]'),
+    `A3 横向的 MediaBox 不对：${a3Text.match(/\/MediaBox[^\]]*\]/)?.[0]}`,
+  );
+  // 改页面尺寸不能改坏 PDF 结构
+  assert.deepEqual(inspectPdf(a3).issues, [], 'A3 的 PDF 结构有问题');
+  assert.equal(inspectPdf(a3).pageCount, 1);
+});
+
 test('PDF 封装：JPEG 原始字节原样嵌入（不能被重新编码）', async () => {
   const jpeg = await makeJpeg();
   const pdf = buildPdfFromJpeg(jpeg, 160, 120);

@@ -597,20 +597,22 @@ function fakeEngine({ workspaceRoot, projectRoot, files = new Map() }) {
       const sep = body.indexOf(0);
       const path = new TextDecoder().decode(body.subarray(0, sep));
       const content = new TextDecoder().decode(body.subarray(sep + 1));
-      files.set(joinPath(workspaceRoot, path), content);
+      // 写接口也认 root：路径相对那个根解析（与读接口同一套口径）
+      files.set(joinPath(parsed.searchParams.get('root') ?? projectRoot, path), content);
       return json({ ok: true, size: content.length });
     }
     if (parsed.pathname === '/api/fs/remove') {
       const path = new TextDecoder().decode(new Uint8Array(init?.body ?? []));
-      files.delete(joinPath(workspaceRoot, path));
+      files.delete(joinPath(parsed.searchParams.get('root') ?? projectRoot, path));
       return json({ ok: true });
     }
     if (parsed.pathname === '/api/fs/rename') {
       const [from, to] = new TextDecoder()
         .decode(new Uint8Array(init?.body ?? []))
         .split('\n');
-      files.set(joinPath(workspaceRoot, to), files.get(joinPath(workspaceRoot, from)));
-      files.delete(joinPath(workspaceRoot, from));
+      const root = parsed.searchParams.get('root') ?? projectRoot;
+      files.set(joinPath(root, to), files.get(joinPath(root, from)));
+      files.delete(joinPath(root, from));
       return json({ ok: true });
     }
     return json({ error: 'not_found' }, 404);
@@ -620,7 +622,6 @@ function fakeEngine({ workspaceRoot, projectRoot, files = new Map() }) {
 }
 
 test('模板往返：存 → 列 → 读，内容相等', async () => {
-  store.resetWorkspaceRootCache();
   const workspaceRoot = 'D:/Projects/demo';
   const projectRoot = 'D:/Projects/demo/任务A';
   const engine = fakeEngine({ workspaceRoot, projectRoot });
@@ -641,13 +642,16 @@ test('模板往返：存 → 列 → 读，内容相等', async () => {
   const back = await store.loadTemplate(projectRoot, '我的模板', options);
   assert.deepEqual(back, layout);
 
-  // 写接口不认 root：路径是相对工作区根的，存完还要读回来核对
+  // 写接口与读接口同一套口径：带 root、路径相对项目根
   const write = engine.requests.find((r) => r.url.includes('/api/fs/write'));
   assert.ok(write, '应当发过一次写请求');
+  assert.ok(
+    write.url.includes(encodeURIComponent(projectRoot)),
+    `写请求必须带上项目根：${write.url}`,
+  );
 });
 
 test('模板：目录还不存在时列出的是空表，不是报错', async () => {
-  store.resetWorkspaceRootCache();
   const engine = fakeEngine({
     workspaceRoot: 'D:/Projects/demo',
     projectRoot: 'D:/Projects/demo/任务A',
@@ -660,7 +664,6 @@ test('模板：目录还不存在时列出的是空表，不是报错', async ()
 });
 
 test('模板：文件坏了要说清楚是哪个模板坏了', async () => {
-  store.resetWorkspaceRootCache();
   const workspaceRoot = 'D:/Projects/demo';
   const projectRoot = 'D:/Projects/demo/任务A';
   const files = new Map([
@@ -684,24 +687,34 @@ test('模板：模板名里有路径分隔符要挡住（路径穿越）', () =>
   assert.equal(store.assertTemplateName('  1-500 地形图 '), '1-500 地形图');
 });
 
-test('模板：项目不在引擎的工作区根之下时明说存不进去（不静默写到别处）', async () => {
-  store.resetWorkspaceRootCache();
+test('模板：项目不在引擎的工作区根之下也能存（写请求按项目根定位）', async () => {
   const engine = fakeEngine({
     workspaceRoot: 'D:/workspace',
     projectRoot: 'E:/别的盘/任务A',
   });
-  await assert.rejects(
-    () =>
-      store.saveTemplate(
-        'E:/别的盘/任务A',
-        'x',
-        types.DEFAULT_LAYOUT,
-        { base: 'http://engine', fetchImpl: engine.fetchImpl },
-      ),
-    (err) => err instanceof types.LayoutError && /工作区根/.test(err.message),
+  await store.saveTemplate(
+    'E:/别的盘/任务A',
+    'x',
+    types.DEFAULT_LAYOUT,
+    { base: 'http://engine', fetchImpl: engine.fetchImpl },
   );
-  // 一次写请求都不该发出去（不能先写了再发现落错地方）
-  assert.equal(engine.requests.filter((r) => r.url.includes('/api/fs/write')).length, 0);
+  // 落点由 root 决定：写在项目目录里，不是引擎工作区根里
+  assert.ok(
+    engine.files.has('E:/别的盘/任务A/.cartouche/templates/x.json'),
+    [...engine.files.keys()].join('|'),
+  );
+  const write = engine.requests.find((r) => r.url.includes('/api/fs/write'));
+  assert.ok(write, '应当发过一次写请求');
+  assert.ok(
+    write.url.includes(encodeURIComponent('E:/别的盘/任务A')),
+    `写请求必须带上项目根：${write.url}`,
+  );
+  // 绝不能落到引擎的工作区根里 —— 那样"存好了"却不在项目目录中
+  assert.equal(
+    engine.files.has('D:/workspace/.cartouche/templates/x.json'),
+    false,
+    '模板不许落到引擎工作区根里',
+  );
 });
 
 /* ── 8. 同一模板连出 10 张图，零手调 ────────────────────── */

@@ -1,16 +1,12 @@
 /**
  * 出图模板的存取：模板存在项目目录的 `.cartouche/templates/<名字>.json`。
  *
- * 走的是引擎已有的 `/api/fs/*`，所以**服务端不用动**。
- * 但这套接口有个坑，必须在这里绕清楚：
+ * 走的是引擎已有的 `/api/fs/*`。读写**同一套口径**：路径相对**项目根**，
+ * 请求带 `?root=<项目根>`，由服务器按那个根定位、并把住工作区边界。
  *
- *   - 读（read / stat / list）认 `root` 参数 —— 路径相对**项目根**；
- *   - 写（write / remove / rename）**不认** `root` —— 路径相对**引擎的工作区根**。
- *
- * 这不是猜的，是 server/src/app.ts 里 `resolveTarget(null, p)` 与
- * `storeFor(root, p)` 的区别。写错的后果是「模板存到了别的地方」，
- * 而用户回头找不到自己存的模板 —— 所以这里把两条路径分开算，
- * 写完还要**读回来核对一次**，确认它真的落在项目目录里。
+ * 之前写接口只认引擎的工作区根、不认 root，于是模板会「存好了」却落在
+ * 用户项目目录之外的地方 —— 存是成功了，回头找不到，比直接报错更糟。
+ * 现在读写口径统一；写完仍然**读回来核对一次**，确认它真的落在项目目录里。
  */
 import {
   LayoutError,
@@ -60,35 +56,15 @@ export function assertTemplateName(name: string): string {
 
 /* ── 路径工具（浏览器里没有 node:path，只能自己算） ─────── */
 
-function toPosix(p: string): string {
-  return p.replace(/\\/g, '/');
-}
-
 /** Windows 的盘符路径不区分大小写；判据是开头有盘符 */
 function fold(p: string): string {
   return /^[A-Za-z]:/.test(p) ? p.toLowerCase() : p;
-}
-
-/** candidate 是否落在 root 之下 */
-export function isInsideRoot(root: string, candidate: string): boolean {
-  const r = toPosix(root).replace(/\/+$/, '');
-  const c = toPosix(candidate).replace(/\/+$/, '');
-  const rf = fold(r);
-  const cf = fold(c);
-  return cf === rf || cf.startsWith(`${rf}/`);
 }
 
 /**
  * candidate 相对 root 的路径（正斜杠）。
  * 不在 root 之下就返回 null —— 跨盘符当然也算不在。
  */
-export function relativeToRoot(root: string, candidate: string): string | null {
-  if (!isInsideRoot(root, candidate)) return null;
-  const r = toPosix(root).replace(/\/+$/, '');
-  const c = toPosix(candidate).replace(/\/+$/, '');
-  if (fold(r) === fold(c)) return '';
-  return c.slice(r.length + 1);
-}
 
 /* ── 引擎交互 ────────────────────────────────────────────── */
 
@@ -113,60 +89,19 @@ function requester(options: TemplateStoreOptions | undefined): {
   };
 }
 
-/** 引擎工作区根（写操作按它定位路径，所以必须知道） */
-let workspaceRootCache: string | null = null;
-
-async function workspaceRoot(options: TemplateStoreOptions | undefined): Promise<string> {
-  if (workspaceRootCache) return workspaceRootCache;
-  const { base, fetchImpl } = requester(options);
-  let res: Response;
-  try {
-    res = await fetchImpl(`${base}/api/health`);
-  } catch (err) {
-    throw new LayoutError(
-      `无法连接引擎服务 ${base}（请确认已运行 npm run dev:server）：${(err as Error).message}`,
-    );
-  }
-  if (!res.ok) throw new LayoutError(`读引擎信息失败：${await readErrorMessage(res)}`);
-  const body = (await res.json()) as { workspaceRoot?: string };
-  if (!body.workspaceRoot) {
-    throw new LayoutError('引擎没有返回工作区根，无法确定模板该写到哪儿。');
-  }
-  workspaceRootCache = body.workspaceRoot;
-  return workspaceRootCache;
+/**
+ * 写接口的 URL：带上 root，路径相对项目根。
+ *
+ * 口径与读接口一致（`/api/fs/read?root=…`），所以模板落在哪儿由服务器按
+ * root 定位，边界也由它把关 —— 客户端不猜引擎的工作区根长什么样。
+ */
+function writeUrl(base: string, endpoint: string, projectRoot: string): string {
+  return `${base}${endpoint}?root=${encodeURIComponent(projectRoot)}`;
 }
 
-/** 只在测试里用：清掉工作区根的缓存 */
-export function resetWorkspaceRootCache(): void {
-  workspaceRootCache = null;
-}
-
-/** 项目里模板文件的相对路径（相对项目根，给读接口用） */
+/** 项目里模板文件的相对路径（相对项目根，读写都用它） */
 function projectRelativePath(name: string): string {
   return `${TEMPLATE_DIR}/${templateFileName(name)}`;
-}
-
-/**
- * 模板文件相对**引擎工作区根**的路径（给写接口用）。
- *
- * 项目不在工作区根之下就抛错：写接口没有 root 参数，硬写会写到工作区根里
- * （存是"成功"了，可用户在自己的项目目录里找不到 —— 比直接报错更糟）。
- */
-async function workspaceRelativePath(
-  projectRoot: string,
-  name: string,
-  options: TemplateStoreOptions | undefined,
-): Promise<string> {
-  const root = await workspaceRoot(options);
-  const rel = relativeToRoot(root, projectRoot);
-  if (rel === null) {
-    throw new LayoutError(
-      `项目目录不在引擎的工作区根（${root}）之下，引擎的写接口目前只允许写工作区根以内的文件，` +
-        `所以模板存不进去。需要引擎侧让 /api/fs/write 支持按 root 写入。`,
-    );
-  }
-  const prefix = rel === '' ? '' : `${rel}/`;
-  return `${prefix}${projectRelativePath(name)}`;
 }
 
 /* ── 对外的操作 ──────────────────────────────────────────── */
@@ -224,8 +159,8 @@ export async function loadTemplate(
 /**
  * 存一个模板。
  *
- * 写完**读回来核对**：写接口不认 root，路径算错的话文件会落到工作区根里，
- * 而接口照样回 200。不核对的话，模板就"存好了但找不到"。
+ * 写完**读回来核对**：路径算错、或者目录不可写，接口都可能回 200，
+ * 但模板没落在项目目录里。不核对的话，模板就「存好了但找不到」。
  */
 export async function saveTemplate(
   projectRoot: string,
@@ -235,12 +170,11 @@ export async function saveTemplate(
 ): Promise<void> {
   const safeName = assertTemplateName(name);
   const { base, fetchImpl } = requester(options);
-  const wsPath = await workspaceRelativePath(projectRoot, safeName, options);
-  const body = `${wsPath}\0${serializeLayout(layout)}`;
+  const body = `${projectRelativePath(safeName)}\0${serializeLayout(layout)}`;
   const bytes = new TextEncoder().encode(body);
   let res: Response;
   try {
-    res = await fetchImpl(`${base}/api/fs/write`, {
+    res = await fetchImpl(writeUrl(base, '/api/fs/write', projectRoot), {
       method: 'POST',
       headers: { 'content-type': 'application/octet-stream' },
       body: bytes,
@@ -270,13 +204,12 @@ export async function deleteTemplate(
 ): Promise<void> {
   const safeName = assertTemplateName(name);
   const { base, fetchImpl } = requester(options);
-  const wsPath = await workspaceRelativePath(projectRoot, safeName, options);
   let res: Response;
   try {
-    res = await fetchImpl(`${base}/api/fs/remove`, {
+    res = await fetchImpl(writeUrl(base, '/api/fs/remove', projectRoot), {
       method: 'POST',
       headers: { 'content-type': 'application/octet-stream' },
-      body: new TextEncoder().encode(wsPath),
+      body: new TextEncoder().encode(projectRelativePath(safeName)),
     });
   } catch (err) {
     throw new LayoutError(
@@ -296,11 +229,11 @@ export async function renameTemplate(
   const fromName = assertTemplateName(from);
   const toName = assertTemplateName(to);
   const { base, fetchImpl } = requester(options);
-  const fromPath = await workspaceRelativePath(projectRoot, fromName, options);
-  const toPath = await workspaceRelativePath(projectRoot, toName, options);
+  const fromPath = projectRelativePath(fromName);
+  const toPath = projectRelativePath(toName);
   let res: Response;
   try {
-    res = await fetchImpl(`${base}/api/fs/rename`, {
+    res = await fetchImpl(writeUrl(base, '/api/fs/rename', projectRoot), {
       method: 'POST',
       headers: { 'content-type': 'application/octet-stream' },
       body: new TextEncoder().encode(`${fromPath}\n${toPath}`),

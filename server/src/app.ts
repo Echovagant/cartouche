@@ -795,6 +795,9 @@ export function createEngineServer(): Server {
             height?: number;
             title?: string;
             operator?: string;
+            /** 页面尺寸（点）：出图版式选了 A3 / 竖版时要跟着变 */
+            pageWidthPt?: number;
+            pageHeightPt?: number;
           };
           if (!req0.jpeg) {
             json(400, { error: 'bad_request', message: '缺少 jpeg（base64 数据 URL 或纯 base64）' });
@@ -805,6 +808,9 @@ export function createEngineServer(): Server {
           const pdf = buildPdfFromJpeg(jpeg, req0.width ?? 0, req0.height ?? 0, {
             ...(req0.title ? { title: req0.title } : {}),
             ...(req0.operator ? { author: req0.operator } : {}),
+            // 页面尺寸跟着出图版式走：不传就是引擎默认的 A4 横向
+            ...(typeof req0.pageWidthPt === 'number' ? { pageWidthPt: req0.pageWidthPt } : {}),
+            ...(typeof req0.pageHeightPt === 'number' ? { pageHeightPt: req0.pageHeightPt } : {}),
           });
           const out = Buffer.from(pdf);
           res.writeHead(200, {
@@ -1344,13 +1350,16 @@ export function createEngineServer(): Server {
               const p = body.subarray(0, sep).toString('utf8');
               const data = new Uint8Array(body.subarray(sep + 1));
               // 写操作同样要过路径闸门：绝对路径等于可以改工作区外的文件
-              const t = resolveTarget(null, p);
+              // ⚠️ root 的口径与读接口一致（`?root=<绝对路径>`）：
+              //    读认、写不认，同一件事两套口径 → 模板"存好了"却落在别处，
+              //    用户回头在自己的项目目录里找不到。
+              const t = resolveTarget(url.searchParams.get('root'), p);
               await t.store.write(t.relative, data);
               json(200, { ok: true, size: data.length });
               return;
             }
             if (url.pathname === '/api/fs/remove') {
-              const t = resolveTarget(null, body.toString('utf8'));
+              const t = resolveTarget(url.searchParams.get('root'), body.toString('utf8'));
               await t.store.remove(t.relative);
               json(200, { ok: true });
               return;
@@ -1361,8 +1370,9 @@ export function createEngineServer(): Server {
                 json(400, { error: 'bad_request' });
                 return;
               }
-              const f = resolveTarget(null, from);
-              const t = resolveTarget(null, to);
+              const rootParam = url.searchParams.get('root');
+              const f = resolveTarget(rootParam, from);
+              const t = resolveTarget(rootParam, to);
               if (url.pathname === '/api/fs/copy') await f.store.copy(f.relative, t.relative);
               else await f.store.rename(f.relative, t.relative);
               json(200, { ok: true });
