@@ -35,6 +35,11 @@ import { runVectorSpatialJoin } from '../vector/spatial-join.ts';
 import { runVectorReproject } from '../vector/reproject.ts';
 import { runVectorRenameFields } from '../vector/rename-fields.ts';
 import { runVectorRecode } from '../vector/recode.ts';
+import {
+  runFeatureSetAttributes,
+  runFeatureDelete,
+  runFeatureSummarize,
+} from '../feature/index.ts';
 import { runHealthCheck } from '../health/checks.ts';
 import { renderCompatReport } from '../report/compat-report.ts';
 import {
@@ -269,8 +274,9 @@ const DATA_SIDECAR_SUFFIXES: readonly string[] = [
 /**
  * 已实现的 op。
  *
- * 这里只登记**引擎里真的能跑**的。schema 里的 23 个 op 里，矢量编辑类
- * （feature.* / vector.* 共 6 个）尚未实现；export.* 的两个（出图 / 出报告）
+ * 这里只登记**引擎里真的能跑**的。schema 里的 26 个 op 里，
+ * 几何写回类（feature.create / feature.editGeometry / vector.repairGeometry
+ * 与 vector.overlay）尚未实现；export.* 的两个（出图 / 出报告）
  * 在这里落地 —— 它们**不改像元**，产出的是文件，走的是非栅格型结果那条路。
  * dataset.* 的三个（打开 / 体检 / 快照）同样是值结果。
  */
@@ -589,6 +595,29 @@ const IMPLEMENTED: Readonly<Record<string, OpHandler>> = {
     countsChangedPixels: false,
     run: async (_editor, params, dryRun, deps) =>
       runVectorRecode(params, { loc: deps.loc, store: deps.store }, dryRun),
+  },
+  'feature.setAttributes': {
+    label: '按条件改属性',
+    previewable: true,
+    // 不改像元：命中 0 条是合法结果（条件太窄），不是"什么都没做"
+    countsChangedPixels: false,
+    run: async (_editor, params, dryRun, deps) =>
+      runFeatureSetAttributes(params, { loc: deps.loc, store: deps.store }, dryRun),
+  },
+  'feature.delete': {
+    label: '按条件删要素',
+    previewable: true,
+    countsChangedPixels: false,
+    run: async (_editor, params, dryRun, deps) =>
+      runFeatureDelete(params, { loc: deps.loc, store: deps.store }, dryRun),
+  },
+  'feature.summarize': {
+    label: '分组汇总',
+    previewable: true,
+    // 汇总只读不写：没有像元口径
+    countsChangedPixels: false,
+    run: async (_editor, params, dryRun, deps) =>
+      runFeatureSummarize(params, { loc: deps.loc, store: deps.store }, dryRun),
   },
   'raster.paint': {
     label: '涂色',

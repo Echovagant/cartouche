@@ -23,7 +23,7 @@ console.log(`  ${OK} 声明 ${ops.length} 个操作：`);
 for (const op of ops) console.log(`       ${DIM}·${RESET} ${op}`);
 
 // 必填操作是否齐全 —— 这些是 AI 基准要用到的最小集合
-const required = ['dataset.open', 'dataset.healthCheck', 'raster.replaceRegion', 'feature.setAttributes', 'feature.editGeometry', 'vector.repairGeometry', 'vector.query', 'vector.addField', 'vector.spatialJoin', 'vector.reproject', 'vector.renameFields', 'vector.recode'];
+const required = ['dataset.open', 'dataset.healthCheck', 'raster.replaceRegion', 'feature.setAttributes', 'feature.delete', 'feature.summarize', 'feature.editGeometry', 'vector.repairGeometry', 'vector.query', 'vector.addField', 'vector.spatialJoin', 'vector.reproject', 'vector.renameFields', 'vector.recode'];
 const missing = required.filter((r) => !ops.includes(r));
 if (missing.length === 0) {
   console.log(`  ${OK} 核心操作集齐全（${required.length} 项）`);
