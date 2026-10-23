@@ -19,6 +19,7 @@ const {
   readOpsSchema,
   validatePlanSchema,
   findUnsupportedOps,
+  implementedOps,
   parsePlanReply,
   classifyPrecheck,
   createPlan,
@@ -184,6 +185,74 @@ test('提示词：发出去的内容里没有白名单之外的字段', () => {
   // 只放行栅格 op：矢量 op 不该出现在清单里
   assert.ok(!prompt.includes('"feature.delete"'), '未实现的 op 不该进清单');
   assert.ok(prompt.includes('"raster.adjustLevels"'), '已实现的栅格 op 要进清单');
+});
+
+test('op 清单：引擎实现了的矢量 op 必须看得见（2026-10-24 补的洞）', () => {
+  // 为什么要有这条：清单曾经只放行 raster.*，而 vector.* 的 op 早就实现并登记进
+  // 执行器了 —— 模型**根本看不到**它们，于是所有矢量需求都落到「该操作尚未支持」。
+  // 这种缺口不报错，只是功能凭空少了一半，比报错更难发现。
+  const catalog = opCatalog(readOpsSchema(), [
+    'raster.paint',
+    'vector.query',
+    'vector.addField',
+    'vector.spatialJoin',
+    'vector.reproject',
+    'vector.renameFields',
+    'vector.recode',
+  ]);
+  assert.deepEqual(
+    catalog.map((c) => c.op),
+    [
+      'raster.paint',
+      'vector.addField',
+      'vector.query',
+      'vector.recode',
+      'vector.renameFields',
+      'vector.reproject',
+      'vector.spatialJoin',
+    ],
+    '已实现的矢量 op 都要进清单',
+  );
+  const addField = catalog.find((c) => c.op === 'vector.addField');
+  assert.equal(addField?.label, '计算字段', '中文名要跟引擎调度器一致');
+  assert.ok(addField?.params, '参数契约要一起给模型');
+});
+
+test('op 清单：还没实现的 op 不进清单（几何写回那几个还在开发）', () => {
+  // 用**生产真源**（引擎注册表）来断言，而不是自己编一份名单：
+  // 清单只放行 raster.* 与 vector.* 两个前缀，而注册表里只有真能跑的 op，
+  // 两边一交叉就既不会漏（已实现的看得见），也不会多（没实现的看不见）。
+  const implemented = implementedOps();
+  assert.ok(
+    !implemented.includes('feature.delete'),
+    'feature.* 还没实现，不该在注册表里',
+  );
+  const catalog = opCatalog(readOpsSchema(), implemented);
+  assert.ok(
+    !catalog.some((c) => c.op.startsWith('feature.')),
+    'feature.* 不该进清单',
+  );
+  assert.ok(
+    catalog.some((c) => c.op.startsWith('vector.')),
+    '已实现的 vector.* 要进清单',
+  );
+  assert.ok(
+    catalog.some((c) => c.op.startsWith('raster.')),
+    '已实现的 raster.* 要进清单',
+  );
+});
+
+test('提示词里看得见矢量 op：模型得能选得到它', () => {
+  // 这是"洞"的最后一环：清单里有了，还得真的进了发出去的那段提示词。
+  const prompt = buildPlanPrompt({
+    context: buildPlanContext(RAW_CONTEXT),
+    instruction: '给底图加一列面积',
+    catalog: opCatalog(readOpsSchema(), implementedOps()),
+  });
+  assert.ok(prompt.includes('"vector.addField"'), '已实现的矢量 op 要出现在提示词里');
+  assert.ok(prompt.includes('"vector.query"'), '属性查询也要在');
+  assert.ok(prompt.includes('"vector.reproject"'), '重投影也要在');
+  assert.ok(!prompt.includes('"feature.delete"'), '没实现的 op 不该在');
 });
 
 test('闸门①：合法的计划通过校验', () => {

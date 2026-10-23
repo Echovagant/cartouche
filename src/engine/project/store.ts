@@ -34,6 +34,15 @@ export interface ProjectHistoryEntry {
   readonly ok: boolean;
   readonly params?: Readonly<Record<string, unknown>>;
   readonly impact?: Readonly<Record<string, unknown>>;
+  /**
+   * 一句话结论：这次到底改了什么。
+   *
+   * 为什么要有它：像元口径只对栅格型 op 有意义。矢量型 op（改属性、加字段…）
+   * 留痕里若只有 "op / target / ok"，交差时说不清"改了几条"——
+   * 引擎那边其实有一句现成的人话结论（如"给 12 条要素加上了字段「面积」"），
+   * 顺手记下来，交差时直接能用。
+   */
+  readonly summary?: string;
   readonly error?: string;
 }
 
@@ -173,6 +182,7 @@ function toHistoryEntry(raw: unknown): ProjectHistoryEntry | null {
   const ok = o.ok === undefined ? true : o.ok === true;
   const params = isPlainObject(o.params) ? o.params : undefined;
   const impact = isPlainObject(o.impact) ? o.impact : undefined;
+  const summary = typeof o.summary === 'string' ? o.summary : undefined;
   const error = typeof o.error === 'string' ? o.error : undefined;
   return {
     at,
@@ -181,6 +191,7 @@ function toHistoryEntry(raw: unknown): ProjectHistoryEntry | null {
     ok,
     ...(params ? { params } : {}),
     ...(impact ? { impact } : {}),
+    ...(summary !== undefined ? { summary } : {}),
     ...(error !== undefined ? { error } : {}),
   };
 }

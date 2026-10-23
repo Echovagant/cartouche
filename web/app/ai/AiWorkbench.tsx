@@ -64,6 +64,17 @@ interface ExecResultPayload {
     readonly target?: string;
     readonly unimplemented?: boolean;
     readonly impact?: Readonly<Record<string, unknown>>;
+    /**
+     * 非像元型 op（改属性、加字段那种）的结论。
+     *
+     * 为什么单独一条：这类 op 没有像元口径的影响面，只有它自己的一句话结论
+     * （如"给 12 条要素加上了字段「面积」"）。不给它，界面上就只剩一个"成功"，
+     * 用户根本不知道到底改了什么。
+     */
+    readonly value?: {
+      readonly kind?: string;
+      readonly summary?: string;
+    };
     readonly error?: string;
   }[];
   readonly completed: number;
@@ -825,21 +836,34 @@ export default function AiWorkbench() {
               <div className="mb-2 font-mono text-[11px] text-studio-ink-3">闸门③ · 量化影响</div>
               <ul className="space-y-2">
                 {previews.map((preview, index) => {
+                  const total = preview.totalPixels ?? 0;
                   const ratio =
-                    preview.totalPixels > 0
-                      ? preview.affectedRatio > 0
-                        ? preview.affectedRatio
-                        : preview.affectedPixels / preview.totalPixels
+                    total > 0
+                      ? (preview.affectedRatio ?? 0) > 0
+                        ? (preview.affectedRatio ?? 0)
+                        : (preview.affectedPixels ?? 0) / total
                       : 0;
+                  // 非像元型 op（矢量改属性那种）报自己的结论，不报像元：
+                  // 「影响 0 / 0 像元」对它是假数字。
+                  const isValue = preview.kind === 'value';
                   return (
                     <li key={`${preview.op}-${index}`} className="text-[12.5px] text-studio-ink-2">
-                      · {preview.op}：影响{' '}
-                      <span className="font-mono text-studio-ink">
-                        {preview.affectedPixels.toLocaleString('zh-CN')} /{' '}
-                        {preview.totalPixels.toLocaleString('zh-CN')}
-                      </span>{' '}
-                      像元（{(ratio * 100).toFixed(1)}%）· 目标{' '}
-                      <span className="font-mono">{preview.target}</span> · 备份{' '}
+                      · {preview.op}：
+                      {isValue ? (
+                        <>
+                          {preview.summary ?? '（引擎没有给出结论）'}
+                        </>
+                      ) : (
+                        <>
+                          影响{' '}
+                          <span className="font-mono text-studio-ink">
+                            {(preview.affectedPixels ?? 0).toLocaleString('zh-CN')} /{' '}
+                            {total.toLocaleString('zh-CN')}
+                          </span>{' '}
+                          像元（{(ratio * 100).toFixed(1)}%）
+                        </>
+                      )}{' '}
+                      · 目标 <span className="font-mono">{preview.target}</span> · 备份{' '}
                       <span className="font-mono">
                         {preview.backupPath ?? preview.backupNamePattern ?? '执行时生成'}
                       </span>
@@ -930,6 +954,9 @@ export default function AiWorkbench() {
                               影响 {Number(result.impact['affectedPixels'] ?? 0).toLocaleString('zh-CN')}{' '}
                               像元
                             </span>
+                          ) : null}
+                          {result.ok && result.value?.summary ? (
+                            <span className="mt-1 block text-studio-ink-2">{result.value.summary}</span>
                           ) : null}
                           {failure ? (
                             <span className="mt-1 block text-studio-ink-2">
