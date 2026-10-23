@@ -1,0 +1,37 @@
+name: 功能建议
+description: 想要某个能力，或者觉得某个交互别扭
+labels: ["建议"]
+body:
+  - type: textarea
+    id: want
+    attributes:
+      label: 你想要什么
+      description: 用一句话说清「在什么情况下，我希望能做什么」。
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: why
+    attributes:
+      label: 现在是怎么做的、卡在哪
+      description: 如果是操作别扭，说清现在怎么做的、哪一步费劲。
+      render: text
+    validations:
+      required: true
+
+  - type: dropdown
+    id: domain
+    attributes:
+      label: 属于哪一类
+      options:
+        - 地图出图（版式、图例、比例尺、格网、模板）
+        - 栅格编辑（涂色、擦除、修补、调色、裁切、拼接）
+        - 矢量编辑（创建、修改几何、属性）
+        - 属性查询与计算字段
+        - 空间分析（空间连接、等值线、插值、栅格计算）
+        - 三维与网络分析
+        - 界面与工作流
+        - 打包、发布、安装
+    validations:
+      required: true

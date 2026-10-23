@@ -1,0 +1,44 @@
+name: 装不上 / 跑不起来
+description: 环境问题：装不上 Node 或 GDAL、doctor 报错、启动失败、地图一片空白
+labels: ["环境"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        这一份模板专门收「装不上、跑不起来」类的问题。
+        **九成的问题 `npm run doctor` 的一次输出就能定位**，请先跑它再填。
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: `npm run doctor` 的完整输出
+      description: 直接粘贴终端输出，不要只写「装不上」。
+      placeholder: |
+        Node v24.16.0
+        GDAL 3.13.3 "Iowa City"
+        ...
+      render: text
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: 操作系统与版本
+      placeholder: Windows 11 / macOS 15.3 / Ubuntu 24.04
+    validations:
+      required: true
+
+  - type: textarea
+    id: what
+    attributes:
+      label: 你做了什么、期望看到什么、实际看到什么
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: 补充（报错原文、截图、安装步骤）
+      render: text
