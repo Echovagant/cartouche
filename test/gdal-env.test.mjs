@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const { resolveGdal, gdalEnv } = await import(pathToFileURL(join(root, 'src', 'engine', 'gdal', 'env.ts')).href);
+const { resolveGdal, gdalEnv, GDAL_CACHE_MAX_BYTES } = await import(pathToFileURL(join(root, 'src', 'engine', 'gdal', 'env.ts')).href);
 const { resolveGdalBin, resolveToolPath } = await import(pathToFileURL(join(root, 'scripts', 'lib', 'env.mjs')).href);
 
 /**
@@ -114,6 +114,42 @@ test('engine：gdalEnv 用平台分隔符拼 PATH', () => {
 
   assert.equal(env.PATH.split(delimiter)[0], relBin, 'GDAL 的 bin 目录要排在 PATH 最前');
   assert.ok(env.PATH.includes(delimiter), `PATH 必须用平台分隔符（${delimiter}）拼接`);
+});
+
+test('engine：gdalEnv 钉死 GDAL 的块缓存上限（默认是物理内存的 5%，峰值会跟着机器涨）', () => {
+  const base = tempDir();
+  const bin = fakeLinuxGdalBin(base);
+  const relBin = asPosixShaped(bin);
+
+  const loc = resolveGdal({ gdalBin: '', pathValue: relBin, pathSeparator: ':', platform: 'linux' });
+  const env = gdalEnv(loc);
+
+  assert.ok(env.GDAL_CACHEMAX, '必须显式给出块缓存上限');
+  assert.equal(
+    Number(env.GDAL_CACHEMAX),
+    GDAL_CACHE_MAX_BYTES,
+    '块缓存上限必须是我们定的那一档，不是 GDAL 的默认（物理内存的 5%）',
+  );
+  // 写成字节数：GDAL 对小于 100000 的裸数字按 MB 解释，
+  // 用一个明确大于该阈值的字节数，两种解释下都是同一个意思。
+  assert.ok(Number(env.GDAL_CACHEMAX) > 100000, '要写成字节数，不能是会被当成 MB 的小数字');
+});
+
+test('engine：用户自己设了 GDAL_CACHEMAX 就不覆盖', () => {
+  const base = tempDir();
+  const bin = fakeLinuxGdalBin(base);
+  const relBin = asPosixShaped(bin);
+  const loc = resolveGdal({ gdalBin: '', pathValue: relBin, pathSeparator: ':', platform: 'linux' });
+
+  const saved = process.env.GDAL_CACHEMAX;
+  process.env.GDAL_CACHEMAX = '1048576';
+  try {
+    const env = gdalEnv(loc);
+    assert.equal(env.GDAL_CACHEMAX, '1048576', '用户特意调过的值不该被覆盖');
+  } finally {
+    if (saved === undefined) delete process.env.GDAL_CACHEMAX;
+    else process.env.GDAL_CACHEMAX = saved;
+  }
 });
 
 test('scripts/lib/env.mjs：POSIX 形状的 PATH 同样能定位（JS 孪生实现）', () => {

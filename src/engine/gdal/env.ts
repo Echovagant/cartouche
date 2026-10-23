@@ -106,6 +106,22 @@ function buildLocation(binDir: string, platform: NodeJS.Platform): GdalLocation 
   };
 }
 
+/**
+ * GDAL 块缓存上限（字节）。
+ *
+ * 为什么必须自己钉死：GDAL 的默认块缓存是**物理内存的 5%**。
+ * 同一份代码，16 GB 的机器吃 819 MB、64 GB 的机器就吃 3.2 GB ——
+ * 峰值跟着机器涨，"几 GB 影像能改"的承诺就落空了。
+ *
+ * 实测（2026-10-23，3.00 GB 影像改 512×512 的一块）：
+ * 引擎进程只占 66 MB，而合并那一步的 gdal_translate 占了 830 MB ——
+ * 那 830 MB 几乎全是这块缓存，不是我们把整图读进了内存。
+ *
+ * 取 256 MB：够 GDAL 顺序读写用，又能让"引擎 + 子进程"的总量留在几百 MB 级。
+ * 取得更小会让合并明显变慢（缓存装不下就反复回读），所以不往下降。
+ */
+export const GDAL_CACHE_MAX_BYTES = 256 * 1024 * 1024;
+
 /** 构造调用 GDAL 所需的环境变量。 */
 export function gdalEnv(loc: GdalLocation): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env };
@@ -114,6 +130,11 @@ export function gdalEnv(loc: GdalLocation): NodeJS.ProcessEnv {
     env.PROJ_LIB = loc.projData;
     env.PROJ_DATA = loc.projData;
   }
+  // 钉死块缓存：不钉的话它是物理内存的 5%，峰值跟着机器内存涨。
+  // 已经设了 GDAL_CACHEMAX 的以环境变量为准 —— 用户可能特意调过。
+  // 写成字节数而不是 MB 数：GDAL 对小于 100000 的裸数字按 MB 解释，
+  // 用一个明确大于该阈值的字节数，两种解释下都是同一个意思。
+  if (!env.GDAL_CACHEMAX) env.GDAL_CACHEMAX = String(GDAL_CACHE_MAX_BYTES);
   const extra = [loc.binDir, join(loc.prefix, 'Library', 'mingw-w64', 'bin')].filter((p) => existsSync(p));
   // 分隔符必须跟着平台走：Windows 用 ';'，POSIX 用 ':'
   env.PATH = [...extra, env.PATH ?? ''].join(delimiter);

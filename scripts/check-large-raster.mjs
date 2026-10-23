@@ -122,6 +122,7 @@ function startGdalSampler(stopFile, outFile) {
       'param([string]$Stop, [string]$Out)',
       '$peakPriv = 0',
       '$peakWs = 0',
+      '$byName = @{}',
       // 停止标记文件存在 = 该收工了。写反了会让这个循环一次都不跑，
       // 采样结果永远是 0 —— 那比没有采样更坏：它让人以为子进程不吃内存。
       'while (-not (Test-Path -LiteralPath $Stop)) {',
@@ -131,11 +132,22 @@ function startGdalSampler(stopFile, outFile) {
       '    $ws = ($procs | Measure-Object -Property WorkingSet64 -Sum).Sum',
       '    if ($priv -gt $peakPriv) { $peakPriv = $priv }',
       '    if ($ws -gt $peakWs) { $peakWs = $ws }',
-      '    Set-Content -LiteralPath $Out -Value "$peakPriv,$peakWs" -Encoding ascii',
+      // 记每个工具各自的峰值：只知道"GDAL 吃了 830 MB"没用，
+      // 得知道是 gdal_translate 还是 gdalbuildvrt 吃的，定位才有着落。
+      '  foreach ($p in $procs) {',
+      '    $k = $p.ProcessName',
+      '    if (-not $byName.ContainsKey($k)) { $byName[$k] = 0 }',
+      '    if ($p.PrivateMemorySize64 -gt $byName[$k]) { $byName[$k] = $p.PrivateMemorySize64 }',
+      '  }',
+      '    $parts = @("$peakPriv,$peakWs")',
+      '    foreach ($k in $byName.Keys) { $parts += "$k=$($byName[$k])" }',
+      '    Set-Content -LiteralPath $Out -Value ($parts -join ";") -Encoding ascii',
       '  }',
       '  Start-Sleep -Milliseconds 200',
       '}',
-      'Set-Content -LiteralPath $Out -Value "$peakPriv,$peakWs" -Encoding ascii',
+      '$parts = @("$peakPriv,$peakWs")',
+      'foreach ($k in $byName.Keys) { $parts += "$k=$($byName[$k])" }',
+      'Set-Content -LiteralPath $Out -Value ($parts -join ";") -Encoding ascii',
     ].join('\n'),
     'utf8',
   );
@@ -155,10 +167,17 @@ function startGdalSampler(stopFile, outFile) {
     },
     peak() {
       try {
-        const [priv, ws] = readFileSync(outFile, 'ascii').trim().split(',');
-        return { private: Number(priv) || 0, workingSet: Number(ws) || 0 };
+        const raw = readFileSync(outFile, 'ascii').trim();
+        const [head, ...rest] = raw.split(';');
+        const [priv, ws] = head.split(',');
+        const byName = {};
+        for (const kv of rest) {
+          const idx = kv.lastIndexOf('=');
+          if (idx > 0) byName[kv.slice(0, idx)] = Number(kv.slice(idx + 1)) || 0;
+        }
+        return { private: Number(priv) || 0, workingSet: Number(ws) || 0, byName };
       } catch {
-        return { private: 0, workingSet: 0 };
+        return { private: 0, workingSet: 0, byName: {} };
       }
     },
   };
@@ -213,7 +232,7 @@ nodePeak = Math.max(nodePeak, process.memoryUsage().rss);
 sampler?.stop();
 // 采样器是异步落盘的，给它一点时间把最后一轮写下去
 await new Promise((r) => setTimeout(r, 600));
-const gdalPeak = sampler?.peak() ?? { private: 0, workingSet: 0 };
+const gdalPeak = sampler?.peak() ?? { private: 0, workingSet: 0, byName: {} };
 
 // 阈值比的是**私有内存**：文件页缓存随时可被系统回收，算进去等于虚报占用。
 const memPeak = nodePeak + gdalPeak.private;
@@ -230,6 +249,9 @@ console.log(
   `  （GDAL 工作集含文件页缓存，峰值 ${(gdalPeak.workingSet / 1024 / 1024).toFixed(0)} MB；` +
     `那部分内存系统随时可回收，不计入阈值）`,
 );
+for (const [name, bytes] of Object.entries(gdalPeak.byName ?? {}).sort((a, b) => b[1] - a[1])) {
+  console.log(`  · ${name}: ${(bytes / 1024 / 1024).toFixed(0)} MB`);
+}
 console.log(`目标        : 内存 < ${MEM_LIMIT / 1024 / 1024} MB，耗时 < ${TIME_LIMIT} s`);
 
 if (error) {
