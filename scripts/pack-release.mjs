@@ -256,6 +256,21 @@ async function main() {
     return;
   }
 
+  /* ── 同一个路径只进包一次 ───────────────────────────────────────
+     `src/engine/dist` 既在 INCLUDE 的 `src` 里（源码树的一部分），
+     又在 PREBUILT 里（预构建产物），会被 walk 两次、**打出两个同名条目**。
+     后果不是"多了几 KB"：Windows 的解压与 .NET 的 ExtractToDirectory
+     遇到重复条目会直接抛「文件已存在」而中断 —— 别人拿这个包解压会失败。 */
+  const unique = new Map();
+  for (const f of files) {
+    const key = f.rel.split(sep).join('/');
+    if (!unique.has(key)) unique.set(key, { ...f, rel: key });
+  }
+  const dupes = files.length - unique.size;
+  if (dupes > 0) console.log(`[pack] 去掉 ${dupes} 个重复条目（同路径只留一份）`);
+  files.length = 0;
+  files.push(...unique.values());
+
   const entries = [];
   let raw = 0;
   for (const f of files) {
