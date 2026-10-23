@@ -17,12 +17,19 @@
  * 共同的安全链路：占用检测 → 磁盘余量 → 备份 → 临时文件 → 原子替换 → 回读校验。
  */
 import { randomBytes } from 'node:crypto';
-import { rmSync, statfsSync, existsSync } from 'node:fs';
+import { rmSync, statfsSync, statSync, existsSync } from 'node:fs';
 import { dirname, join, basename } from 'node:path';
 import { tools } from '../gdal/runner.ts';
 import type { GdalLocation } from '../gdal/env.ts';
 import { replaceFileAtomically } from '../gdal/writeback.ts';
 import type { WorkspaceAdapter } from '../workspace/index.ts';
+import {
+  DEFAULT_OVERVIEW_THRESHOLD_BYTES,
+  ensureOverviews,
+  hasOverviews,
+  overviewPathOf,
+  type OverviewSkipReason,
+} from './overview.ts';
 import {
   readRasterPixels,
   readRasterFrame,
@@ -81,6 +88,13 @@ export interface RasterOpResult {
   readonly height: number;
   readonly bandCount: number;
   /**
+   * 金字塔这一步的结果（写回之后建没建成）。
+   *
+   * 为什么单独带出来：金字塔建不起来**不影响**改图本身（不能因此判整次操作失败），
+   * 但界面会因此"影像还是卡"，原因必须能查 —— 所以它跟着结果一路回到调用方。
+   */
+  readonly overview?: OverviewOutcome;
+  /**
    * true = 这是**预演**的结果，文件**没有**被写过。
    *
    * 确认卡要在动手之前就报出"会影响多少像元"，但那时还没落盘。
@@ -123,6 +137,19 @@ export interface RasterDeps {
    * 故障就从"这一次操作失败"扩散成"整台机器都不正常"。
    */
   readonly minFreeBytes?: number;
+  /**
+   * 建金字塔的阈值：超过这个大小才值得建（建金字塔要花时间与磁盘）。默认 200MB。
+   *
+   * 阈值可注入：真造几 GB 的文件不现实，测试用小阈值把一张小图当成"大图"来验这条链路。
+   */
+  readonly overviewThresholdBytes?: number;
+  /**
+   * 建金字塔时要保留下来的磁盘余量下限（字节）。默认与 minFreeBytes 相同。
+   *
+   * 为什么要单列一个：写回的余量与建金字塔的余量是两笔不同的开销，
+   * 分开量才能一处收紧而不牵连另一处。
+   */
+  readonly overviewMinFreeBytes?: number;
 }
 
 /** 默认保留下限：写回后磁盘至少还剩 512 MB */
@@ -174,11 +201,14 @@ function nearestExistingDir(dir: string): string {
  * @param absPath 目标所在路径（临时文件与目标同目录 => 同一卷）
  * @param neededBytes 本次实际需要的字节数
  * @param minFreeBytes 保留下限：可用空间要满足"实际需求"与"下限"里更大的那个
+ * @param purpose 这笔空间是干什么用的：写回 / 建金字塔。
+ *   报错里要说清是哪一笔 —— "磁盘不够"配一句"写回"的话，看的人会去找错的地方。
  */
 export function assertFreeSpace(
   absPath: string,
   neededBytes: number,
   minFreeBytes = 0,
+  purpose: '写回' | '建金字塔' = '写回',
 ): void {
   const dir = dirname(absPath);
   const probeDir = nearestExistingDir(dir);
@@ -206,13 +236,117 @@ export function assertFreeSpace(
   const detail = [`本次实际需求 ${humanBytes(neededBytes)}`];
   if (minFreeBytes > 0) detail.push(`保留下限 ${humanBytes(minFreeBytes)}`);
   throw new Error(
-    `磁盘空间不足，无法安全写回。\n` +
+    `磁盘空间不足，无法安全${purpose}。\n` +
       `${where}当前可用 ${humanBytes(available)}；` +
-      `本次写回需要 ${humanBytes(required)}（${detail.join('、')}）。\n` +
-      '写回时会先写一份与原图同尺寸的临时文件；空间不够就会写到一半失败、留下半个文件，' +
-      '用户手上的图件就处于不明状态。\n' +
+      `本次${purpose}需要 ${humanBytes(required)}（${detail.join('、')}）。\n` +
+      (purpose === '建金字塔'
+        ? '建金字塔要写一个 .ovr 旁挂文件；空间不够就会写到一半失败、留下半个文件，' +
+          '这份金字塔还是坏的。\n'
+        : '写回时会先写一份与原图同尺寸的临时文件；空间不够就会写到一半失败、留下半个文件，' +
+          '用户手上的图件就处于不明状态。\n') +
       '建议：把工程换到可用空间更大的盘；或清理该盘上的旧文件腾出空间；或缩小操作范围。',
   );
+}
+
+/**
+ * 金字塔这一步的结果。
+ *
+ * 为什么要有这个类型：金字塔是"锦上添花"——用户的图改好了就是改好了。
+ * 但金字塔没建起来的原因必须**留痕**，否则症状会漂移到很远的地方
+ * （界面卡），那时已经查不出根因了。
+ */
+export interface OverviewOutcome {
+  /** 是否真的建出了金字塔 */
+  readonly built: boolean;
+  /** .ovr 的路径；没建出来且没有现成的就是 null */
+  readonly ovrPath: string | null;
+  /** 没建的原因（文件不在 / 太小 / 已经有了） */
+  readonly skippedReason?: OverviewSkipReason;
+  /** 建的过程中出的问题（磁盘不够 / gdaladdo 报错） */
+  readonly error?: string;
+  /** 不是错误、但需要说明的事（例：命令成功却没有产出 .ovr） */
+  readonly note?: string;
+  /** 这次按原文件大小估算的金字塔占位（字节） */
+  readonly estimatedBytes?: number;
+}
+
+/**
+ * 按需建金字塔：带磁盘余量护栏，且**不抛错**。
+ *
+ * 与 overview.ts 的 ensureOverviews 差两件事：
+ *  1. 建之前查磁盘余量 —— .ovr 要占地方，盘不够写到一半失败会留下半个文件；
+ *  2. 失败不抛错，而是写进 outcome.error —— 用户的图已经改好了，
+ *     不能因为金字塔没建起来把整次操作判成失败；但也不能静默吞掉。
+ *
+ * 磁盘余量按**原文件的 1 倍**估（刻意保守）：
+ * 实测 .ovr 约为原图的 25%（512×512 的原图 262578 字节 → .ovr 65821 字节），
+ * 但那个比例只对"未压缩的小图"成立 —— 压缩过的原图本身可能只有原始像元的十分之一，
+ * 而金字塔是按**原始像元**降采样出来的，占原文件的比例可以远大于 25%。
+ * 多留一倍空间只是晚一点建；少留就会写到一半失败，留下半个 .ovr。
+ */
+export async function ensureRasterOverviews(
+  loc: GdalLocation,
+  absPath: string,
+  options?: {
+    /** 超过这个大小才值得建；默认 200MB */
+    readonly thresholdBytes?: number;
+    /** 建金字塔时要保留下来的磁盘余量下限（字节） */
+    readonly minFreeBytes?: number;
+  },
+): Promise<OverviewOutcome> {
+  const threshold = options?.thresholdBytes ?? DEFAULT_OVERVIEW_THRESHOLD_BYTES;
+  const minFreeBytes = options?.minFreeBytes ?? 0;
+  let size = 0;
+  try {
+    size = statSync(absPath).size;
+  } catch {
+    return { built: false, ovrPath: null, skippedReason: 'not-found' };
+  }
+  // 先判"这次会不会真的建"：只有会建才值得查磁盘。
+  // 判据与 ensureOverviews 用的是同一份阈值常量；这里重复一遍，
+  // 是为了把磁盘检查放在构建**之前**（ensureOverviews 自己不做磁盘检查）。
+  if (size < threshold) {
+    return { built: false, ovrPath: null, skippedReason: 'below-threshold' };
+  }
+  if (await hasOverviews(absPath)) {
+    return { built: false, ovrPath: overviewPathOf(absPath), skippedReason: 'already-exists' };
+  }
+
+  const estimatedBytes = size;
+  try {
+    assertFreeSpace(absPath, estimatedBytes, minFreeBytes, '建金字塔');
+  } catch (err) {
+    // 磁盘不够：金字塔建不了，但用户的图已经改好了 —— 记下原因，不抛
+    return {
+      built: false,
+      ovrPath: null,
+      error: (err as Error).message,
+      estimatedBytes,
+    };
+  }
+
+  try {
+    const res = await ensureOverviews(loc, absPath, { thresholdBytes: threshold });
+    if (!res.built) {
+      // gdaladdo 退出码 0 却没有产出 .ovr：GDAL 对太小的影像不生成概览
+      // （实测 512×512 起才有；256×256 会"成功"但什么也不产出）。
+      // 这不是错误，但要说清楚，否则界面会一直等一个永远不来的金字塔。
+      return {
+        built: false,
+        ovrPath: null,
+        note: 'gdaladdo 执行成功但没有产出 .ovr（影像太小，GDAL 不为它生成概览）',
+        estimatedBytes,
+      };
+    }
+    return { built: true, ovrPath: res.ovrPath, estimatedBytes };
+  } catch (err) {
+    return {
+      built: false,
+      ovrPath: null,
+      error: (err as Error).message,
+      estimatedBytes,
+    };
+  }
 }
 
 /**
@@ -318,12 +452,32 @@ export class RasterEditor {
   readonly #maxWindowBytes: number;
   /** 写回时磁盘至少要剩下的可用字节数 */
   readonly #minFreeBytes: number;
+  /** 建金字塔的阈值：超过这个大小才值得建 */
+  readonly #overviewThresholdBytes: number;
+  /** 建金字塔时磁盘至少要剩下的可用字节数 */
+  readonly #overviewMinFreeBytes: number;
 
   constructor(deps: RasterDeps) {
     this.#loc = deps.loc;
     this.#store = deps.store;
     this.#maxWindowBytes = deps.maxWindowBytes ?? 256 * 1024 * 1024;
     this.#minFreeBytes = deps.minFreeBytes ?? DEFAULT_MIN_FREE_BYTES;
+    this.#overviewThresholdBytes = deps.overviewThresholdBytes ?? DEFAULT_OVERVIEW_THRESHOLD_BYTES;
+    this.#overviewMinFreeBytes = deps.overviewMinFreeBytes ?? this.#minFreeBytes;
+  }
+
+  /**
+   * 写回之后的金字塔处理。
+   *
+   * 为什么放在写回之后：金字塔是**给新内容用的**，改之前的缩略图对新内容没有意义。
+   * 为什么失败不抛：用户的图已经改好了，不能因为金字塔没建起来把整次操作判成失败；
+   * 但原因要留在结果里（outcome.error），不能静默吞掉。
+   */
+  async #ensureOverviews(absPath: string): Promise<OverviewOutcome> {
+    return ensureRasterOverviews(this.#loc, absPath, {
+      thresholdBytes: this.#overviewThresholdBytes,
+      minFreeBytes: this.#overviewMinFreeBytes,
+    });
   }
 
   #abs(rel: string): string {
@@ -526,6 +680,8 @@ export class RasterEditor {
     );
     // 回读校验读的是**落地的那个文件**：另存为时是新文件，不是原文件
     const after = await this.#read(dest);
+    // 写回成功之后建金字塔：大影像没有金字塔，缩放显示会卡到不可用
+    const overview = await this.#ensureOverviews(this.#abs(dest));
 
     return {
       op,
@@ -544,6 +700,7 @@ export class RasterEditor {
       width: after.width,
       height: after.height,
       bandCount: after.bandCount,
+      overview,
     };
   }
 
@@ -676,6 +833,8 @@ export class RasterEditor {
       // 回读校验只读窗口：窗口外的像素不逐字节比对（那要读整个文件）
       // 另存为时校验的是**新文件**（原地替换时校验的是原文件）
       const verified = await this.#verifyWindow(dest, win, newBands, frame);
+      // 写回成功之后建金字塔（另存为时建在**新文件**旁边：那是现在装着新内容的文件）
+      const overview = await this.#ensureOverviews(this.#abs(dest));
 
       return {
         op,
@@ -692,6 +851,7 @@ export class RasterEditor {
         width: frame.width,
         height: frame.height,
         bandCount: meta.bandCount,
+        overview,
       };
     } finally {
       rmSync(winTmp, { force: true });
@@ -739,6 +899,8 @@ export class RasterEditor {
     await produce(temp);
     const { backupPath } = await replaceFileAtomically(this.#store, { target, tempPath: temp });
     const after = await this.#read(target);
+    // 写回成功之后建金字塔（GDAL 级改动同样换了内容，金字塔要跟着新内容走）
+    const overview = await this.#ensureOverviews(this.#abs(target));
     let affected = 0;
     const a = before.bands[0];
     const b = after.bands[0];
@@ -758,6 +920,7 @@ export class RasterEditor {
       width: after.width,
       height: after.height,
       bandCount: after.bandCount,
+      overview,
     };
   }
 

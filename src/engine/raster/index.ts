@@ -1,8 +1,8 @@
 /**
  * 栅格编辑内核的公开 API。
  */
-export { RasterEditor } from './ops.ts';
-export type { RasterOpResult, RasterDeps } from './ops.ts';
+export { RasterEditor, ensureRasterOverviews } from './ops.ts';
+export type { RasterOpResult, RasterDeps, OverviewOutcome } from './ops.ts';
 
 export {
   readRasterPixels,

@@ -36,6 +36,9 @@ import {
   normalizePlan,
   listImplementedOps,
   isLongitudeLatitude,
+  readRasterFrame,
+  hasOverviews,
+  ensureRasterOverviews,
   type OperationSpec,
   type PlanDocument,
   type PlanExecutionResult,
@@ -1075,6 +1078,120 @@ export function createEngineServer(): Server {
             ok: false,
             error: bad ? 'bad_request' : 'internal',
             message: scrub(message),
+          });
+        }
+      })();
+      return;
+    }
+
+    /* ───────── 大影像：帧信息与金字塔 ───────── */
+
+    /**
+     * 打开一张栅格：只**报告**状态，不建金字塔。
+     *
+     * 为什么这里不建：gdaladdo 对一张 3 GB 影像要跑几分钟到几十分钟，
+     * 挡在"打开"前面的话，用户连"这张图多大"都显示不出来 ——
+     * 而这正是这个端点存在的理由。建不建由调用方决定：
+     * 要建就走 /api/raster/overview（那是显式的"建"动作，可以慢、可以失败并报原因）。
+     *
+     * 路径口径与其它接口一致：`path` 必须是相对路径，落在已登记根之下；
+     * 绝对路径与 `..` 一律 400（resolveTarget 内部走 store.resolve）。
+     */
+    if (url.pathname === '/api/raster/frame' && req.method === 'POST') {
+      void (async () => {
+        try {
+          if (!gdalLoc) {
+            json(503, {
+              error: 'gdal_unavailable',
+              message: '未找到 GDAL 运行时，取不到栅格帧信息；请先运行 npm run doctor',
+            });
+            return;
+          }
+          const body = JSON.parse((await readBody(req)).toString('utf8') || '{}') as {
+            path?: string;
+            root?: string | null;
+          };
+          const target = resolveTarget(body.root ?? null, body.path ?? '');
+          const frame = await readRasterFrame(gdalLoc, target.absolute);
+          json(200, {
+            ok: true,
+            width: frame.width,
+            height: frame.height,
+            bandCount: frame.bandCount,
+            geotransform: frame.geotransform,
+            crs: frame.crs,
+            // 有没有现成的金字塔（前端要靠它决定要不要提示"要不要建"）
+            hasOverviews: await hasOverviews(target.absolute),
+          });
+        } catch (err) {
+          const bad = err instanceof PathEscapeError || err instanceof NotFoundError ? 400 : 500;
+          json(bad, {
+            ok: false,
+            error: bad === 400 ? 'bad_request' : 'internal',
+            message: scrub((err as Error).message),
+          });
+        }
+      })();
+      return;
+    }
+
+    /**
+     * 金字塔：按需建，并把"为什么没建"说清楚。
+     *
+     * 失败不静默：建不出来就回 500 并带上原因（磁盘不够 / GDAL 报错），
+     * 用户点"建金字塔"却什么都没发生、又没提示，是最坏的一种体验。
+     */
+    if (url.pathname === '/api/raster/overview' && req.method === 'POST') {
+      void (async () => {
+        try {
+          if (!gdalLoc) {
+            json(503, {
+              error: 'gdal_unavailable',
+              message: '未找到 GDAL 运行时，建不了金字塔；请先运行 npm run doctor',
+            });
+            return;
+          }
+          const body = JSON.parse((await readBody(req)).toString('utf8') || '{}') as {
+            path?: string;
+            root?: string | null;
+            /** 阈值可调：默认 200MB（小于它的图不值得建） */
+            thresholdBytes?: number;
+          };
+          const target = resolveTarget(body.root ?? null, body.path ?? '');
+          const threshold =
+            typeof body.thresholdBytes === 'number' && body.thresholdBytes > 0
+              ? body.thresholdBytes
+              : undefined;
+          const outcome = await ensureRasterOverviews(gdalLoc, target.absolute, {
+            ...(threshold !== undefined ? { thresholdBytes: threshold } : {}),
+          });
+          if (outcome.error) {
+            // 磁盘不够是**环境问题**（换个盘就好），其它是**这次操作失败** ——
+            // 两种要分开报：507 告诉调用方"重试也没用，先腾空间"。
+            // message 保留完整原因（ensureRasterOverviews 给的那段话已经写清楚了）。
+            const noSpace = /磁盘空间不足/.test(outcome.error);
+            json(noSpace ? 507 : 500, {
+              ok: false,
+              error: noSpace ? 'insufficient_storage' : 'internal',
+              message: scrub(outcome.error),
+              built: false,
+              ovrPath: null,
+            });
+            return;
+          }
+          json(200, {
+            ok: true,
+            built: outcome.built,
+            ovrPath: outcome.ovrPath,
+            ...(outcome.skippedReason ? { skippedReason: outcome.skippedReason } : {}),
+            ...(outcome.note ? { note: outcome.note } : {}),
+          });
+        } catch (err) {
+          const bad = err instanceof PathEscapeError || err instanceof NotFoundError ? 400 : 500;
+          json(bad, {
+            ok: false,
+            error: bad === 400 ? 'bad_request' : 'internal',
+            message: scrub((err as Error).message),
           });
         }
       })();
