@@ -81,12 +81,20 @@ test('build 参数类型不符时抛错', () => {
 
 test('必填参数的合法假值（false / 0）不算缺失', () => {
   const registry = new TemplateRegistry(builtinTemplates);
-  const plan = registry.build('erase-markup', {
-    target: 'dataset://a.tff',
-    region: 'layer://markup',
-    keepAnnotations: false,
-  });
-  assert.equal(plan.params.keepAnnotations, false);
+  // false 同样是合法值：用本地探针模板验证这一条。
+  // 内置模板里已经没有必填布尔参数了——引擎没实现的参数不该再进模板。
+  const probe = {
+    id: 'bool-probe',
+    title: '布尔探针',
+    description: '测试用：必填布尔参数',
+    op: 'raster.paint',
+    params: [{ name: 'flag', label: '开关', type: 'boolean', required: true }],
+    example: { flag: false },
+    build: (input) => ({ op: 'raster.paint', params: { flag: input.flag } }),
+  };
+  const probeRegistry = new TemplateRegistry([probe]);
+  const plan = probeRegistry.build('bool-probe', { flag: false });
+  assert.equal(plan.params.flag, false);
 
   // 0 同样是合法值：容差为 0 表示"不吸附"
   const plan2 = registry.build('repair-geometry', {

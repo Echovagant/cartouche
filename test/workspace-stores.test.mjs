@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { listenSafe } from './helpers/listen-safe.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const { MemoryStore } = await import(
@@ -56,7 +57,7 @@ test('MemoryStore：lock 标记会让 assertWritable 抛 OccupiedError', async (
  * 契约：引擎服务暴露一组 /api/fs/* 端点。
  * 这里起一个真实 HTTP 服务实现该契约，测的是客户端的真实行为。
  */
-function startContractServer() {
+async function startContractServer() {
   const files = new Map();
   const server = createServer((req, res) => {
     const url = new URL(req.url, 'http://localhost');
@@ -134,12 +135,9 @@ function startContractServer() {
     }
     return send(404, { error: 'not_found' });
   });
-  return new Promise((resolve) => {
-    server.listen(0, '127.0.0.1', () => {
-      const { port } = server.address();
-      resolve({ server, base: `http://127.0.0.1:${port}` });
-    });
-  });
+  // 端口避开 Node fetch 拒绝的清单（见 test/helpers/listen-safe.mjs）
+  const port = await listenSafe(server);
+  return { server, base: `http://127.0.0.1:${port}` };
 }
 
 test('HttpProjectStore：写入后可读回（走真实 HTTP）', async () => {

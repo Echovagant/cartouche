@@ -95,6 +95,29 @@ export async function readRasterPixels(
     throw new Error(`栅格尺寸异常：${absPath}`);
   }
 
+  // 16 位（及更高位深）影像：**明确拒绝**，不许无声压成 8 位。
+  //
+  // 为什么不能压：`-ot Byte` 会把 0–65535 的值**饱和**到 0–255，
+  // 高位数据整段丢失（暗部发灰、亮部糊成一片），
+  // 而文件照样"改成功"——用户拿到的是一张被毁掉的图，却看不出任何异常。
+  //
+  // 为什么不自己实现 16 位：读 16 位要按波段分块读（整文件读进内存会被大影像撑爆），
+  // 这套内核还没上线。在它上线之前，**说清楚**比"悄悄做错"强得多。
+  const bandTypes = (info.bands ?? []).map((b) =>
+    String((b as { type?: unknown }).type ?? '').trim(),
+  );
+  const nonByte = bandTypes.find((t) => t !== '' && t !== 'Byte');
+  if (nonByte) {
+    throw new Error(
+      `这个栅格是 ${bandTypes.join(' / ')} 类型的（不是 8 位 Byte）：` +
+        `当前内核只支持 8 位影像，继续读会把像元值饱和到 0–255，` +
+        `高位数据整段丢失（暗部发灰、亮部糊成一片），而文件看起来还是"改成功了"——` +
+        `这种损坏比直接报错更难发现，所以这里明确拒绝。` +
+        `16 位读写的内核还没上线；在那之前请先转成 8 位（Byte）再用：` +
+        `gdal_translate -of GTiff -ot Byte <源文件> <目标文件>`,
+    );
+  }
+
   const tmp = mkdtempSync(join(tmpdir(), 'cartouche-raw-'));
   const bin = join(tmp, 'raw.bin');
   const tr = await gdal.translate(['-of', 'ENVI', '-ot', 'Byte', absPath, bin]);

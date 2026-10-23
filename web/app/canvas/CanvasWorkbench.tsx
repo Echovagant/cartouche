@@ -770,7 +770,7 @@ export default function CanvasWorkbench() {
       <EditToolbar
         tool={editTools.tool}
         onToolChange={editTools.setTool}
-        blocked={editTools.blocked}
+        blockedByTool={editTools.blockedByTool}
         color={editColor}
         onColorChange={setEditColor}
         brushWidth={brushWidth}

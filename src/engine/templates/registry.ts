@@ -338,14 +338,14 @@ export const builtinTemplates: readonly OperationTemplate[] = [
   template(
     'clip-by-layer',
     '按图层裁切栅格',
-    '用某个图层的范围裁切影像或批量裁切',
+    '用某个图层的范围裁切影像（一次一幅）',
     'raster.clip',
     [
-      { name: 'inputs', label: '待裁切影像', type: 'string', required: true, description: '单个引用或通配路径，如 batch/*.tif' },
+      { name: 'target', label: '待裁切影像', type: 'pathRef', required: true, description: '要裁的那一幅影像，如 dataset://scan.tff' },
       { name: 'clip', label: '裁切范围', type: 'pathRef', required: true },
-      { name: 'mode', label: '保留范围', type: 'string', required: false, options: ['inside', 'outside'] },
     ],
-    { inputs: 'dataset://scan.tff', clip: 'dataset://frame.shp', mode: 'inside' },
+    // 引擎一次只裁一幅：inputs 通配路径、mode、naming 引擎都不读，不进契约。
+    { target: 'dataset://scan.tff', clip: 'dataset://frame.shp' },
   ),
   template(
     'replace-region',
@@ -387,10 +387,10 @@ export const builtinTemplates: readonly OperationTemplate[] = [
         required: true,
         description: '像元坐标 {minX,minY,maxX,maxY} 或地理范围 [minX,minY,maxX,maxY]；不要写 layer:// 引用',
       },
-      { name: 'fill', label: '填充方式', type: 'string', required: false, options: ['underlying', 'transparent', 'color'] },
-      { name: 'keepAnnotations', label: '保留其它标注', type: 'boolean', required: true, description: '是否保留范围内的其它标注' },
     ],
-    { target: 'dataset://scan.tff', region: [120.3, 30.52, 120.31, 30.53], fill: 'underlying', keepAnnotations: false },
+    // 引擎只读 target / region / source：不给 source 就是边界内插近似，
+    // 没有「填充方式」「保留其它标注」这些参数——它们从来没被引擎实现过。
+    { target: 'dataset://scan.tff', region: [120.3, 30.52, 120.31, 30.53] },
   ),
   template(
     'summarize-by-field',
@@ -432,11 +432,11 @@ export const builtinTemplates: readonly OperationTemplate[] = [
       LAYER(),
       { name: 'format', label: '格式', type: 'string', required: true, options: ['png', 'jpeg', 'pdf', 'tif'] },
       {
-        name: 'region',
+        name: 'bbox',
         label: '导出范围',
-        type: 'region',
+        type: 'bbox',
         required: false,
-        description: '像元坐标 {minX,minY,maxX,maxY} 或地理范围 [minX,minY,maxX,maxY]；不要写 layer:// 引用',
+        description: '地理范围 [minX,minY,maxX,maxY]（EPSG:4326）；不给就出整幅',
       },
       { name: 'dpi', label: '分辨率', type: 'number', required: false },
     ],

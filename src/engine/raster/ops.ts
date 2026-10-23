@@ -17,10 +17,16 @@ import type { GdalLocation } from '../gdal/env.ts';
 import { replaceFileAtomically } from '../gdal/writeback.ts';
 import type { WorkspaceAdapter } from '../workspace/index.ts';
 import { readRasterPixels, writeRasterPixels, checksumOf, type RasterPixels } from './raw.ts';
+import { queryRasterPixels, type PixelPoint, type PixelQueryResult } from './pixel-query.ts';
 import {
   buildAlphaMask,
+  describeRegion,
   geoToPixelRegion,
   maskAlphaAtRegion,
+  maskHitsRegion,
+  regionHitsRaster,
+  regionOffRasterMessage,
+  zeroImpactMessage,
   type GeoBounds,
   type PixelMask,
   type PixelRegion,
@@ -106,6 +112,16 @@ interface MosaicRequest {
   readonly overlap?: 'first' | 'last' | 'blend';
 }
 
+/** 经纬度 → 原生像元的换算请求（相对 store 的路径） */
+export interface PixelQueryOpRequest {
+  /** 目标栅格（相对 store 根） */
+  readonly target: string;
+  /** 待换算的点：[经度, 纬度]（EPSG:4326，经度在前） */
+  readonly points: readonly (readonly [number, number])[];
+  /** 允许点落在影像范围之外（默认不允许） */
+  readonly allowOutside?: boolean;
+}
+
 function parseColor(color: string | readonly number[]): [number, number, number] | 'sample-from-edge' {
   if (typeof color === 'string') {
     if (color === 'sample-from-edge') return 'sample-from-edge';
@@ -171,25 +187,32 @@ export class RasterEditor {
     op: string,
     target: string,
     mutate: (px: RasterPixels) => Uint8Array[],
-    options?: { readonly dryRun?: boolean },
+    options?: { readonly dryRun?: boolean; readonly region?: PixelRegion },
   ): Promise<RasterOpResult> {
     const before = await this.#read(target);
     this.#assertWritebackSafe(target, before.driver);
+    // 区域整个落在影像之外 → 逐像元的循环一个都不执行。
+    // 与其让它变成「改了 0 像元还报成功」，不如在这里明确报错。
+    if (options?.region && !regionHitsRaster(options.region, before.width, before.height)) {
+      throw new Error(regionOffRasterMessage(options.region, before.width, before.height));
+    }
     const newBands = mutate(before);
+
+    // 受影响像元数**先算出来再决定写不写**：
+    // 一个像元都没变还报成功，是最严重的一类缺陷 —— 用户以为改了，文件其实没动。
+    // 预演与执行走的是同一段代码，所以两边的结论必然一致。
+    const changed = countChangedPixels(before.bands[0], newBands[0]);
+    if (changed === 0) {
+      throw new Error(zeroImpactMessage(before.width, before.height, options?.region));
+    }
 
     // 预演：算到这里就够了，像元数是**精确值**（不是估算），
     // 但不写盘、不备份、不替换 —— 确认卡要在用户点头之前什么都别动。
     if (options?.dryRun) {
-      let affected = 0;
-      const a = before.bands[0];
-      const b = newBands[0];
-      if (a && b) {
-        for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) affected++;
-      }
       return {
         op,
         target: this.#abs(target),
-        affectedPixels: affected,
+        affectedPixels: changed,
         totalPixels: before.width * before.height,
         checksumBefore: before.checksum,
         checksumAfter: checksumOf(newBands),
@@ -308,7 +331,11 @@ export class RasterEditor {
       'raster.replaceRegion',
       req.target,
       (px) => blendBands(px.bands, source.bands, alpha, px.bandCount),
-      options,
+      {
+        ...(options?.dryRun !== undefined ? { dryRun: options.dryRun } : {}),
+        // region 与 bbox 两条路最后都是像元区域，都要在写盘前跟影像对一下
+        region,
+      },
     );
   }
 
@@ -319,7 +346,10 @@ export class RasterEditor {
       'raster.inpaint',
       req.target,
       (px) => inpaintRegion(px.bands, px.width, px.height, px.bandCount, req.region, iterations),
-      options,
+      {
+        ...(options?.dryRun !== undefined ? { dryRun: options.dryRun } : {}),
+        region: req.region,
+      },
     );
   }
 
@@ -340,6 +370,14 @@ export class RasterEditor {
   async paint(req: PaintRequest, options?: { readonly dryRun?: boolean }): Promise<RasterOpResult> {
     const parsed = parseColor(req.color);
     return this.#applyPixels('raster.paint', req.target, (px) => {
+      // 掩膜在区域里一个像元都没覆盖 → 这次不会改到任何东西。
+      // 与其等它报「改了 0 像元」，不如把原因说清楚。
+      if (req.mask && !maskHitsRegion(req.mask, req.region)) {
+        throw new Error(
+          `掩膜在区域内没有覆盖到任何像元（区域 ${describeRegion(req.region)}）：` +
+            `这次不会改到任何像元`,
+        );
+      }
       let rgb: [number, number, number];
       if (parsed === 'sample-from-edge') {
         rgb = sampleEdgeColor(px, req.region) ?? [0, 0, 0];
@@ -365,7 +403,10 @@ export class RasterEditor {
         }
         return out;
       });
-    }, options);
+    }, {
+      ...(options?.dryRun !== undefined ? { dryRun: options.dryRun } : {}),
+      region: req.region,
+    });
   }
 
   /** 裁切（按地理范围或矢量范围） */
@@ -397,6 +438,24 @@ export class RasterEditor {
         this.#abs(req.target), temp,
       ]);
       if (!res.ok) throw new Error(`重采样失败：${res.stderr}`);
+    });
+  }
+
+  /**
+   * 经纬度 → 原生像元（只读，不碰文件）。
+   *
+   * 为什么不放在服务层：坐标换算要 GDAL 的仿射参数与 PROJ 的投影，
+   * 那是引擎的活；放到服务层就会出现两份换算代码（前端一份、服务端一份），
+   * 两份迟早走样。
+   *
+   * 4326 的栅格与投影坐标系的栅格走**同一条**路（引擎内部决定要不要做投影），
+   * 调用方不必自己判断"这张图是不是经纬度"。
+   */
+  async queryPixels(req: PixelQueryOpRequest): Promise<PixelQueryResult> {
+    return queryRasterPixels(this.#loc, {
+      path: this.#abs(req.target),
+      points: req.points,
+      ...(req.allowOutside !== undefined ? { allowOutside: req.allowOutside } : {}),
     });
   }
 
@@ -438,6 +497,14 @@ function sameGeotransform(a: number[] | null, b: number[] | null): boolean {
     if (Math.abs(a[i]! - b[i]!) > 1e-9) return false;
   }
   return true;
+}
+
+/** 前后两个波段里有几个像元不一样（第一波段为准 —— 报告里的影响像元数） */
+function countChangedPixels(before: Uint8Array | undefined, after: Uint8Array | undefined): number {
+  if (!before || !after) return 0;
+  let changed = 0;
+  for (let i = 0; i < before.length; i++) if (before[i] !== after[i]) changed++;
+  return changed;
 }
 
 /** 从区域外沿取一个像元的颜色 */

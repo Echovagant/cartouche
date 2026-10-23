@@ -23,6 +23,24 @@ async function existsViaAccess(fullPath: string): Promise<boolean> {
   }
 }
 
+/**
+ * 绝对路径是否落在根之下。
+ *
+ * 写成模块级函数（不是类的私有方法）：测试里常用 `Object.create(store)`
+ * 造一个只改一两个方法的替身，**真私有字段（#xxx）不会被原型继承** ——
+ * 放在类里会让那些替身一调用就炸。
+ *
+ * Windows 上文件系统不区分大小写，所以比较时折叠大小写。
+ */
+function insideRoot(root: string, candidate: string): boolean {
+  if (candidate === root) return true;
+  const prefix = root.endsWith(sep) ? root : root + sep;
+  if (process.platform === 'win32') {
+    return candidate.toLowerCase().startsWith(prefix.toLowerCase());
+  }
+  return candidate.startsWith(prefix);
+}
+
 export class LocalFolderStore implements WorkspaceAdapter {
   readonly kind = 'local-folder';
   readonly root: string;
@@ -32,11 +50,15 @@ export class LocalFolderStore implements WorkspaceAdapter {
   }
 
   resolve(path: string): string {
-    if (isAbsolute(path)) return normalize(path);
-    const full = resolve(join(this.root, path));
-    // 防止 ../ 逃出根目录
-    if (full !== this.root && !full.startsWith(this.root + sep)) {
-      throw new PathEscapeError(path);
+    // 绝对路径**也要**做根内判定：是绝对路径不代表它在工作区里。
+    // 2026-10-23 实测的洞：这里原来直接放行，`C:/Windows/System32/...`
+    // 能被当成工作区里的文件读写 —— 引擎的所有闸门都被绕过去了。
+    const full = isAbsolute(path) ? normalize(path) : resolve(join(this.root, path));
+    // 防止 ../ 逃出根目录，也挡住工作区之外的绝对路径
+    if (!insideRoot(this.root, full)) {
+      const err = new PathEscapeError(path);
+      err.message = `路径越界：${path}（不在已登记的工作区根之下：${this.root}）`;
+      throw err;
     }
     return full;
   }
