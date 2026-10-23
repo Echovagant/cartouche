@@ -23,12 +23,15 @@ import { CanvasBoot, ExportDevelop, LayerArrival, SelectionShutter } from './Can
 import ConfirmCard, { type ExecOutcome } from './ConfirmCard';
 import EditToolbar from './EditToolbar';
 import LayerPanel from './LayerPanel';
+import LayoutPanel, { type LayoutPreviewInput } from './LayoutPanel';
 import MapCanvas, { type MapCanvasHandle } from './MapCanvas';
 import ProjectPicker from './ProjectPicker';
 import Toolbar from './Toolbar';
 import { MarkdownView } from './markdown';
 import { ThemeToggle } from './ThemeToggle';
 import { ActionButton, TextField } from './ui';
+import { setActiveSheetState, metersPerPixelAt } from './sheet';
+import { DEFAULT_LAYOUT, type SheetLayout, type SheetLegendItem } from './layout/types';
 import { useEditTools } from './useEditTools';
 import { useEngine, type CompatReportPayload } from './useEngine';
 import { useProjects } from './useProjects';
@@ -137,6 +140,64 @@ export default function CanvasWorkbench() {
   const [title, setTitle] = useState('图签 Cartouche 出图');
   const [operator, setOperator] = useState('');
   const [producedAt, setProducedAt] = useState(formatNow());
+
+  /**
+   * 出图版式（图幅 / 图廓 / 格网 / 图例 / 比例尺 / 标题栏）。
+   *
+   * 与画布侧的关系：画布只认 `drawSheet(ctx, options)` 这一个入口，
+   * 所以版式挂在绘制模块的当前状态上，画布每次重画都会读到最新的一份。
+   */
+  const [layout, setLayout] = useState<SheetLayout>(DEFAULT_LAYOUT);
+  /** 排版面板里的错误（模板读不出来、参数不合法……） */
+  const [layoutError, setLayoutError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setActiveSheetState({
+      layout,
+      // 视野给的是提供器：地图一直在动，格网要按当下的范围画
+      viewport: () => mapHandleRef.current?.getViewport() ?? null,
+    });
+  }, [layout]);
+
+  /**
+   * 图面要素的元信息。
+   *
+   * 对象身份变了，MapCanvas 里依赖 sheetMeta 的 effect 就会重画覆盖层 ——
+   * 改完版式，画布上的图面要素才会立刻跟着变。
+   */
+  const sheetMeta = useMemo(
+    () => ({ title, operator, producedAt }),
+    // layout 参与依赖：版式一改就换一个对象，借这个重画触发点刷新画布
+    [title, operator, producedAt, layout],
+  );
+
+  /** 预览用的出图参数：按当下的视野取，格网才对得上 */
+  const getLayoutPreview = useCallback((): LayoutPreviewInput | null => {
+    const viewport = mapHandleRef.current?.getViewport();
+    const view = mapHandleRef.current?.getView();
+    if (!viewport || !view) return null;
+    const [west, south, east, north] = viewport.bbox;
+    const metersPerPixel = metersPerPixelAt(view.zoom, view.center[1]);
+    return {
+      metersPerPixel,
+      extent: { minX: west!, minY: south!, maxX: east!, maxY: north! },
+      title,
+      operator,
+      producedAt,
+    };
+  }, [title, operator, producedAt]);
+
+  /** 按图层生成的图例条目（与画布侧自动生成的图例同色） */
+  const suggestedLegend = useMemo<readonly SheetLegendItem[]>(
+    () =>
+      layers
+        .filter((layer) => layer.visible)
+        .map((layer) => ({
+          name: layer.name,
+          color: layer.kind === 'raster' ? '#b08d57' : '#2f6f5e',
+        })),
+    [layers],
+  );
 
   /**
    * 栅格显示的拉伸档位。
@@ -854,7 +915,7 @@ export default function CanvasWorkbench() {
               buildRasterUrl={engine.rasterUrl}
               layers={layers}
               engineError={engineError}
-              sheetMeta={{ title, operator, producedAt }}
+              sheetMeta={sheetMeta}
               selectedFeatures={selected}
               vectorData={vectorData}
               extents={extents}
@@ -881,6 +942,19 @@ export default function CanvasWorkbench() {
           ref={rightRef}
           className="w-[320px] shrink-0 overflow-y-auto border-l border-studio-line bg-studio-2/70"
         >
+          <LayoutPanel
+            layout={layout}
+            onChange={setLayout}
+            projectRoot={projectPath}
+            getPreview={getLayoutPreview}
+            suggestedLegend={suggestedLegend}
+            onError={setLayoutError}
+          />
+          {layoutError ? (
+            <div className="mx-4 mb-4 rounded-lg border border-warn/35 bg-warn/10 px-3 py-2 text-[12px] leading-relaxed text-warn">
+              {layoutError}
+            </div>
+          ) : null}
           <AttributeTable
             features={selected}
             activeIndex={selectedIndex}
