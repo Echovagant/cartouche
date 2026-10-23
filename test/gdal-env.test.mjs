@@ -2,7 +2,6 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
 import { join, dirname, relative, delimiter } from 'node:path';
-import { tmpdir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -28,9 +27,21 @@ const { resolveGdalBin, resolveToolPath } = await import(pathToFileURL(join(root
  * 那是测试输入不真实，不是实现的问题（Linux 上根本没有盘符）。
  */
 
+/**
+ * 测试用的临时目录建在**仓库根之下**，不用系统 tmpdir。
+ *
+ * 为什么不能用系统 tmpdir：这个测试要把路径换成「不含冒号的相对路径」（POSIX 形状），
+ * 而 `relative(cwd, dir)` 只有在两者**同盘**时才给得出相对路径 ——
+ * 仓库在 D:、系统临时目录在 C: 时，它返回的是带盘符的绝对路径，断言必挂
+ * （2026-10-23 实测：D: 上的 worktree 跑这条挂 10 个用例）。
+ * 建在仓库根之下，任何盘上都成立。
+ */
+const TMP_BASE = join(root, '.tmp-test');
+
 const temps = [];
 function tempDir(prefix = 'cartouche-gdal-') {
-  const dir = mkdtempSync(join(tmpdir(), prefix));
+  mkdirSync(TMP_BASE, { recursive: true });
+  const dir = mkdtempSync(join(TMP_BASE, prefix));
   temps.push(dir);
   return dir;
 }
@@ -38,6 +49,7 @@ process.on('exit', () => {
   for (const dir of temps) {
     try { rmSync(dir, { recursive: true, force: true }); } catch { /* 清理失败不影响断言结果 */ }
   }
+  try { rmSync(TMP_BASE, { recursive: true, force: true }); } catch { /* 目录非空就算了 */ }
 });
 
 /** 造一个假的 Linux GDAL bin 目录：gdalinfo / gdal_translate 都不带 .exe */
