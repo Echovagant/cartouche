@@ -17,6 +17,7 @@ import { evaluate, parseExpression, toSql, type ExprNode } from '../expression/i
 import { matchesWhere, probeLayer, readFeatures, referencedFields } from './read.ts';
 import { writeFeatures } from './write.ts';
 import { toRelPathChecked } from './paths.ts';
+import { findWrittenField } from './field-names.ts';
 import { VectorError, type FeatureRecord } from './types.ts';
 import type { VectorOpDeps } from './query.ts';
 
@@ -36,26 +37,6 @@ function writableValue(value: unknown): string | number | boolean | null {
   }
   if (typeof value === 'string' || typeof value === 'boolean') return value;
   throw new VectorError(`算出来的值写不进属性表：${JSON.stringify(value)}`);
-}
-
-/**
- * 在写好的文件里找到这一列。
- *
- * Shapefile 的列名会被截断（超过 10 个字符的部分没了），也可能改了大小写。
- * 找不到就当写坏了 —— 这一列不存在，用户后面按它查就是查不到。
- */
-function findWrittenField(
-  written: readonly string[],
-  requested: string,
-): string | null {
-  const exact = written.find((n) => n === requested);
-  if (exact) return exact;
-  const lower = written.find((n) => n.toLowerCase() === requested.toLowerCase());
-  if (lower) return lower;
-  // 截断：写进去的是请求名的前缀
-  const prefix = written.find((n) => requested.toLowerCase().startsWith(n.toLowerCase()) && n !== '');
-  if (prefix) return prefix;
-  return null;
 }
 
 /**
@@ -222,7 +203,12 @@ export async function runVectorAddField(
   };
 }
 
-/** 两个值算不算一样（数字按数值比，其余按字符串比）。 */
+/**
+ * 两个值算不算一样（数字按数值比，其余按字符串比）。
+ *
+ * ⚠️ 这里**不**用 field-names.ts 里的 valuesMatch：那个函数把"整数列四舍五入"
+ * 也当成相等，而本函数要把这种情况单独统计出来报给用户。
+ */
 function sameValue(a: unknown, b: unknown): boolean {
   if (a === null || a === undefined) return b === null || b === undefined || b === '';
   if (b === null || b === undefined) return false;
