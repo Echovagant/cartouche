@@ -25,7 +25,19 @@ export {
 export { runVectorQuery } from './query.ts';
 export { runVectorAddField } from './field.ts';
 export { runVectorSpatialJoin } from './spatial-join.ts';
+export { runVectorReproject } from './reproject.ts';
+export { runVectorRenameFields } from './rename-fields.ts';
+export { runVectorRecode } from './recode.ts';
 export type { VectorOpDeps } from './query.ts';
+
+export {
+  SUPPORTED_ENCODINGS,
+  detectEncoding,
+  normalizeEncoding,
+} from './encoding.ts';
+export type { SupportedEncoding } from './encoding.ts';
+
+export { findWrittenField, assertValidFieldName } from './field-names.ts';
 
 export { toRelPath, toRelPathChecked, makeTempDir, timestamp } from './paths.ts';
 
