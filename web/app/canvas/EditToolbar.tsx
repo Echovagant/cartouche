@@ -21,13 +21,21 @@ import {
   SlidersIcon,
 } from '@phosphor-icons/react';
 import type { EditTool, LevelsParams } from './types';
+import { isToolDisabled, type ToolBlockedReasons } from './editAvailability';
 import { ActionButton } from './ui';
 
 export interface EditToolbarProps {
   readonly tool: EditTool;
   readonly onToolChange: (tool: EditTool) => void;
-  /** 工具不可用的原因（null = 可用） */
-  readonly blocked: string | null;
+  /**
+   * 每个工具各自的不可用原因（null = 可用）。
+   *
+   * 按工具分开，是因为四个工具的限制**不一样**：
+   * 画笔/框选要把屏幕坐标换算成栅格的原生像元（换算由引擎做，
+   * 投影坐标系的底图照样能画，只有压根没有坐标系才不行），
+   * 调色不需要（引擎侧整幅逐像元算），查看永远可用。
+   */
+  readonly blockedByTool: ToolBlockedReasons;
   /** 涂色颜色 */
   readonly color: string;
   readonly onColorChange: (color: string) => void;
@@ -76,7 +84,7 @@ const METHOD_LABEL: Record<LevelsParams['method'], string> = {
 export default function EditToolbar({
   tool,
   onToolChange,
-  blocked,
+  blockedByTool,
   color,
   onColorChange,
   brushWidth,
@@ -92,15 +100,17 @@ export default function EditToolbar({
     <div className="flex flex-wrap items-center gap-2 border-b border-studio-line bg-studio-2/40 px-4 py-2">
       {TOOLS.map(({ id, label, title, Icon }) => {
         const active = tool === id;
-        // 只有「查看」在任何时候都能用：没有栅格时也要能回到浏览模式
-        const disabled = !active && blocked !== null;
+        // 每个工具按**自己**的原因置灰：
+        // 以前这里看的是一个全局字符串，栅格不是 4326 时连「调色」都被一起禁用了
+        const reason = blockedByTool[id];
+        const disabled = isToolDisabled(blockedByTool, id, tool);
         return (
           <ActionButton
             key={id}
             variant={active ? 'primary' : 'ghost'}
             onClick={() => onToolChange(id)}
             disabled={disabled}
-            title={disabled ? (blocked ?? '') : title}
+            title={disabled ? (reason ?? '') : title}
             className="!px-2.5 !py-1.5"
           >
             <Icon size={15} weight="bold" />
@@ -238,8 +248,8 @@ export default function EditToolbar({
         </>
       ) : null}
 
-      {blocked ? (
-        <span className="ml-auto text-[11.5px] text-warn">{blocked}</span>
+      {blockedByTool[tool] ? (
+        <span className="ml-auto text-[11.5px] text-warn">{blockedByTool[tool]}</span>
       ) : (
         <span className="ml-auto text-[11.5px] text-studio-ink-3">改动会先经过确认卡，不会直接落盘</span>
       )}

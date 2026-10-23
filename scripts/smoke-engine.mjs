@@ -13,6 +13,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { existsSync } from 'node:fs';
 import { copyFile, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { listenSafe } from '../test/helpers/listen-safe.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -34,9 +35,8 @@ const BOLD = '\x1b[1m';
 const RESET = '\x1b[0m';
 
 const server = createEngineServer();
-await new Promise((r) => server.listen(0, '127.0.0.1', r));
-const addr = server.address();
-const BASE = `http://127.0.0.1:${addr.port}`;
+const port = await listenSafe(server);
+const BASE = `http://127.0.0.1:${port}`;
 
 let failed = false;
 const check = (name, ok, detail) => {

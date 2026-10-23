@@ -90,6 +90,72 @@ export function isInside(region: PixelRegion, x: number, y: number): boolean {
 }
 
 /**
+ * 区域是否与影像（width×height）有交集。
+ *
+ * 像元坐标从 (0,0) 起算，所以区域必须与 [0,width)×[0,height) 有重叠。
+ * 区域整个落在影像之外时，逐像元的循环一个都不会执行 ——
+ * 结果就是「改了 0 个像元，却报成功」。
+ */
+export function regionHitsRaster(region: PixelRegion, width: number, height: number): boolean {
+  return region.minX < width && region.maxX > 0 && region.minY < height && region.maxY > 0;
+}
+
+/** 区域的可读描述：minX=100..maxX=110，minY=100..maxY=110 */
+export function describeRegion(region: PixelRegion): string {
+  return `minX=${region.minX}..maxX=${region.maxX}，minY=${region.minY}..maxY=${region.maxY}`;
+}
+
+/**
+ * 「区域没有落到影像上」的报错文案。
+ *
+ * 栅格层（raster/ops.ts）与调度层（ops/executor.ts）共用这一份 ——
+ * 两处各写各的，同一件事就会给出两种说法，测出来的「一致」是假的。
+ */
+export function regionOffRasterMessage(
+  region: PixelRegion,
+  width: number,
+  height: number,
+): string {
+  return (
+    `区域没有落到影像上（影像 ${width}×${height}，区域 ${describeRegion(region)}）：` +
+    `一个像元都落不进这张图，改了等于没改`
+  );
+}
+
+/** 「一个像元都没改到」的报错文案 */
+export function zeroImpactMessage(
+  width: number,
+  height: number,
+  region?: PixelRegion,
+): string {
+  const where = region ? `，区域 ${describeRegion(region)}` : '';
+  return (
+    `这次改动一个像元都没改到（影像 ${width}×${height}${where}）：` +
+    `没有任何像素发生变化，已中止，未做任何改动`
+  );
+}
+
+/**
+ * 掩膜在区域内是否覆盖到至少一个像元。
+ *
+ * 掩膜坐标**相对 region 左上角**（见 PixelMask 的说明），
+ * 所以掩膜 (mx,my) 对应的是绝对像元 (region.minX+mx, region.minY+my)；
+ * 落在 region 之外的部分不算覆盖。
+ */
+export function maskHitsRegion(mask: PixelMask, region: PixelRegion): boolean {
+  for (let my = 0; my < mask.height; my++) {
+    const y = region.minY + my;
+    if (y < region.minY || y >= region.maxY) continue;
+    for (let mx = 0; mx < mask.width; mx++) {
+      const x = region.minX + mx;
+      if (x < region.minX || x >= region.maxX) continue;
+      if ((mask.alpha[my * mask.width + mx] ?? 0) > 0) return true;
+    }
+  }
+  return false;
+}
+
+/**
  * 构造 alpha 掩膜。
  * @param featherPx 羽化宽度（像素）；0 表示硬边
  */

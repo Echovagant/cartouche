@@ -48,7 +48,7 @@ import type {
  * 空底图样式。
  *
  * 不引任何在线底图：本工具是**离线**的，地图数据来自用户自己的工作区；
- * 引在线瓦片服务会让"数据不出本机"这条底线破掉，也让离线环境直接白屏。
+ * 引在线瓦片服务会让"图件不出本机"这条底线破掉，也让离线环境直接白屏。
  *
  * 类型从 MapOptions 里取：maplibre-gl 6.x 不再导出 StyleSpecification
  * （它下沉到 @maplibre/maplibre-gl-style-spec 包），从 map 的入参反推更稳，

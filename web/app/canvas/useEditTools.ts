@@ -9,18 +9,27 @@
  * 屏幕上的笔迹、发给引擎的像元矩形、确认卡上写的目标文件，
  * 三者一旦各存一份，出现"看着画在 A、实际改在 B"这类 bug 时极难定位。
  *
- * 换算规则见 editGeometry.ts：屏幕点 → 经纬度 → 目标栅格的原生像元。
+ * 坐标换算的分工（2026-10-23 改）：
+ *   屏幕点（像素） → 经纬度 → **引擎换算** → 原生像元 → 像元矩形/遮罩。
+ *   中间那一步必须由引擎做：浏览器里没有投影能力，
+ *   而 CGCS2000 3 度带这类底图的原生坐标是**米**，
+ *   拿经纬度去按 geotransform 反算（度当米用）会画到天边去，
+ *   而且"看着像画过一笔"，用户根本发现不了。
+ *   所以前端只负责发经纬度、收像元，不自己反算。
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { computeBlockedReasons, type ToolBlockedReasons } from './editAvailability';
 import {
   encodeBase64,
   isWgs84Grid,
-  pixelFromLngLat,
+  nativeScaleFromCorners,
   rasterizeStroke,
   regionFromPoints,
+  viewportCorners,
   type PixelPoint,
 } from './editGeometry';
+import { ENGINE_BASE } from './useEngine';
 import type {
   BrushMask,
   EditGesture,
@@ -46,6 +55,43 @@ export type BuildResult =
   | { readonly ok: true; readonly op: EditOp }
   | { readonly ok: false; readonly message: string };
 
+/**
+ * 一次换算（经纬度 → 原生像元）的结果。
+ *
+ * `key` 是请求点的签名：只有签名与当前笔迹/框完全一致，
+ * 缓存里的像元坐标才作数（换算在途时用户可能又画了一笔）。
+ */
+interface Conversion {
+  readonly key: string;
+  readonly status: 'pending' | 'ready' | 'error';
+  /** 视窗四角的像元坐标（笔宽换算用） */
+  readonly cornerPixels: readonly PixelPoint[];
+  /** 笔迹/框的点的像元坐标 */
+  readonly pointPixels: readonly PixelPoint[];
+  readonly error: string | null;
+}
+
+/** 换算请求：视窗四角（可空）+ 笔迹/框的点 */
+interface ConversionRequest {
+  readonly key: string;
+  readonly corners: readonly (readonly [number, number])[];
+  readonly points: readonly (readonly [number, number])[];
+}
+
+/**
+ * 请求点的签名。
+ *
+ * 用 JSON 而不是自己拼字符串：坐标是浮点数，拼字符串容易出现
+ * "看起来一样、其实差一个 ulp"的情况（那样缓存会莫名其妙地不命中）。
+ */
+function signatureOf(
+  path: string | null,
+  corners: readonly (readonly [number, number])[],
+  points: readonly (readonly [number, number])[],
+): string {
+  return JSON.stringify([path, corners, points]);
+}
+
 export interface UseEditToolsOptions {
   /** 被编辑的栅格（相对项目根的路径）；null = 还没选栅格 */
   readonly targetPath: string | null;
@@ -64,11 +110,17 @@ export interface EditToolsApi {
   readonly setTool: (tool: EditTool) => void;
   /** 已经拿到的栅格网格 */
   readonly grid: RasterGrid | null;
-  /** 工具当前不可用的原因（null = 可用） */
-  readonly blocked: string | null;
+  /**
+   * 每个工具各自的不可用原因（null = 可用）。
+   *
+   * 不是一个全局字符串：画笔/框选受"栅格有没有坐标系"限制
+   * （**不是**"是不是 4326"——投影坐标系的底图照样能画），
+   * 调色不受（引擎侧的调色是整幅逐像元算的，跟坐标系无关）。
+   */
+  readonly blockedByTool: ToolBlockedReasons;
   /** 画在覆盖层上的编辑预览 */
   readonly preview: EditPreview | null;
-  /** 框选是否已经画出来 */
+  /** 框选是否已经画出来（且它的像元坐标已经换算好） */
   readonly hasBox: boolean;
   /** 地图把指针事件交过来 */
   readonly onGesture: (gesture: EditGesture) => void;
@@ -93,6 +145,8 @@ export function useEditTools({
   const [gridLoading, setGridLoading] = useState(false);
   const [stroke, setStroke] = useState<readonly GeoScreenPoint[]>([]);
   const [box, setBox] = useState<readonly [GeoScreenPoint, GeoScreenPoint] | null>(null);
+  /** 最近一次换算的状态（给界面用：框选按钮什么时候可以点） */
+  const [conversion, setConversion] = useState<Conversion | null>(null);
 
   // 手势进行中：mousemove 只有按住时才记点
   const downRef = useRef(false);
@@ -114,6 +168,21 @@ export function useEditTools({
   getViewportRef.current = getViewport;
   const onBrushEndRef = useRef(onBrushEnd);
   onBrushEndRef.current = onBrushEnd;
+  const targetPathRef = useRef(targetPath);
+  targetPathRef.current = targetPath;
+  /**
+   * 换算结果的 ref（与 state 同源）。
+   *
+   * 为什么两份：换算完成的那一刻要把这一笔交给上层（预演），
+   * 而那一刻 setState 还没生效——读 state 会拿到"还没算好"的旧值。
+   */
+  const conversionRef = useRef<Conversion | null>(null);
+
+  /** 同时更新 ref 与 state（换算是异步的，两处都要跟上） */
+  const publishConversion = useCallback((next: Conversion | null) => {
+    conversionRef.current = next;
+    setConversion(next);
+  }, []);
 
   /* ───────── 栅格网格 ───────── */
 
@@ -149,7 +218,8 @@ export function useEditTools({
     boxRef.current = null;
     setStroke([]);
     setBox(null);
-  }, []);
+    publishConversion(null);
+  }, [publishConversion]);
 
   // 换工具时把上一个工具留下的笔迹清掉：
   // 留着的话，切到框选时屏幕上还挂着上一条笔迹，看起来像选区
@@ -159,6 +229,96 @@ export function useEditTools({
       setTool(next);
     },
     [resetGesture],
+  );
+
+  /* ───────── 坐标换算（经纬度 → 原生像元，引擎做） ───────── */
+
+  /**
+   * 发起一次换算。
+   *
+   * 一次请求把**视窗四角**与**笔迹/框的点**一起发过去：
+   *   - 笔迹/框的点 → 画在哪几个像元上；
+   *   - 视窗四角 → 笔宽换算（"一个屏幕像素值多少原生像元"）。
+   * 一次请求、一次投影换算，省得每个点都跑一遍。
+   */
+  const requestConversion = useCallback(
+    async (req: ConversionRequest): Promise<void> => {
+      publishConversion({
+        key: req.key,
+        status: 'pending',
+        cornerPixels: [],
+        pointPixels: [],
+        error: null,
+      });
+      const all = [...req.corners, ...req.points];
+      try {
+        const res = await fetch(`${ENGINE_BASE}/api/raster/pixels`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            path: targetPathRef.current,
+            points: all,
+            // 视窗四角常常落在影像之外（地图视野比影像大），
+            // 笔迹也可能画到图外：这两种都要照常换算，
+            // 越界的部分由 regionFromPoints 夹回影像内（与老行为一致）。
+            allowOutside: true,
+          }),
+        });
+        const body = (await res.json().catch(() => null)) as {
+          pixels?: { col: number; row: number }[];
+          message?: string;
+        } | null;
+        if (!res.ok) {
+          throw new Error(body?.message ?? `HTTP ${res.status}`);
+        }
+        const pixels = body?.pixels ?? [];
+        if (pixels.length !== all.length) {
+          throw new Error(
+            `引擎换回来的像元坐标数量不对（期望 ${all.length} 个，收到 ${pixels.length} 个）`,
+          );
+        }
+        publishConversion({
+          key: req.key,
+          status: 'ready',
+          cornerPixels: pixels.slice(0, req.corners.length),
+          pointPixels: pixels.slice(req.corners.length),
+          error: null,
+        });
+      } catch (err) {
+        publishConversion({
+          key: req.key,
+          status: 'error',
+          cornerPixels: [],
+          pointPixels: [],
+          error: `换算原生像元坐标失败：${(err as Error).message}`,
+        });
+      }
+    },
+    [publishConversion],
+  );
+
+  /** 笔迹的换算请求：视窗四角 + 这一笔的所有点 */
+  const brushRequest = useCallback(
+    (points: readonly GeoScreenPoint[]): ConversionRequest | null => {
+      const vp = viewportRef.current;
+      if (!vp) return null;
+      const corners = viewportCorners(vp.bbox);
+      const pts = points.map((p) => [p.lng, p.lat] as const);
+      return { key: signatureOf(targetPathRef.current, corners, pts), corners, points: pts };
+    },
+    [],
+  );
+
+  /** 框选的换算请求：只要两个角（框选与视窗无关，拖完地图也不该失效） */
+  const boxRequest = useCallback(
+    (current: readonly [GeoScreenPoint, GeoScreenPoint]): ConversionRequest => {
+      const pts = [
+        [current[0].lng, current[0].lat] as const,
+        [current[1].lng, current[1].lat] as const,
+      ];
+      return { key: signatureOf(targetPathRef.current, [], pts), corners: [], points: pts };
+    },
+    [],
   );
 
   const onGesture = useCallback(
@@ -201,7 +361,14 @@ export function useEditTools({
       // up
       downRef.current = false;
       if (tool === 'brush') {
-        onBrushEndRef.current?.();
+        // 这一笔的点已经齐了 → 去换算；换算好了再交给上层预演
+        // （换算是网络往返，同步的回调拿不到像元坐标）
+        const req = brushRequest(strokeRef.current);
+        if (!req) {
+          onBrushEndRef.current?.();
+          return;
+        }
+        void requestConversion(req).then(() => onBrushEndRef.current?.());
         return;
       }
       const next: [GeoScreenPoint, GeoScreenPoint] = boxRef.current
@@ -209,49 +376,43 @@ export function useEditTools({
         : [point, point];
       boxRef.current = next;
       setBox(next);
+      // 框选的两个角换算成像元：工具条上的「涂色/擦除」要等这个结果
+      void requestConversion(boxRequest(next));
     },
-    [tool],
+    [tool, brushRequest, boxRequest, requestConversion],
   );
 
   /* ───────── 能不能用 ───────── */
 
-  const blocked = useMemo(() => {
-    if (tool === 'view') return null;
-    if (!targetPath) return '先选一个栅格图层';
-    if (gridLoading) return '正在读取栅格网格…';
-    if (gridError) return `读取栅格网格失败：${gridError}`;
-    if (!grid) return '还没有拿到栅格网格';
-    // 栅格不是 4326 就没法把屏幕坐标换算成它的原生像元——宁可明说，也不瞎算
-    if (!isWgs84Grid(grid)) return '该图层坐标系不是 4326，画笔/框选暂不可用';
-    return null;
-  }, [tool, targetPath, gridLoading, gridError, grid]);
+  /**
+   * 四个工具各自的不可用原因。
+   *
+   * 判定规则见 editAvailability.ts：这里只负责把状态喂进去。
+   * 「什么算 4326」只有 editGeometry.isWgs84Grid 一个判据（引擎给的 crs.is4326）。
+   */
+  const blockedByTool = useMemo(
+    () =>
+      computeBlockedReasons({
+        hasTarget: targetPath !== null,
+        gridLoading,
+        gridError,
+        hasGrid: grid !== null,
+        gridIsWgs84: grid !== null && isWgs84Grid(grid),
+        gridHasCrs: grid?.crs.present === true,
+      }),
+    [targetPath, gridLoading, gridError, grid],
+  );
 
   /* ───────── 生成操作 ───────── */
 
-  /** 一个屏幕像素相当于多少个原生像元 */
-  const nativePerScreen = useCallback((): number => {
-    const g = gridRef.current;
-    const vp = viewportRef.current;
-    if (!g || !vp) return 1;
-    const pw = g.geotransform[1];
-    const ph = g.geotransform[5];
-    const degPerScreenX = (vp.bbox[2] - vp.bbox[0]) / Math.max(1, vp.width);
-    const degPerScreenY = (vp.bbox[3] - vp.bbox[1]) / Math.max(1, vp.height);
-    const sx = Math.abs(pw) / Math.max(1e-12, degPerScreenX);
-    const sy = Math.abs(ph) / Math.max(1e-12, degPerScreenY);
-    return Math.max(0.05, Math.min(sx, sy));
-  }, []);
-
-  /** 把一组经纬度点换算成原生像元点 */
-  const toPixels = useCallback((points: readonly GeoScreenPoint[]): PixelPoint[] => {
-    const g = gridRef.current;
-    if (!g) return [];
-    const out: PixelPoint[] = [];
-    for (const p of points) {
-      const q = pixelFromLngLat(g, p.lng, p.lat);
-      if (q) out.push(q);
-    }
-    return out;
+  /**
+   * 取当前笔迹/框对应的换算结果。
+   *
+   * 签名不一致 = 换算还没回来（或回来的是上一笔）→ 不能用。
+   */
+  const conversionFor = useCallback((key: string): Conversion | null => {
+    const c = conversionRef.current;
+    return c && c.key === key ? c : null;
   }, []);
 
   const buildRegionOp = useCallback(
@@ -260,7 +421,11 @@ export function useEditTools({
       if (!g || !targetPath) return { ok: false, message: '先选一个栅格图层' };
       const current = boxRef.current;
       if (!current) return { ok: false, message: '先在地图上框出一个矩形' };
-      const pixels = toPixels([current[0], current[1]]);
+      const req = boxRequest(current);
+      const conv = conversionFor(req.key);
+      if (!conv) return { ok: false, message: '正在换算原生像元坐标，请稍候' };
+      if (conv.status === 'error') return { ok: false, message: conv.error ?? '换算原生像元坐标失败' };
+      const pixels = conv.pointPixels;
       if (pixels.length < 2) return { ok: false, message: '这个框没有落在栅格范围内' };
       const region = regionFromPoints(g, pixels);
       if (!region) return { ok: false, message: '这个框没有落在栅格范围内' };
@@ -279,7 +444,7 @@ export function useEditTools({
         },
       };
     },
-    [targetPath, toPixels],
+    [targetPath, boxRequest, conversionFor],
   );
 
   const buildBrushOp = useCallback(
@@ -288,9 +453,18 @@ export function useEditTools({
       if (!g || !targetPath) return { ok: false, message: '先选一个栅格图层' };
       const points = strokeRef.current;
       if (points.length === 0) return { ok: false, message: '先在地图上画一笔' };
-      const pixels = toPixels(points);
+      const req = brushRequest(points);
+      if (!req) return { ok: false, message: '取不到当前视口，先在地图上画一笔' };
+      const conv = conversionFor(req.key);
+      if (!conv) return { ok: false, message: '正在换算原生像元坐标，请稍候' };
+      if (conv.status === 'error') return { ok: false, message: conv.error ?? '换算原生像元坐标失败' };
+      const pixels = conv.pointPixels;
       if (pixels.length === 0) return { ok: false, message: '这一笔没有落在栅格范围内' };
-      const radius = Math.max(1, brushWidthRef.current * nativePerScreen());
+      const vp = viewportRef.current;
+      const scale = vp ? nativeScaleFromCorners(conv.cornerPixels, vp) : null;
+      // 笔宽（屏幕像素）→ 原生像元：靠视窗两对角线在原生坐标里的跨度算，
+      // 与坐标系无关（4326 的栅格也走这一条路）。
+      const radius = Math.max(1, brushWidthRef.current * (scale ?? 1));
       const region = regionFromPoints(g, pixels, radius);
       if (!region) return { ok: false, message: '这一笔没有落在栅格范围内' };
       const width = region.maxX - region.minX;
@@ -312,7 +486,7 @@ export function useEditTools({
         },
       };
     },
-    [targetPath, toPixels, nativePerScreen],
+    [targetPath, brushRequest, conversionFor],
   );
 
   /* ───────── 预览 ───────── */
@@ -337,13 +511,25 @@ export function useEditTools({
     return null;
   }, [tool, stroke, box, brushWidth]);
 
+  /**
+   * 框选能不能点「涂色/擦除」。
+   *
+   * 换算还没回来的那一小会儿是禁用的（点了也只会得到"请稍候"）；
+   * 换算失败的也要能点——点了才能把失败原因显示出来，而不是悄悄没反应。
+   */
+  const hasBox = useMemo(() => {
+    if (!box) return false;
+    const conv = conversionFor(boxRequest(box).key);
+    return conv !== null && conv.status !== 'pending';
+  }, [box, boxRequest, conversionFor, conversion]);
+
   return {
     tool,
     setTool: changeTool,
     grid,
-    blocked,
+    blockedByTool,
     preview,
-    hasBox: box !== null,
+    hasBox,
     onGesture,
     resetGesture,
     buildRegionOp,

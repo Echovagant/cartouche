@@ -4,8 +4,8 @@
  * 避免 Windows 上强杀子进程导致 libuv 断言。
  */
 import { createServer, type Server } from 'node:http';
-import { readFileSync } from 'node:fs';
-import { join, dirname, resolve, isAbsolute, sep, basename } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
+import { join, dirname, resolve, isAbsolute, sep, basename, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   LocalFolderStore,
@@ -14,6 +14,7 @@ import {
   PathEscapeError,
   RootRegistry,
   ProjectStore,
+  RasterEditor,
   newManifest,
   type CompatOperation,
   type ProjectHistoryEntry,
@@ -40,7 +41,7 @@ import {
   type PlanExecutionResult,
 } from '@cartouche/engine';
 import { llmStatus, llmModels, llmTest, currentApiKey, scrub, setSessionApiKey } from './llm.ts';
-import { buildContextPreview, createPlan } from './llm-plan.ts';
+import { buildContextPreview, checkPlanAgainstContract, createPlan } from './llm-plan.ts';
 import { loadRegisteredRoots, registerRoot } from './roots.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -140,6 +141,49 @@ function storeFor(
 ): { store: WorkspaceAdapter; relative: string } {
   const t = resolveTarget(root, rel);
   return { store: t.store, relative: t.relative };
+}
+
+/**
+ * 定位「要换算像元的那个栅格」。
+ *
+ * 给了 `root` → 严格按那个根解析（相对路径不得逃出根、绝对路径一律拒绝）。
+ *
+ * 没给 `root` → 在**已登记根**里按相对路径找**唯一存在**的那个：
+ *   画布上的路径是相对**项目根**的，而项目根本身就是一个已登记根；
+ *   引擎不该要求前端知道自己的根目录长什么样。
+ *   找不到 → 404；找到多个 → 400（说清楚，不替用户猜是哪一个）。
+ */
+function resolvePixelTarget(root: string | null, rel: string): WorkspaceTarget {
+  if (root) return resolveTarget(root, rel);
+  // 绝对路径（含 `C:foo` 这种盘符相对写法）一律拒绝：它能绕过根的边界
+  if (isAbsolute(rel) || /^[A-Za-z]:/.test(rel)) {
+    throw new PathEscapeError(rel);
+  }
+  // `..` 一律拒绝（哪怕拼回来还在根内）：路径里带 `..` 就该由调用方说清楚
+  if (rel.split(/[\\/]+/).some((seg) => seg === '..')) {
+    throw new PathEscapeError(rel);
+  }
+  const hits: WorkspaceTarget[] = [];
+  for (const r of roots.list()) {
+    const abs = resolve(r.path, rel);
+    // `..` 逃出这个根的候选直接不算（路径安全与其它接口同口径）
+    if (!isInside(r.path, abs)) continue;
+    if (!existsSync(abs)) continue;
+    hits.push({
+      store: roots.storeFor(r.id),
+      relative: relative(r.path, abs),
+      absolute: abs,
+    });
+  }
+  if (hits.length === 0) throw new NotFoundError(rel);
+  if (hits.length > 1) {
+    throw new Error(
+      `同一个相对路径在 ${hits.length} 个已登记根下都存在（${hits
+        .map((h) => h.absolute)
+        .join('、')}）：请在请求里带上 root 指明是哪一个`,
+    );
+  }
+  return hits[0] as WorkspaceTarget;
 }
 
 /** 路径是否落在 root 之下（Windows 上文件系统不区分大小写） */
@@ -964,6 +1008,67 @@ export function createEngineServer(): Server {
       return;
     }
 
+    /* ───────── 经纬度 → 原生像元（画笔/框选的前提） ───────── */
+
+    /**
+     * 把一组经纬度换算成目标栅格的**原生像元**坐标。
+     *
+     * 为什么要有这个接口：画布上的点是经纬度，栅格的像元是原生坐标
+     * （投影坐标系的栅格里是米）。浏览器里没有投影能力，
+     * 所以这一步必须由引擎（PROJ + 仿射反算）来做。
+     *
+     * 路径口径与其它接口一致：`path` 必须是相对路径，落在已登记根之下；
+     * 绝对路径与 `..` 一律 400。
+     */
+    if (url.pathname === '/api/raster/pixels' && req.method === 'POST') {
+      void (async () => {
+        try {
+          if (!gdalLoc) {
+            json(503, {
+              error: 'gdal_unavailable',
+              message: '未找到 GDAL 运行时，换算不了像元坐标；请先运行 npm run doctor',
+            });
+            return;
+          }
+          const body = JSON.parse((await readBody(req)).toString('utf8') || '{}') as {
+            path?: string;
+            root?: string | null;
+            points?: unknown;
+            allowOutside?: boolean;
+          };
+          const rel = body.path ?? '';
+          if (!Array.isArray(body.points)) {
+            json(400, {
+              ok: false,
+              error: 'bad_request',
+              message: '缺少 points：[{经度,纬度}, ...]',
+            });
+            return;
+          }
+          const target = resolvePixelTarget(body.root ?? null, rel);
+          const editor = new RasterEditor({ loc: gdalLoc, store: target.store });
+          const res = await editor.queryPixels({
+            target: target.relative,
+            points: body.points as readonly (readonly [number, number])[],
+            ...(body.allowOutside === true ? { allowOutside: true } : {}),
+          });
+          json(200, { ok: true, pixels: res.pixels });
+        } catch (err) {
+          const message = (err as Error).message;
+          const bad =
+            err instanceof PathEscapeError ||
+            err instanceof NotFoundError ||
+            (err as Error).name === 'PixelQueryError';
+          json(bad ? 400 : 500, {
+            ok: false,
+            error: bad ? 'bad_request' : 'internal',
+            message: scrub(message),
+          });
+        }
+      })();
+      return;
+    }
+
     if (url.pathname === '/api/op/preview' && req.method === 'POST') {
       void (async () => {
         try {
@@ -1040,10 +1145,25 @@ export function createEngineServer(): Server {
             json(400, { error: 'bad_request', message: '计划里一条操作都没有' });
             return;
           }
-          const prepared = prepareOps(body.root ?? null, plan.ops);
+          // 闸门①：计划必须过契约。
+          // 与 /api/llm/plan 用的是**同一个**校验器（checkPlanAgainstContract）——
+          // 两套校验器各说各话，测出来的「绿」是假的。
+          // 放在执行之前：不合契约的计划不许碰到任何文件。
+          const gate = checkPlanAgainstContract(plan);
+          if (!gate.ok) {
+            json(400, {
+              error: 'bad_request',
+              message: gate.message ?? '计划不符合操作契约',
+              schemaIssues: gate.schemaIssues,
+              unsupported: gate.unsupported,
+            });
+            return;
+          }
+          const prepared = prepareOps(body.root ?? null, gate.plan.ops);
           const result: PlanExecutionResult = await executePlan(
-            { loc: gdalLoc, store: prepared.store },
-            { ...plan, ops: prepared.ops },
+            // confirmed = 用户在确认卡上点过确认（requireUserConfirm 的闸门）
+            { loc: gdalLoc, store: prepared.store, confirmed: body.confirmed === true },
+            { ...gate.plan, ops: prepared.ops },
           );
           // 留痕 + 清单同步（有项目根时才写）
           let warning: string | null = null;
