@@ -12,7 +12,7 @@
  * 另有一组"栅格显示"的分段控件：三档说人话的选择，影响底图怎么上屏。
  */
 import { useRef, type KeyboardEvent } from 'react';
-import { FilePdfIcon, ShieldCheckIcon } from '@phosphor-icons/react';
+import { FilePdfIcon, ShieldCheckIcon, SparkleIcon } from '@phosphor-icons/react';
 import type { HealthStatus } from './useEngine';
 import { MagneticButton } from '../motion/MagneticLink';
 import { ActionButton, StatusDot } from './ui';
@@ -33,6 +33,10 @@ export interface ToolbarProps {
   stretch?: 'auto' | 'none';
   /** 切档；传 undefined = 回到「自动」 */
   onStretchChange: (value: 'auto' | 'none' | undefined) => void;
+  /** 跳到 AI 工作台，把当前项目与图层带过去 */
+  onOpenAi: () => void;
+  /** 为什么现在点不了（空 = 可以点） */
+  aiBlockedReason: string;
 }
 
 const HEALTH_TEXT: Record<HealthStatus, string> = {
@@ -83,9 +87,12 @@ export default function Toolbar({
   onReloadHealth,
   stretch,
   onStretchChange,
+  onOpenAi,
+  aiBlockedReason,
 }: ToolbarProps) {
   const exportDisabled = exporting || health !== 'ready';
   const reportDisabled = reporting || !canReport || health !== 'ready';
+  const aiDisabled = aiBlockedReason !== '';
 
   // 分段控件的按钮节点：roving tabindex 需要把焦点挪到刚选中的那一档
   const optionRefs = useRef<(HTMLButtonElement | null)[]>([]);
@@ -142,6 +149,19 @@ export default function Toolbar({
       >
         <ShieldCheckIcon size={15} weight="bold" />
         {reporting ? '正在检查' : '兼容性报告'}
+      </MagneticButton>
+
+      {/* 用一句话改图：把当前项目与图层带进 AI 工作台。
+          放在「导出 / 报告」这一组之后：这组是"交差"链路，
+          AI 改图是另一条链路，紧挨着容易被当成同一件事的两步。 */}
+      <MagneticButton
+        onClick={onOpenAi}
+        disabled={aiDisabled}
+        title={aiDisabled ? aiBlockedReason : '把当前项目与图层带进 AI 工作台，用一句话提议改动'}
+        className="ml-1 inline-flex items-center justify-center gap-1.5 rounded-lg border border-studio-line bg-studio-3/70 px-3 py-1.5 text-[12.5px] font-medium text-studio-ink transition-colors hover:border-studio-ink-3 hover:bg-studio-3 active:translate-y-px disabled:pointer-events-none disabled:opacity-40"
+      >
+        <SparkleIcon size={15} weight="bold" />
+        用一句话改图
       </MagneticButton>
 
       {/* 栅格显示档位。
