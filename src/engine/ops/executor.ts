@@ -20,6 +20,9 @@ import { RasterEditor, type RasterOpResult } from '../raster/index.ts';
 import {
   buildPixelMask,
   geoToPixelRegion,
+  regionHitsRaster,
+  regionOffRasterMessage,
+  zeroImpactMessage,
   type GeoBounds,
   type PixelMask,
   type PixelRegion,
@@ -86,6 +89,14 @@ export interface PlanExecutionResult {
 export interface ExecutorDeps {
   readonly loc: GdalLocation;
   readonly store: WorkspaceAdapter;
+  /**
+   * 用户是否已经在确认卡上点过确认。
+   *
+   * 计划里 `requireUserConfirm: true` 的 op 必须拿到它才动手 ——
+   * 这是契约里那个字段在引擎侧唯一的落点（2026-10-23 实测：
+   * 改之前它只是接口声明，executePlan 从不读，等于没有这道闸门）。
+   */
+  readonly confirmed?: boolean;
 }
 
 /** 计划文档或单条 op —— 两种形状都能收 */
@@ -103,6 +114,14 @@ interface OpHandler {
    * 而不是给一个假的像元数。
    */
   readonly previewable: boolean;
+  /**
+   * true = affectedPixels 是「真正被改动的像元数」，
+   *        0 就意味着这次什么都没改 —— 必须判失败
+   *        （「改了 0 像元却报成功」是最严重的一类缺陷）。
+   * false = affectedPixels 只是产出规模（拼接）或粗略对比（GDAL 级操作），
+   *        0 不代表失败。
+   */
+  readonly countsChangedPixels: boolean;
   run(
     editor: RasterEditor,
     params: Readonly<Record<string, unknown>>,
@@ -122,6 +141,7 @@ const IMPLEMENTED: Readonly<Record<string, OpHandler>> = {
   'raster.paint': {
     label: '涂色',
     previewable: true,
+    countsChangedPixels: true,
     run: async (editor, params, dryRun) => {
       const mask = readMask(params);
       return editor.paint(
@@ -138,6 +158,7 @@ const IMPLEMENTED: Readonly<Record<string, OpHandler>> = {
   'raster.erase': {
     label: '擦除',
     previewable: true,
+    countsChangedPixels: true,
     run: async (editor, params, dryRun) => {
       const source = readRelPath(params, 'source');
       return editor.erase(
@@ -153,18 +174,21 @@ const IMPLEMENTED: Readonly<Record<string, OpHandler>> = {
   'raster.replaceRegion': {
     label: '区域替换',
     previewable: true,
+    countsChangedPixels: true,
     run: async (editor, params, dryRun) => {
       const bbox = readBbox(params);
       // region 缺省时必须给 undefined，不能给一个零区域：
       // 零区域会把「region ?? bbox 换算」里的 bbox 分支挡掉，
       // 结果是预演与执行都报 ok，却一个像元都没改。
       const region = requireRegion(params, { optional: true });
+      const featherPx = readNumber(params, 'featherPx');
       return editor.replaceRegion(
         {
           source: requireRelPath(params, 'source'),
           target: requireTarget(params),
           ...(region ? { region } : {}),
           ...(bbox ? { bbox } : {}),
+          ...(featherPx !== undefined ? { featherPx } : {}),
         },
         { dryRun },
       );
@@ -173,6 +197,7 @@ const IMPLEMENTED: Readonly<Record<string, OpHandler>> = {
   'raster.inpaint': {
     label: '边界修补',
     previewable: true,
+    countsChangedPixels: true,
     run: async (editor, params, dryRun) => {
       const radiusPx = readNumber(params, 'radiusPx');
       return editor.inpaint(
@@ -188,6 +213,7 @@ const IMPLEMENTED: Readonly<Record<string, OpHandler>> = {
   'raster.adjustLevels': {
     label: '亮度对比度调整',
     previewable: true,
+    countsChangedPixels: true,
     run: async (editor, params, dryRun) => {
       const method = readString(params, 'method');
       const brightness = readNumber(params, 'brightness');
@@ -208,9 +234,15 @@ const IMPLEMENTED: Readonly<Record<string, OpHandler>> = {
   'raster.clip': {
     label: '裁切',
     previewable: false,
+    countsChangedPixels: false,
     run: async (editor, params) => {
       const bbox = readBbox(params);
       const clip = readRelPath(params, 'clip');
+      // 两个范围都不给 → gdalwarp 会原样复制一张，等于「裁了但没裁」还报成功。
+      // 这里明确报错，不让静默的空跑混过去。
+      if (!bbox && !clip) {
+        throw new Error('必须给出裁切范围（bbox 或 clip）：都不给的话只会把原图原样复制一遍');
+      }
       return editor.clip({
         target: requireTarget(params),
         ...(bbox ? { bbox } : {}),
@@ -221,6 +253,7 @@ const IMPLEMENTED: Readonly<Record<string, OpHandler>> = {
   'raster.resample': {
     label: '重采样',
     previewable: false,
+    countsChangedPixels: false,
     run: async (editor, params) => {
       const targetResolution = readNumber(params, 'targetResolution');
       const resampleMethod = readString(params, 'resampleMethod');
@@ -234,17 +267,19 @@ const IMPLEMENTED: Readonly<Record<string, OpHandler>> = {
   'raster.mosaic': {
     label: '拼接',
     previewable: false,
+    countsChangedPixels: false,
     run: async (editor, params) => {
       const inputs = params['inputs'];
       if (!Array.isArray(inputs) || inputs.length < 2) {
         throw new Error('拼接至少需要两幅影像');
       }
       const output = readString(params, 'output');
-      const overlap = readString(params, 'overlap');
+      // 拼接的输入输出同样是工作区里的文件，路径也要过闸门：
+      // 绝对路径与 .. 会让它读到工作区之外（其余 op 早就是这么做的，
+      // 只有拼接漏了 —— 2026-10-23 实测：`C:/Windows/System32/...` 能被放行）。
       return editor.mosaic({
-        inputs: inputs.map((x) => toRelPath(String(x))),
-        ...(output ? { output: toRelPath(output) } : {}),
-        ...(overlap ? { overlap: overlap as 'first' | 'last' | 'blend' } : {}),
+        inputs: inputs.map((x) => toRelPathChecked(String(x), 'inputs')),
+        ...(output ? { output: toRelPathChecked(output, 'output') } : {}),
       });
     },
   },
@@ -313,7 +348,7 @@ export async function previewOp(deps: ExecutorDeps, spec: OperationSpec): Promis
     const params = await normalizeParams(deps, spec);
     const editor = new RasterEditor({ loc: deps.loc, store: deps.store });
     const result = await handler.run(editor, params, true);
-    return { index: 0, op: spec.op, ok: true, target, impact: toImpact(result) };
+    return { index: 0, op: spec.op, ok: true, target, impact: verdictOf(handler, result, params) };
   } catch (err) {
     return { index: 0, op: spec.op, ok: false, target, error: messageOf(err) };
   }
@@ -360,6 +395,20 @@ export async function executePlan(deps: ExecutorDeps, input: PlanInput): Promise
       break;
     }
 
+    // 人工确认闸门：契约里 requireUserConfirm 为 true 的 op 必须真的拿到确认。
+    // 确认卡点过「确认执行」时才会带 confirmed；没带就不许动手。
+    if (spec.requireUserConfirm === true && deps.confirmed !== true) {
+      results.push({
+        index: i,
+        op: spec.op,
+        ok: false,
+        target,
+        error: '该操作要求人工确认（requireUserConfirm），没有收到确认，已中止；未做任何改动。',
+      });
+      failedAt = i;
+      break;
+    }
+
     // 预期上限要在**动手之前**核对，所以先预演一次
     const cap = readNumber(spec.expect ?? {}, 'maxAffectedPixels');
     let impact: OpImpact | undefined;
@@ -377,7 +426,7 @@ export async function executePlan(deps: ExecutorDeps, input: PlanInput): Promise
       }
       try {
         const preview = await handler.run(editor, params, true);
-        impact = toImpact(preview);
+        impact = verdictOf(handler, preview, params);
         if (impact.affectedPixels > cap) {
           results.push({
             index: i,
@@ -401,7 +450,7 @@ export async function executePlan(deps: ExecutorDeps, input: PlanInput): Promise
 
     try {
       const result = await handler.run(editor, params, false);
-      results.push({ index: i, op: spec.op, ok: true, target, impact: toImpact(result) });
+      results.push({ index: i, op: spec.op, ok: true, target, impact: verdictOf(handler, result, params) });
       completed++;
     } catch (err) {
       results.push({ index: i, op: spec.op, ok: false, target, error: messageOf(err) });
@@ -419,6 +468,43 @@ export async function executePlan(deps: ExecutorDeps, input: PlanInput): Promise
 }
 
 /* ── 内部工具 ─────────────────────────────────────────────── */
+
+/**
+ * 一次 op 的结论。
+ *
+ * **「改了 0 像元」不是成功，是什么都没做。**
+ * 对像素级操作来说，affectedPixels === 0 就意味着这次改动没落到任何像元上
+ * （区域落在影像之外、掩膜没覆盖到东西……）—— 这种情况一律判失败。
+ *
+ * 判断放在这里，预演与执行共用同一段代码：
+ * 之前预演如实报 0、执行却无条件 ok:true，两边结论对不上，
+ * 确认卡上那个「0 / 192 像元（0.0%）」看着像"最轻松的改动"，点下去却什么都不会发生。
+ */
+function verdictOf(
+  handler: OpHandler,
+  result: RasterOpResult,
+  params: Readonly<Record<string, unknown>>,
+): OpImpact {
+  const impact = toImpact(result);
+  if (!handler.countsChangedPixels || impact.affectedPixels > 0) return impact;
+  const region = pixelRegionOf(params['region']);
+  if (region && !regionHitsRaster(region, impact.width, impact.height)) {
+    throw new Error(regionOffRasterMessage(region, impact.width, impact.height));
+  }
+  throw new Error(zeroImpactMessage(impact.width, impact.height, region));
+}
+
+/** 从参数里读出一个像元区域（地理范围数组在 normalizeParams 里已换算成对象） */
+function pixelRegionOf(raw: unknown): PixelRegion | undefined {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return undefined;
+  const o = raw as Record<string, unknown>;
+  const minX = Number(o['minX']);
+  const minY = Number(o['minY']);
+  const maxX = Number(o['maxX']);
+  const maxY = Number(o['maxY']);
+  if (![minX, minY, maxX, maxY].every((x) => Number.isFinite(x))) return undefined;
+  return { minX, minY, maxX, maxY };
+}
 
 function toImpact(r: RasterOpResult): OpImpact {
   return {
@@ -474,10 +560,12 @@ function readRelPath(params: Readonly<Record<string, unknown>>, key: string): st
 function toRelPathChecked(raw: string, key: string): string {
   const rel = toRelPath(raw);
   if (/^[A-Za-z]:/.test(rel) || rel.startsWith('/') || rel.startsWith('\\')) {
-    throw new Error(`${key} 必须是相对路径，不能是绝对路径：${raw}`);
+    throw new Error(
+      `${key} 必须是相对路径，不能是绝对路径：${raw}（绝对路径不在已登记的工作区根之下）`,
+    );
   }
   if (rel.split(/[\\/]/).includes('..')) {
-    throw new Error(`${key} 不能包含 .. （会逃出工作区根）：${raw}`);
+    throw new Error(`${key} 不能包含 .. ：${raw}（这样的路径不在已登记的工作区根之下）`);
   }
   return rel;
 }
@@ -515,6 +603,10 @@ function requireColor(params: Readonly<Record<string, unknown>>): string | reado
  * optional 形态缺参时返回 **undefined**（不是零区域）：
  * 零区域会让下游的「region ?? 其它来源」分支永远走不到，
  * 把「没给范围」变成「改了 0 像元却报成功」。
+ *
+ * 这里只管**形状**；区域与影像是否相交的判定要拿到影像尺寸才做得了，
+ * 放在栅格层（raster/ops.ts）与结果汇总处（verdictOf），
+ * 两处共用 mask.ts 里的同一份文案。
  */
 function requireRegion(params: Readonly<Record<string, unknown>>): PixelRegion;
 function requireRegion(
@@ -543,12 +635,20 @@ function requireRegion(
       throw new Error('region 必须是 { minX, minY, maxX, maxY } 四个数字');
     }
     // 归一化：用户拖框的方向不该决定结果
-    return {
+    const region = {
       minX: Math.min(minX, maxX),
       minY: Math.min(minY, maxY),
       maxX: Math.max(minX, maxX),
       maxY: Math.max(minY, maxY),
     };
+    // 空区域（宽或高为 0）什么都不会改：明确报错，
+    // 别让它一路走到「改了 0 像元」。
+    if (region.maxX <= region.minX || region.maxY <= region.minY) {
+      throw new Error(
+        `region 是空的（宽或高为 0）：这样不会改到任何像元（minX=${region.minX}，maxX=${region.maxX}，minY=${region.minY}，maxY=${region.maxY}）`,
+      );
+    }
+    return region;
   }
   throw new Error('region 形状不认识：给 { minX, minY, maxX, maxY }');
 }

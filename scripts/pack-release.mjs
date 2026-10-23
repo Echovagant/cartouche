@@ -7,11 +7,16 @@
  * 下载物如果只给一个 clone 指引，实际上等于没有下载。
  *
  * 包里放什么：
- *   - 源码（src/ server/ web/ 的源码与配置）
+ *   - 源码（src/ server/ 的源码与配置）
+ *   - 前端源码（web/app 与配置）
  *   - 预构建产物（引擎 dist、服务端 dist、前端静态站 out）—— 省掉对方一次 build
  *   - 脚本（setup-conda-gdal / run-engine / set-key / serve-static / doctor）
  *   - 许可与说明（LICENSE / NOTICE / README / 快速开始）
  *   - 不含 node_modules（体积大、且平台相关）—— 装的时候 npm install 一次
+ *
+ * ⚠️ **不收 `web/public/`**：public 里的东西 next build 时会**整份复制进 web/out/**，
+ * 两边都收就是每张图存两份（实测多出 7.1MB，其中首屏那张 PNG 就 4.5MB）。
+ * 打包前会核对 out 里确实有 public 的全部文件，缺了就不打这个包。
  *
  * 为什么自己写 zip：仓库的依赖许可门禁只放行宽松许可的包，
  * 为打一个包引一个压缩库不划算；而 ZIP 的存储格式本身不复杂（zlib 是 Node 自带的）。
@@ -31,7 +36,6 @@ const INCLUDE = [
   'server',
   'web/src',
   'web/app',
-  'web/public',
   'web/package.json',
   'web/tsconfig.json',
   'web/next.config.mjs',
@@ -189,6 +193,36 @@ async function walkWithDirs(abs, rel, out) {
 async function main() {
   const files = [];
 
+  /* ── 打包前核对：web/out 必须含有 web/public 的全部文件 ──────────
+     不收 web/public 是为了不重复存一份（见文件头）。
+     但这条成立的前提是「out 是完整的」——产物没建全就收，
+     等于把「图片全丢」这件事推到用户机器上才暴露。 */
+  const publicDir = join(root, 'web', 'public');
+  const outDir_ = join(root, 'web', 'out');
+  try {
+    await stat(publicDir);
+    await stat(outDir_);
+    const publicFiles = [];
+    await walk(publicDir, '', publicFiles);
+    const outFiles = [];
+    await walk(outDir_, '', outFiles);
+    const outSet = new Set(outFiles.map((f) => f.rel.split(sep).join('/')));
+    const missing = publicFiles
+      .map((f) => f.rel.split(sep).join('/'))
+      .filter((rel) => !outSet.has(rel));
+    if (missing.length > 0) {
+      console.error(
+        `[pack] web/out 缺少 web/public 的 ${missing.length} 个文件（先跑 npm run build:web）：` +
+          `\n        ${missing.slice(0, 5).join('\n        ')}`,
+      );
+      process.exitCode = 1;
+      return;
+    }
+    console.log(`[pack] 核对通过：web/out 含有 web/public 的全部 ${publicFiles.length} 个文件（不重复打包 public）`);
+  } catch {
+    console.warn('[pack] 没有 web/public 或 web/out，跳过核对');
+  }
+
   for (const rel of INCLUDE) {
     const abs = join(root, rel);
     let st;
@@ -221,6 +255,21 @@ async function main() {
     process.exitCode = 1;
     return;
   }
+
+  /* ── 同一个路径只进包一次 ───────────────────────────────────────
+     `src/engine/dist` 既在 INCLUDE 的 `src` 里（源码树的一部分），
+     又在 PREBUILT 里（预构建产物），会被 walk 两次、**打出两个同名条目**。
+     后果不是"多了几 KB"：Windows 的解压与 .NET 的 ExtractToDirectory
+     遇到重复条目会直接抛「文件已存在」而中断 —— 别人拿这个包解压会失败。 */
+  const unique = new Map();
+  for (const f of files) {
+    const key = f.rel.split(sep).join('/');
+    if (!unique.has(key)) unique.set(key, { ...f, rel: key });
+  }
+  const dupes = files.length - unique.size;
+  if (dupes > 0) console.log(`[pack] 去掉 ${dupes} 个重复条目（同路径只留一份）`);
+  files.length = 0;
+  files.push(...unique.values());
 
   const entries = [];
   let raw = 0;

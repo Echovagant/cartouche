@@ -5,7 +5,7 @@ import './globals.css';
 /**
  * 字体自托管（next/font/local）。
  *
- * 为什么不用 next/font/google：本工具的承诺是"数据不出本机、可离线使用"，
+ * 为什么不用 next/font/google：本工具的承诺是"图件不出本机、可离线使用"，
  * 构建期也不该依赖外网——否则断网环境根本装不上。字体文件随仓库走。
  *
  * 分工（有意为之，不是摇摆）：
@@ -37,7 +37,7 @@ const geistMono = localFont({
  *
  * 站点挂在 GitHub Pages 的 **子路径** `/cartouche/` 下，所以 metadataBase
  * 必须带上这段路径：Next 解析相对的 og:image 时会拼到 metadataBase 的
- * pathname 上（`/og.png` → `https://echovagant.github.io/cartouche/og.png`），
+ * pathname 上（`/site/og.png` → `https://echovagant.github.io/cartouche/site/og.png`），
  * 少了它，图片地址会跑到域名根目录去。
  */
 const SITE_URL = 'https://echovagant.github.io/cartouche/';
@@ -61,11 +61,12 @@ export const metadata: Metadata = {
     siteName: '图签 Cartouche',
     title: SITE_TITLE,
     description: SITE_DESCRIPTION,
-    // ⚠ 分享图 **尚未生成**：/og.png 是计划中的路径，文件本身还不存在。
-    // 生成后放到静态产物根目录（部署后即 https://echovagant.github.io/cartouche/og.png）。
+    // 分享图：1200×630 的静态 PNG，放在 public/site/ 下，
+    // 部署后即 https://echovagant.github.io/cartouche/site/og.png
+    // （metadataBase 带着 /cartouche/ 这段子路径，少了它会跑到域名根目录去）。
     images: [
       {
-        url: '/og.png',
+        url: '/site/og.png',
         width: 1200,
         height: 630,
         alt: '图签 Cartouche · 本机运行的地图出图工具',
@@ -76,7 +77,7 @@ export const metadata: Metadata = {
     card: 'summary_large_image',
     title: SITE_TITLE,
     description: SITE_DESCRIPTION,
-    images: ['/og.png'],
+    images: ['/site/og.png'],
   },
 };
 

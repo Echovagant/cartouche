@@ -12,6 +12,9 @@
  *   - canvas-frame.jpg  带图框的成图（沿用 README 那张）
  *   - report.jpg        六段式自检报告（沿用 README 那张）
  *
+ * 以及：
+ *   - china-sheet.webp  首屏主图的网页版（由 china-sheet.png 转出）
+ *
  * 单独跑：node scripts/make-site-assets.mjs
  */
 import { mkdir, copyFile, readFile, writeFile } from 'node:fs/promises';
@@ -96,3 +99,29 @@ for (const [src, dst] of [
 }
 
 console.log('[site-assets] 完成');
+
+/**
+ * 3. 首屏主图：中国图面的网页版。
+ *
+ * china-sheet.png 是**图签自己出的图面原图**（引擎/画布的真实输出，4.7MB）。
+ * 直接当首屏主图太重，压到 WebP 后是 509KB —— 比原来那张
+ * export-pdf.png（871KB）还轻，文字锐度肉眼无差。
+ *
+ * sharp 是 Next.js 带进来的传递依赖，仓库没有把它列为直接依赖；
+ * 这里动态引入，取不到就跳过（产物已经入库，没有 sharp 也不影响站点跑）。
+ */
+const chinaPng = join(outDir, 'china-sheet.png');
+const chinaWebp = join(outDir, 'china-sheet.webp');
+if (existsSync(chinaPng)) {
+  try {
+    const { default: sharp } = await import('sharp');
+    await sharp(chinaPng).webp({ quality: 88, effort: 6, smartSubsample: true }).toFile(chinaWebp);
+    const { size } = await import('node:fs/promises');
+    const stat = await size(chinaWebp);
+    console.log(`[site-assets] china-sheet.png -> china-sheet.webp（${Math.round(stat / 1024)}KB）`);
+  } catch (err) {
+    console.warn(`[site-assets] 跳过 WebP 转换（${err.message}）——站点会退回 PNG 源图`);
+  }
+} else {
+  console.warn('[site-assets] 没有 china-sheet.png，跳过 WebP 转换');
+}

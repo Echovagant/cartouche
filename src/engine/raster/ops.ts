@@ -41,10 +41,16 @@ import {
   type PixelBand,
   type PixelType,
 } from './pixels.ts';
+import { queryRasterPixels, type PixelPoint, type PixelQueryResult } from './pixel-query.ts';
 import {
   buildAlphaMask,
+  describeRegion,
   geoToPixelRegion,
   maskAlphaAtRegion,
+  maskHitsRegion,
+  regionHitsRaster,
+  regionOffRasterMessage,
+  zeroImpactMessage,
   type GeoBounds,
   type PixelMask,
   type PixelRegion,
@@ -272,6 +278,16 @@ interface MosaicRequest {
   readonly overlap?: 'first' | 'last' | 'blend';
 }
 
+/** 经纬度 → 原生像元的换算请求（相对 store 的路径） */
+export interface PixelQueryOpRequest {
+  /** 目标栅格（相对 store 根） */
+  readonly target: string;
+  /** 待换算的点：[经度, 纬度]（EPSG:4326，经度在前） */
+  readonly points: readonly (readonly [number, number])[];
+  /** 允许点落在影像范围之外（默认不允许） */
+  readonly allowOutside?: boolean;
+}
+
 function parseColor(color: string | readonly number[]): [number, number, number] | 'sample-from-edge' {
   if (typeof color === 'string') {
     if (color === 'sample-from-edge') return 'sample-from-edge';
@@ -454,7 +470,16 @@ export class RasterEditor {
 
     const before = await this.#read(target);
     this.#assertWritebackSafe(target, before.driver);
+    // 整图路径没有区域可校验（给了区域就走窗口路径），所以这里只保留 mutate 调用。
+    // 区域整体落在影像之外的检查在窗口路径入口处（regionHitsRaster）。
     const newBands = await mutate(before, { win: null, localRegion: null });
+
+    // ⚠️ 整图路径**不**在这里做零命中拦截：这里走的是全局操作（调色），
+    // 图像本来就占满量程时调色就是个恒等变换，"数值没变"是合法结果，
+    // 不是"没瞄准"。零命中的闸门在两处：
+    //   - 区域型操作（涂色/修补/替换）在**窗口路径**里判，见 #applyPixelsOnWindow；
+    //   - API 层（ops/executor.ts 的 verdictOf）对所有像素级操作统一判。
+    // 用户看到的结论与以前一致：改了 0 像元一律算失败。
 
     // 预演：算到这里就够了，像元数是**精确值**（不是估算），
     // 但不写盘、不备份、不替换 —— 确认卡要在用户点头之前什么都别动。
@@ -543,6 +568,13 @@ export class RasterEditor {
   ): Promise<RasterOpResult> {
     const abs = this.#abs(target);
     const meta = await this.#metaOf(abs);
+    // 区域整个落在影像之外 → 逐像元的循环一个都不执行。
+    // 与其让它变成「改了 0 像元还报成功」，不如在这里明确报错。
+    // 这道闸门必须拦在**算窗口之前**：窗口一算出来就是空的，
+    // 到那时给出的信息只剩「窗口是空的」，说不清是区域选错了还是图坏了。
+    if (!regionHitsRaster(region, meta.width, meta.height)) {
+      throw new Error(regionOffRasterMessage(region, meta.width, meta.height));
+    }
     if (!meta.geotransform) {
       throw new Error(`栅格缺少仿射参数，无法定位窗口：${abs}`);
     }
@@ -575,12 +607,21 @@ export class RasterEditor {
       { win, localRegion: local },
     );
 
+    // 零命中拦截：区域型操作一个像元都没改到 → 这次什么都不会发生。
+    // 与其让它变成「改了 0 像元还报成功」，不如在这里明确报错，
+    // 而且必须拦在**写盘之前** —— 不然文件会被重写一遍、还多出一份备份。
+    // 预演与执行走的是同一段代码，两边的结论必然一致。
+    const changed = countChanged(before.bands[0], newBands[0]);
+    if (changed === 0) {
+      throw new Error(zeroImpactMessage(frame.width, frame.height, region));
+    }
+
     // 预演：算到这里就够了，不写盘、不备份、不替换
     if (dryRun) {
       return {
         op,
         target: abs,
-        affectedPixels: countChanged(before.bands[0], newBands[0]),
+        affectedPixels: changed,
         totalPixels: frame.width * frame.height,
         // 窗口口径的校验和（与执行后的口径一致）
         checksumBefore: before.checksum,
@@ -807,6 +848,16 @@ export class RasterEditor {
     // 否则窗口里根本没有区域外的像元可取（取不到色就只剩黑色）。
     const marginPx = parsed === 'sample-from-edge' ? 1 : 0;
     return this.#applyPixels('raster.paint', req.target, (px, ctx) => {
+      // 掩膜在区域里一个像元都没覆盖 → 这次不会改到任何东西。
+      // 与其等它报「改了 0 像元」，不如把原因说清楚。
+      // 用的是**整图**区域（req.region）：掩膜的坐标本来就相对区域原点，
+      // 与走整图路径还是窗口路径无关。
+      if (req.mask && !maskHitsRegion(req.mask, req.region)) {
+        throw new Error(
+          `掩膜在区域内没有覆盖到任何像元（区域 ${describeRegion(req.region)}）：` +
+            `这次不会改到任何像元`,
+        );
+      }
       // 窗口路径下 mutate 拿到的是窗口像素，区域与掩膜都得换算到窗口坐标系
       const region = ctx.localRegion ?? req.region;
       const type = px.pixelType;
@@ -885,6 +936,24 @@ export class RasterEditor {
     });
   }
 
+  /**
+   * 经纬度 → 原生像元（只读，不碰文件）。
+   *
+   * 为什么不放在服务层：坐标换算要 GDAL 的仿射参数与 PROJ 的投影，
+   * 那是引擎的活；放到服务层就会出现两份换算代码（前端一份、服务端一份），
+   * 两份迟早走样。
+   *
+   * 4326 的栅格与投影坐标系的栅格走**同一条**路（引擎内部决定要不要做投影），
+   * 调用方不必自己判断"这张图是不是经纬度"。
+   */
+  async queryPixels(req: PixelQueryOpRequest): Promise<PixelQueryResult> {
+    return queryRasterPixels(this.#loc, {
+      path: this.#abs(req.target),
+      points: req.points,
+      ...(req.allowOutside !== undefined ? { allowOutside: req.allowOutside } : {}),
+    });
+  }
+
   /** 拼接多幅为一幅 */
   async mosaic(req: MosaicRequest): Promise<RasterOpResult> {
     const gdal = tools(this.#loc);
@@ -939,7 +1008,12 @@ interface RasterMeta {
   readonly driver: string;
 }
 
-/** 两条带里有多少个样点不同 */
+/**
+ * 两条带里有多少个样点不同。
+ *
+ * 吃的是 PixelBand（8 位与 16 位都适用）：16 位带上按元素比较同样成立，
+ * 而只吃 Uint8Array 的写法在 16 位影像上根本编译不过。
+ */
 function countChanged(before: PixelBand | undefined, after: PixelBand | undefined): number {
   if (!before || !after) return 0;
   const n = Math.min(before.length, after.length);

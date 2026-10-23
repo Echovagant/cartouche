@@ -32,7 +32,7 @@
       "expected": {
         "ops": [
           { "op": "dataset.open", "params": { "targets": ["dataset://sentinel2-2024Q2.tif", "dataset://china_counties.shp"] } },
-          { "op": "dataset.healthCheck", "params": { "target": "dataset://china_counties.shp" } },
+          { "op": "dataset.healthCheck", "params": { "target": "dataset://china_counties.shp", "checks": ["crs-present", "crs-range-sanity"] } },
           { "op": "vector.reproject", "params": { "target": "dataset://china_counties.shp", "to": "EPSG:32631" } },
           { "op": "export.image", "params": { "target": "dataset://sentinel2-2024Q2.tif", "format": "pdf", "dpi": 300 } }
         ],
@@ -326,7 +326,7 @@
       "expected": {
         "ops": [
           { "op": "dataset.open", "params": { "targets": ["dataset://sentinel2-2024Q2.tif", "dataset://counties.shp"] } },
-          { "op": "raster.clip", "params": { "target": "dataset://sentinel2-2024Q2.tif", "clip": "dataset://counties.shp", "mode": "inside" } },
+          { "op": "raster.clip", "params": { "target": "dataset://sentinel2-2024Q2.tif", "clip": "dataset://counties.shp" } },
           { "op": "feature.summarize", "params": { "target": "layer://counties", "groupBy": ["NAME_3"], "aggregates": ["area"], "areaUnit": "km2" } },
           { "op": "export.report", "params": { "kind": "csv", "target": "layer://counties", "include": ["impact-metrics"], "format": "csv" } }
         ],
@@ -392,7 +392,7 @@
       "expected": {
         "ops": [
           { "op": "dataset.open", "params": { "targets": ["dataset://rivers.shp", "dataset://county.shp"] } },
-          { "op": "vector.overlay", "params": { "target": "layer://rivers", "operation": "clip-to-base", "base": "layer://county", "preserveAttributes": true } }
+          { "op": "vector.overlay", "params": { "base": "layer://county", "update": "layer://rivers", "operation": "clip-to-base", "preserveAttributes": true } }
         ],
         "assertions": [
           { "kind": "impact-report", "mustContain": ["影响要素数"] },
@@ -424,8 +424,8 @@
       "expected": {
         "ops": [
           { "op": "dataset.open", "params": { "targets": ["dataset://provinces_datav.geojson", "dataset://provinces_gadm.json"] } },
-          { "op": "dataset.healthCheck", "params": { "target": "dataset://provinces_datav.geojson" } },
-          { "op": "vector.overlay", "params": { "target": "layer://provinces_datav", "operation": "intersection", "base": "layer://provinces_gadm" } }
+          { "op": "dataset.healthCheck", "params": { "target": "dataset://provinces_datav.geojson", "checks": ["crs-mismatch", "systematic-offset"] } },
+          { "op": "vector.overlay", "params": { "base": "layer://provinces_gadm", "update": "layer://provinces_datav", "operation": "intersection" } }
         ],
         "assertions": [
           { "kind": "impact-report", "mustContain": ["影响要素数"] },
@@ -458,8 +458,8 @@
       "expected": {
         "ops": [
           { "op": "dataset.open", "params": { "targets": ["dataset://natural_earth_admin0.shp"] } },
-          { "op": "dataset.healthCheck", "params": { "target": "dataset://natural_earth_admin0.shp" } },
-          { "op": "vector.repairGeometry", "params": { "target": "dataset://natural_earth_admin0.shp", "issues": ["self-intersection", "collapsed-ring", "ring-orientation"] } },
+          { "op": "dataset.healthCheck", "params": { "target": "dataset://natural_earth_admin0.shp", "checks": ["null-geometry", "zero-area", "field-naming"] } },
+          { "op": "vector.repairGeometry", "params": { "target": "dataset://natural_earth_admin0.shp", "rules": ["self-intersection", "collapsed-ring", "ring-orientation"] } },
           { "op": "export.report", "params": { "kind": "health-report", "target": "dataset://natural_earth_admin0.shp", "include": ["impact-metrics", "before-after-image"], "format": "html" } }
         ],
         "assertions": [
@@ -492,7 +492,7 @@
       "expected": {
         "ops": [
           { "op": "dataset.open", "params": { "targets": ["dataset://scene_01.tif", "dataset://scene_02.tif", "dataset://scene_03.tif", "dataset://scene_04.tif", "dataset://scene_05.tif", "dataset://scene_06.tif"] } },
-          { "op": "raster.mosaic", "params": { "inputs": ["dataset://scene_01.tif", "dataset://scene_02.tif", "dataset://scene_03.tif", "dataset://scene_04.tif", "dataset://scene_05.tif", "dataset://scene_06.tif"], "overlap": "blend" } }
+          { "op": "raster.mosaic", "params": { "inputs": ["dataset://scene_01.tif", "dataset://scene_02.tif", "dataset://scene_03.tif", "dataset://scene_04.tif", "dataset://scene_05.tif", "dataset://scene_06.tif"] } }
         ],
         "assertions": [
           { "kind": "impact-report", "mustContain": ["备份文件名"] },
@@ -500,7 +500,7 @@
         ]
       },
       "traps": [
-        "重叠策略 first/last/blend 的结果不同，**blend 可能引入混合像元**",
+        "引擎目前**没有**实现 first/last/blend 重叠策略（契约里也没有这个参数）：拼接就是建 VRT 再转 GeoTIFF，重叠区按 VRT 源序取用，出接缝先查这一点",
         "镶嵌前各景的**分辨率必须一致**，否则会被重采样",
         "拼完要回读校验，别只看「命令没报错」"
       ],
@@ -555,7 +555,7 @@
       "expected": {
         "ops": [
           { "op": "dataset.open", "params": { "targets": ["dataset://scan.tff"] } },
-          { "op": "dataset.healthCheck", "params": { "target": "dataset://scan.tff" } }
+          { "op": "dataset.healthCheck", "params": { "target": "dataset://scan.tff", "checks": ["crs-present", "crs-range-sanity"] } }
         ],
         "assertions": [
           { "kind": "health-report", "mustContain": ["坐标系"] },
@@ -587,8 +587,8 @@
       "expected": {
         "ops": [
           { "op": "dataset.open", "params": { "targets": ["dataset://scan_01.tff", "dataset://scan_02.tff", "dataset://scan_03.tff", "dataset://scan_04.tff", "dataset://scan_05.tff"] } },
-          { "op": "raster.adjustLevels", "params": { "target": "dataset://scan_01.tff", "method": "linear-stretch", "autoDerive": true } },
-          { "op": "raster.adjustLevels", "params": { "target": "dataset://scan_02.tff", "method": "linear-stretch", "autoDerive": true } }
+          { "op": "raster.adjustLevels", "params": { "target": "dataset://scan_01.tff", "method": "linear-stretch" } },
+          { "op": "raster.adjustLevels", "params": { "target": "dataset://scan_02.tff", "method": "linear-stretch" } }
         ],
         "assertions": [
           { "kind": "pixel-diff", "scope": "outside-target", "maxDiffRatio": 0 },
@@ -597,7 +597,7 @@
         ]
       },
       "traps": [
-        "**autoDerive 为 true 时手填的 brightness/contrast 会被忽略**——两者不能同时给",
+        "**linear-stretch 是按每波段实际值域做的**——本来均匀的图幅会被拉得更狠；brightness / contrast 是叠在拉伸之后的",
         "已经正常的图幅再拉伸会**把高光截断**（255 饱和）",
         "原始文件必须备份，提亮是**可回退**的"
       ],
@@ -654,7 +654,7 @@
       "expected": {
         "ops": [
           { "op": "dataset.open", "params": { "targets": ["dataset://scan.tff"] } },
-          { "op": "dataset.healthCheck", "params": { "target": "dataset://scan.tff" } },
+          { "op": "dataset.healthCheck", "params": { "target": "dataset://scan.tff", "checks": ["crs-present", "encoding"] } },
           { "op": "export.report", "params": { "kind": "compat-report", "target": "dataset://scan.tff", "include": ["crs", "sidecars", "arcgis-notes", "impact-metrics", "backups"], "format": "html" } }
         ],
         "assertions": [

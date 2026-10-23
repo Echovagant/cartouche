@@ -35,7 +35,8 @@
   },
   "conventions": {
     "region": "region 一律写成 4 元地理范围数组 [minX, minY, maxX, maxY]（目标图层坐标系）。引擎认两种形状：像元坐标对象 {minX,minY,maxX,maxY} 与地理范围数组；layer:// / dataset:// 引用不是区域，引擎与操作契约都不收。文中的坐标是示意值（CGCS2000 3 度带、米），不对应任何真实数据。",
-    "paths": "target / source / clip 一律写成 dataset://<工作区相对路径>：引擎只认这一种，layer:// 是图层标识、不是文件路径。"
+    "paths": "target / source / clip 一律写成 dataset://<工作区相对路径>：引擎只认这一种，layer:// 是图层标识、不是文件路径。",
+    "exportBbox": "export.image 的 bbox 是出图取景窗口，坐标系固定 EPSG:4326（经纬度）；其余 op 的地理范围按目标图层坐标系。"
   },
   "cases": [
     {
@@ -56,8 +57,7 @@
             "op": "raster.erase",
             "params": {
               "target": "dataset://scan-2023.tff",
-              "region": [500000, 3000000, 500200, 3000200],
-              "fill": "underlying"
+              "region": [500000, 3000000, 500200, 3000200]
             }
           }
         ],
@@ -187,8 +187,7 @@
             "op": "raster.inpaint",
             "params": {
               "target": "dataset://scan-2023.tff",
-              "region": [500300, 2999900, 500400, 3000000],
-              "method": "telea"
+              "region": [500300, 2999900, 500400, 3000000]
             }
           }
         ],
@@ -237,8 +236,7 @@
             "op": "raster.clip",
             "params": {
               "target": "dataset://scan-2023.tff",
-              "clip": "dataset://frame.shp",
-              "mode": "inside"
+              "clip": "dataset://frame.shp"
             }
           }
         ],
@@ -344,9 +342,7 @@
               "inputs": [
                 "dataset://tile-a.tff",
                 "dataset://tile-b.tff"
-              ],
-              "overlap": "blend",
-              "resample": "bilinear"
+              ]
             }
           }
         ],
@@ -387,7 +383,7 @@
       "utterance": "这 30 张图分辨率都不一样，有 0.5 米的也有 2 米的，统一成 1 米，范围保持不变",
       "preconditions": {
         "datasets": [
-          "batch/*.tif（30 幅）"
+          "batch/tile-01.tif … batch/tile-30.tif（30 幅）"
         ],
         "state": "分辨率混杂，范围各异",
         "crs": "全部 CGCS2000 / 3 度带"
@@ -397,17 +393,24 @@
           {
             "op": "raster.resample",
             "params": {
-              "inputs": "batch/*.tif",
+              "target": "dataset://batch/tile-01.tif",
               "targetResolution": 1,
-              "resampleMethod": "nearest",
-              "align": "union"
+              "resampleMethod": "nearest"
+            }
+          },
+          {
+            "op": "raster.resample",
+            "params": {
+              "target": "dataset://batch/tile-02.tif",
+              "targetResolution": 1,
+              "resampleMethod": "nearest"
             }
           }
         ],
         "assertions": [
           {
             "kind": "batch-complete",
-            "expect": "30 幅全部产出，0 失败"
+            "expect": "每幅一条 op（30 幅 = 30 条），0 失败"
           },
           {
             "kind": "resolution-uniform",
@@ -421,7 +424,8 @@
       },
       "traps": [
         "对影像用双线性插值会平滑掉地物细节——分类影像必须用最近邻",
-        "『范围保持不变』要求对齐到并集网格，而不是各自原范围"
+        "计划是**平铺的 op 列表**：引擎一次只改一幅，通配路径它不认——30 幅要 30 条 op，漏一条就静默少改一幅",
+        "『范围保持不变』在引擎里指各幅保持自己的范围；要对齐到**并集网格**（同一原点、同一行列数），引擎目前还做不到"
       ],
       "difficulty": 2,
       "proParity": {
@@ -800,9 +804,9 @@
               "mapping": {
                 "gxbh": "更新编号",
                 "lbmc": "类别名称"
-              },
-              "requireUserConfirm": true
-            }
+              }
+            },
+            "requireUserConfirm": true
           }
         ],
         "assertions": [
@@ -971,8 +975,7 @@
             "params": {
               "target": "dataset://old.shp",
               "from": "GBK",
-              "to": "UTF-8",
-              "backup": true
+              "to": "UTF-8"
             }
           }
         ],
@@ -1037,9 +1040,9 @@
             "op": "feature.delete",
             "params": {
               "target": "dataset://parcel.shp",
-              "where": "OBJECTID IN (空几何要素列表)",
-              "requireUserConfirm": true
-            }
+              "where": "OBJECTID IN (空几何要素列表)"
+            },
+            "requireUserConfirm": true
           }
         ],
         "assertions": [
@@ -1299,7 +1302,7 @@
       "utterance": "这一堆影像都按行政区界裁一下，裁完按原文件名命名",
       "preconditions": {
         "datasets": [
-          "batch/*.tif（20 幅）",
+          "batch/tile-01.tif … batch/tile-20.tif（20 幅）",
           "district.shp（行政区界）"
         ],
         "state": "20 幅影像，覆盖多个行政区",
@@ -1310,10 +1313,15 @@
           {
             "op": "raster.clip",
             "params": {
-              "inputs": "batch/*.tif",
-              "clip": "dataset://district.shp",
-              "mode": "inside",
-              "naming": "source-basename"
+              "target": "dataset://batch/tile-01.tif",
+              "clip": "dataset://district.shp"
+            }
+          },
+          {
+            "op": "raster.clip",
+            "params": {
+              "target": "dataset://batch/tile-02.tif",
+              "clip": "dataset://district.shp"
             }
           }
         ],
@@ -1324,7 +1332,7 @@
           },
           {
             "kind": "naming-rule",
-            "expect": "输出名与源文件同名"
+            "expect": "输出名与源文件同名（引擎就地写回，不另起名字）"
           },
           {
             "kind": "crs-preserved",
@@ -1334,7 +1342,8 @@
       },
       "traps": [
         "裁切后世界文件/仿射参数必须同步更新",
-        "部分失败要逐个报出，不能因为一个失败就整批中断"
+        "部分失败要逐个报出，不能因为一个失败就整批中断",
+        "引擎一次只裁一幅：通配路径与命名规则都不是它认的参数，20 幅要 20 条 op"
       ],
       "difficulty": 2,
       "proParity": {
@@ -1353,8 +1362,7 @@
       "utterance": "这批图的范围和分辨率都不一样，先统一到同一个网格上，不然没法一起用",
       "preconditions": {
         "datasets": [
-          "batch/*.tif（30 幅）",
-          "grid.shp（目标网格）"
+          "batch/tile-01.tif … batch/tile-30.tif（30 幅）"
         ],
         "state": "范围、分辨率、行列数各异",
         "crs": "均为 CGCS2000 / 3 度带"
@@ -1364,17 +1372,24 @@
           {
             "op": "raster.resample",
             "params": {
-              "inputs": "batch/*.tif",
-              "targetGrid": "dataset://grid.shp",
-              "resampleMethod": "nearest",
-              "align": "grid"
+              "target": "dataset://batch/tile-01.tif",
+              "targetResolution": 1,
+              "resampleMethod": "nearest"
+            }
+          },
+          {
+            "op": "raster.resample",
+            "params": {
+              "target": "dataset://batch/tile-02.tif",
+              "targetResolution": 1,
+              "resampleMethod": "nearest"
             }
           }
         ],
         "assertions": [
           {
-            "kind": "grid-uniform",
-            "expect": "所有输出行列数与原点一致"
+            "kind": "resolution-uniform",
+            "expect": "所有输出分辨率一致（原点与行列数仍逐幅不同——引擎目前只统一分辨率）"
           },
           {
             "kind": "batch-complete",
@@ -1388,7 +1403,9 @@
       },
       "traps": [
         "对齐到网格与对齐到并集范围是两种不同结果，不能混",
-        "重采样方法要按数据类型选"
+        "重采样方法要按数据类型选",
+        "引擎**没有**「对齐到目标网格」这一说：它只按目标分辨率重采样，网格原点不统一——真要同网格得自己先算并集范围",
+        "一次只改一幅：30 幅要 30 条 op，通配路径它不认"
       ],
       "difficulty": 3,
       "proParity": {
@@ -1677,7 +1694,7 @@
             "op": "export.image",
             "params": {
               "target": "dataset://scan-2023.tff",
-              "region": [500000, 3000000, 501000, 3001000],
+              "bbox": [120.3, 30.52, 120.31, 30.54],
               "format": "png",
               "dpi": 300
             }

@@ -9,6 +9,14 @@
  *     "所见即所得"是出图这件事的基本要求；
  *   - 中文字形直接用系统字体（微软雅黑 / 苹方），不引入任何字体文件与许可。
  *
+ * 版面规则（2026-10 修）：
+ *   以前各块是"画到哪儿算到哪儿"的——图例贴着左下角、标题栏贴着右下角，
+ *   两者宽度各自按画幅比例算，谁也不看谁。图幅一窄，图例就压到标题栏底下，
+ *   比例尺的数字也会被图例盖掉半截。
+ *   现在先把版面**算出来**（computeSheetLayout），再照着算好的位置画：
+ *   底部横着分两栏——右栏是标题栏，左栏是图例 + 比例尺组，
+ *   两栏之间留出固定间距，比例尺的数字与刻度条永远在同一组里。
+ *
  * 坐标系说明：
  *   本模块只认"像素 + DPI"，不认屏幕还是纸张。
  *   屏幕预览按 96 DPI 画，导出 PDF 按引擎那边默认的 150 DPI 画，
@@ -154,17 +162,181 @@ export function metersPerPixelAt(zoom: number, latitude: number): number {
   );
 }
 
-interface Frame {
+/** 一个矩形（像素） */
+export interface SheetRect {
   readonly x: number;
   readonly y: number;
   readonly w: number;
   readonly h: number;
 }
 
+/** 比例尺组的版面：数字、刻度条、末端标注是**一组**，谁也不许单独跑掉 */
+export interface SheetScaleLayout {
+  /** 整组的外框（数字在最上，刻度条在下） */
+  readonly group: SheetRect;
+  /** 刻度条本体 */
+  readonly bar: SheetRect;
+  /** 刻度条代表的长度（米） */
+  readonly meters: number;
+  /** 比例尺分母文字的基线 y */
+  readonly numberBaseline: number;
+  /** 末端长度标注的 x */
+  readonly distanceX: number;
+}
+
+/** 图面要素的版面 */
+export interface SheetLayout {
+  /** 图框内框 */
+  readonly frame: SheetRect;
+  /** 标题栏 */
+  readonly title: SheetRect;
+  /** 图例 */
+  readonly legend: SheetRect;
+  /** 图例里实际画得下的条目数（画不下时宁可少画一条，也不压住比例尺） */
+  readonly legendItems: number;
+  /** 图例是否画得下（画幅实在太小就整块不画） */
+  readonly legendVisible: boolean;
+  /** 比例尺组 */
+  readonly scale: SheetScaleLayout;
+  /** 指北针的落点（箭头尖） */
+  readonly arrow: { readonly x: number; readonly y: number; readonly size: number };
+}
+
+/** 图框：外线离画布边的距离、内线与外线的间距（都按 k 缩放） */
+const FRAME_MARGIN = 6;
+const FRAME_GAP = 4;
+
+function frameMetrics(k: number): { margin: number; gap: number } {
+  return { margin: Math.round(FRAME_MARGIN * k), gap: Math.round(FRAME_GAP * k) };
+}
+
+/** 图框内框：双线之间那一圈 */
+function frameRect(width: number, height: number, k: number): SheetRect {
+  const { margin, gap } = frameMetrics(k);
+  return {
+    x: margin + gap,
+    y: margin + gap,
+    w: Math.max(0, width - (margin + gap) * 2),
+    h: Math.max(0, height - (margin + gap) * 2),
+  };
+}
+
+/**
+ * 算出图面要素的版面。
+ *
+ * 底部横着分两栏，这是"不压叠"的关键：
+ *   - 右栏：标题栏（右下角）；
+ *   - 左栏：图例 + 比例尺组（都在左下角，比例尺组在最底）；
+ *   - 两栏之间留 blockGap 的间距，图例的宽度再大也不会伸到标题栏底下。
+ *
+ * 比例尺的数字画在刻度条**上方**、与刻度条同属 scale.group，
+ * 图例则摆在 group 上方，两者之间留固定间距——数字不会被裁。
+ */
+export function computeSheetLayout(options: SheetOptions, k: number): SheetLayout {
+  const frame = frameRect(options.width, options.height, k);
+
+  /** 图面要素与图框之间的留白 */
+  const pad = 8 * k;
+  /** 左右两栏之间的最小间距 */
+  const blockGap = 10 * k;
+
+  /* ── 指北针：右上角 ── */
+  const arrowSize = 20 * k;
+  const arrow = {
+    x: frame.x + frame.w - 22 * k,
+    y: frame.y + 26 * k,
+    size: arrowSize,
+  };
+
+  /* ── 标题栏：右下角 ──
+     宽度上限取画幅的 44%：再宽，左栏就没有容身之地了。 */
+  const titleW = Math.min(frame.w * 0.44, 320 * k);
+  const titleBottom = frame.y + frame.h - pad;
+  const titleH = Math.min(frame.h * 0.32, 70 * k);
+  /** 标题栏不许顶到指北针 */
+  const titleTop = Math.max(titleBottom - titleH, arrow.y + arrow.size + 8 * k);
+  const title: SheetRect = {
+    x: frame.x + frame.w - titleW - pad,
+    y: titleTop,
+    w: titleW,
+    h: Math.max(0, titleBottom - titleTop),
+  };
+
+  /* ── 左栏：图例与比例尺共用 ── */
+  const colX = frame.x + pad;
+  const colW = Math.max(0, title.x - blockGap - colX);
+
+  /* ── 比例尺组：数字在上、刻度条在下 ── */
+  const barH = 7 * k;
+  const numberSize = 9.5 * k;
+  /** 末端长度标注（「2 km」）的宽度预算 */
+  const distanceBudget = 34 * k;
+  /** 数字基线到刻度条顶边的距离 */
+  const numberGap = 4 * k;
+  const scaleBottom = frame.y + frame.h - pad - 6 * k;
+  const barTop = scaleBottom - barH;
+  const numberBaseline = barTop - numberGap;
+  const groupTop = numberBaseline - numberSize;
+
+  // 刻度条长度：先按左栏宽度定上限，再取「好看的」档位
+  const targetPx = Math.max(12 * k, Math.min(colW - 6 * k - distanceBudget, 150 * k));
+  const rawMeters = targetPx * options.metersPerPixel;
+  const meters = niceDistance(rawMeters);
+  const barWidth = Math.max(
+    12 * k,
+    Math.min(targetPx, meters / Math.max(options.metersPerPixel, 1e-9)),
+  );
+
+  const scale: SheetScaleLayout = {
+    group: { x: colX, y: groupTop, w: colW, h: scaleBottom - groupTop },
+    bar: { x: colX, y: barTop, w: barWidth, h: barH },
+    meters,
+    numberBaseline,
+    distanceX: colX + barWidth + 6 * k,
+  };
+
+  /* ── 图例：左栏里、比例尺组之上 ── */
+  const rowH = 15 * k;
+  const headH = 17 * k;
+  const itemCount = options.legend.length;
+  const legendW = Math.min(colW, 240 * k);
+  /** 左栏能给图例的最大高度（从图框顶到比例尺组上方） */
+  const maxLegendH = groupTop - 8 * k - (frame.y + pad);
+
+  let rows = rowH;
+  let items = itemCount;
+  let visible = true;
+  if (headH + items * rows + 6 * k > maxLegendH) {
+    // 放不下：先压行高（下限 10k），还是不行就舍掉放不下的条目
+    rows = Math.max(10 * k, Math.min(rows, (maxLegendH - headH - 6 * k) / Math.max(items, 1)));
+    if (headH + items * rows + 6 * k > maxLegendH) {
+      items = Math.max(0, Math.floor((maxLegendH - headH - 6 * k) / rows));
+    }
+    if (items <= 0 && itemCount > 0) {
+      // 连标题都放不下：整块不画，好过画一个压住比例尺的半截框
+      visible = false;
+      items = 0;
+    }
+  }
+  const legendH = headH + items * rows + 6 * k;
+  // 位置：优先贴在比例尺组上方；下面不够就顶到左上角
+  const legendTop = Math.max(frame.y + pad, groupTop - 8 * k - legendH);
+  const legend: SheetRect = { x: colX, y: legendTop, w: legendW, h: legendH };
+
+  return {
+    frame,
+    title,
+    legend,
+    legendItems: items,
+    legendVisible: visible,
+    scale,
+    arrow,
+  };
+}
+
 /** 图框：外粗内细的双线，套住整幅图 */
-function drawFrame(ctx: CanvasRenderingContext2D, width: number, height: number, k: number): Frame {
-  const margin = Math.round(6 * k);
-  const gap = Math.round(4 * k);
+function drawFrame(ctx: CanvasRenderingContext2D, width: number, height: number, k: number): void {
+  const { margin, gap } = frameMetrics(k);
   ctx.save();
   ctx.strokeStyle = INK;
   ctx.lineWidth = Math.max(1, 1.6 * k);
@@ -172,19 +344,15 @@ function drawFrame(ctx: CanvasRenderingContext2D, width: number, height: number,
   ctx.lineWidth = Math.max(0.5, 0.6 * k);
   ctx.strokeRect(margin + gap, margin + gap, width - (margin + gap) * 2, height - (margin + gap) * 2);
   ctx.restore();
-  return {
-    x: margin + gap,
-    y: margin + gap,
-    w: width - (margin + gap) * 2,
-    h: height - (margin + gap) * 2,
-  };
 }
 
 /** 指北针：正北朝上的简化箭头（本模块假定地图未旋转） */
-function drawNorthArrow(ctx: CanvasRenderingContext2D, frame: Frame, k: number): void {
-  const size = 20 * k;
-  const x = frame.x + frame.w - 20 * k;
-  const y = frame.y + 26 * k;
+function drawNorthArrow(
+  ctx: CanvasRenderingContext2D,
+  arrow: { readonly x: number; readonly y: number; readonly size: number },
+  k: number,
+): void {
+  const { x, y, size } = arrow;
   ctx.save();
   ctx.fillStyle = INK;
   ctx.beginPath();
@@ -202,12 +370,16 @@ function drawNorthArrow(ctx: CanvasRenderingContext2D, frame: Frame, k: number):
 }
 
 /** 标题栏：图名 + 出图时间 + 操作人 */
-function drawTitleBlock(ctx: CanvasRenderingContext2D, options: SheetOptions, frame: Frame, k: number): void {
-  const blockW = Math.min(frame.w * 0.62, 320 * k);
-  const blockH = Math.min(frame.h * 0.34, 70 * k);
+function drawTitleBlock(
+  ctx: CanvasRenderingContext2D,
+  options: SheetOptions,
+  rect: SheetRect,
+  k: number,
+): void {
   const pad = 8 * k;
-  const x = frame.x + frame.w - blockW - pad;
-  const y = frame.y + frame.h - blockH - pad;
+  const { x, y } = rect;
+  const blockW = rect.w;
+  const blockH = rect.h;
   const titleH = blockH * 0.56;
 
   ctx.save();
@@ -249,65 +421,58 @@ function drawTitleBlock(ctx: CanvasRenderingContext2D, options: SheetOptions, fr
   ctx.restore();
 }
 
-/** 比例尺：黑白相间的分段条 + 比例尺分母 + 实际长度 */
+/**
+ * 比例尺：黑白相间的分段条 + 比例尺分母 + 实际长度。
+ *
+ * 三样东西（数字、刻度条、末端标注）都落在 scale.group 这一组里，
+ * 图例摆在组的上方，彼此不重叠——数字不会被裁掉半截。
+ */
 function drawScaleBar(
   ctx: CanvasRenderingContext2D,
   options: SheetOptions,
-  frame: Frame,
+  scale: SheetScaleLayout,
   k: number,
-): number {
+): void {
   const denominator = options.scaleDenominator ?? scaleDenominator(options.metersPerPixel, options.dpi);
-  const targetPx = Math.min(frame.w * 0.34, 150 * k);
-  const rawMeters = targetPx * options.metersPerPixel;
-  const meters = niceDistance(rawMeters);
-  const barPx = Math.max(24, Math.min(frame.w * 0.5, meters / Math.max(options.metersPerPixel, 1e-9)));
-  const barH = 7 * k;
-  const pad = 8 * k;
-  const x = frame.x + pad;
-  const y = frame.y + frame.h - barH - pad - 10 * k;
+  const { bar, meters, numberBaseline, distanceX } = scale;
 
   ctx.save();
   ctx.fillStyle = INK;
   ctx.font = fontOf(9.5 * k);
   ctx.textAlign = 'left';
   ctx.textBaseline = 'alphabetic';
-  ctx.fillText(formatScale(denominator), x, y - 5 * k);
+  ctx.fillText(formatScale(denominator), bar.x, numberBaseline);
 
   const segments = 4;
-  const segW = barPx / segments;
+  const segW = bar.w / segments;
   for (let i = 0; i < segments; i++) {
     ctx.fillStyle = i % 2 === 0 ? INK : '#ffffff';
-    ctx.fillRect(x + i * segW, y, segW, barH);
+    ctx.fillRect(bar.x + i * segW, bar.y, segW, bar.h);
     ctx.strokeStyle = INK;
     ctx.lineWidth = Math.max(0.5, 0.6 * k);
-    ctx.strokeRect(x + i * segW, y, segW, barH);
+    ctx.strokeRect(bar.x + i * segW, bar.y, segW, bar.h);
   }
   ctx.fillStyle = INK;
   ctx.font = fontOf(9 * k);
-  ctx.fillText(formatDistance(meters), x + barPx + 6 * k, y + barH);
+  ctx.fillText(formatDistance(meters), distanceX, bar.y + bar.h);
   ctx.restore();
-  // 返回比例尺顶部位置，供图例往上摆
-  return y - 14 * k;
 }
 
 /** 图例：图层名 + 色块 */
 function drawLegend(
   ctx: CanvasRenderingContext2D,
   options: SheetOptions,
-  frame: Frame,
+  rect: SheetRect,
+  items: number,
   k: number,
-  bottomLimit: number,
 ): void {
-  const items = options.legend;
-  if (items.length === 0) return;
+  const list = options.legend.slice(0, items);
+  if (list.length === 0) return;
   const rowH = 15 * k;
   const headH = 17 * k;
-  const boxW = Math.min(frame.w * 0.5, 240 * k);
-  const boxH = headH + items.length * rowH + 6 * k;
-  const pad = 8 * k;
-  const x = frame.x + pad;
-  const y = bottomLimit - boxH - 4 * k;
-  if (y < frame.y) return;
+  const { x, y } = rect;
+  const boxW = rect.w;
+  const boxH = headH + list.length * rowH + 6 * k;
 
   ctx.save();
   ctx.fillStyle = 'rgba(255,255,255,0.88)';
@@ -323,7 +488,7 @@ function drawLegend(
   ctx.fillText('图例', x + 6 * k, y + headH / 2);
 
   ctx.font = fontOf(9 * k);
-  items.forEach((item, i) => {
+  list.forEach((item, i) => {
     const rowY = y + headH + i * rowH + rowH / 2;
     ctx.fillStyle = item.color;
     ctx.fillRect(x + 6 * k, rowY - 4 * k, 14 * k, 8 * k);
@@ -349,10 +514,16 @@ export function drawSheet(ctx: CanvasRenderingContext2D, options: SheetOptions):
 
   ctx.save();
   ctx.textBaseline = 'alphabetic';
-  const frame = drawFrame(ctx, width, height, k);
-  const scaleTop = drawScaleBar(ctx, options, frame, k);
-  drawLegend(ctx, options, frame, k, scaleTop);
-  drawTitleBlock(ctx, options, frame, k);
-  drawNorthArrow(ctx, frame, k);
+  const layout = computeSheetLayout(options, k);
+  drawFrame(ctx, width, height, k);
+  // 顺序：图例 → 比例尺 → 标题栏 → 指北针。
+  // 万一画幅小到放不下，后画的盖住先画的，
+  // 但比例尺的数字与刻度条是同一组，永远不会被图例切掉半截。
+  if (layout.legendVisible) {
+    drawLegend(ctx, options, layout.legend, layout.legendItems, k);
+  }
+  drawScaleBar(ctx, options, layout.scale, k);
+  drawTitleBlock(ctx, options, layout.title, k);
+  drawNorthArrow(ctx, layout.arrow, k);
   ctx.restore();
 }

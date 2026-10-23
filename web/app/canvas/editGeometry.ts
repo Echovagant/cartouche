@@ -37,6 +37,15 @@ export function isWgs84Grid(grid: {
 /**
  * 经纬度 → 原生像元（仿射反算）。
  *
+ * ⚠️ 这条公式现在只是**参照实现**：真正的换算由引擎做
+ * （`POST /api/raster/pixels`），因为浏览器里没有投影能力，
+ * 非 4326 的栅格必须由引擎把经纬度投影到原生坐标系再反算。
+ *
+ * 保留它有两个用处：
+ *   1. 引擎那份（`src/engine/raster/pixel-query.ts` 的 `pixelFromNative`）
+ *      与它**逐字一致** —— 4326 的栅格两边必须给出同一个像元坐标；
+ *   2. 单测拿它当"旧算法"的对照物（见 test/raster-pixel-query.test.mjs）。
+ *
  * geotransform = [originX, pixelWidth, rotX, originY, rotY, pixelHeight]，GDAL 的行列序：
  *   x = originX + col*pixelWidth + row*rotX
  *   y = originY + col*rotY   + row*pixelHeight
@@ -69,6 +78,55 @@ export function pixelFromLngLat(
   const row = (-ry * dx + pw * dy) / det;
   if (!Number.isFinite(col) || !Number.isFinite(row)) return null;
   return { col, row };
+}
+
+/**
+ * 视窗四角的经纬度（左下、右下、右上、左上）。
+ *
+ * 顺序与屏幕位置一一对应：
+ *   左下 (0, 高度) → 右下 (宽度, 高度) → 右上 (宽度, 0) → 左上 (0, 0)
+ *
+ * 这四个角是**笔宽换算**的输入：把视窗的两条边送进引擎换算成原生像元，
+ * 再用"原生像元跨度 ÷ 屏幕像素跨度"得出一个屏幕像素值多少原生像元。
+ * 这样算出来的比例与坐标系无关（4326 的栅格也走同一条路）。
+ */
+export function viewportCorners(
+  bbox: readonly [number, number, number, number],
+): readonly (readonly [number, number])[] {
+  const [minX, minY, maxX, maxY] = bbox;
+  return [
+    [minX, minY],
+    [maxX, minY],
+    [maxX, maxY],
+    [minX, maxY],
+  ];
+}
+
+/**
+ * 原生像元 / 屏幕像素 的比例（笔宽换算用）。
+ *
+ * 用视窗两对角线的跨度算：横向跨度 ÷ 屏幕宽度、纵向跨度 ÷ 屏幕高度，
+ * 取小的那个（保守：宁可笔细一点，也不要糊一大片）。
+ *
+ * 局部线性：投影的比例尺在一个视窗范围内变化极小，误差可以忽略。
+ * 4326 的栅格里这个值与"像元尺寸（度）÷ 每像素度数"完全相等。
+ */
+export function nativeScaleFromCorners(
+  corners: readonly PixelPoint[],
+  viewport: { readonly width: number; readonly height: number },
+): number | null {
+  if (corners.length < 4) return null;
+  const bl = corners[0];
+  const br = corners[1];
+  const tl = corners[3];
+  if (!bl || !br || !tl) return null;
+  const spanCol = Math.abs(br.col - bl.col);
+  const spanRow = Math.abs(tl.row - bl.row);
+  const sx = spanCol / Math.max(1, viewport.width);
+  const sy = spanRow / Math.max(1, viewport.height);
+  if (!Number.isFinite(sx) || !Number.isFinite(sy)) return null;
+  if (sx <= 0 || sy <= 0) return null;
+  return Math.min(sx, sy);
 }
 
 /**
