@@ -14,6 +14,7 @@
  *   3. **不进 GitHub** —— 这个文件里没有任何密钥，一个字都没有。
  */
 import { useCallback, useState } from 'react';
+import { classifyPlanFailure, type PlanFailure } from './failures';
 
 /** 引擎服务地址；next.config.mjs 已通过 env 注入，静态导出后仍是硬编码值 */
 export const ENGINE_BASE = process.env.NEXT_PUBLIC_ENGINE_BASE_URL ?? 'http://127.0.0.1:8787';
@@ -156,46 +157,12 @@ export interface PlanPayload {
  *
  * 「连不上 MiniMax」与「密钥不对」必须分开说：前者查网络，后者换密钥，
  * 混成一句"出错了"等于让用户自己猜。
+ *
+ * 分类与文案都放在 `failures.ts`（纯函数，可被 Node 直接测），
+ * 这里只是转出去，界面的旧引用不用改。
  */
-export type PlanFailureKind =
-  | 'not_configured'
-  | 'key'
-  | 'network'
-  | 'bad_plan'
-  | 'unsupported'
-  | 'unknown';
-
-export interface PlanFailure {
-  readonly kind: PlanFailureKind;
-  readonly message: string;
-  /** 官方错误码（如 1004） */
-  readonly code: number | null;
-}
-
-/** 把引擎返回的错误翻译成"该怎么办" */
-export function classifyPlanFailure(payload: PlanPayload): PlanFailure {
-  const message = payload.message ?? '提议失败';
-  const code = payload.code ?? null;
-  switch (payload.error) {
-    case 'llm_not_configured':
-      return { kind: 'not_configured', message, code };
-    case 'llm_unauthorized':
-      return { kind: 'key', message, code };
-    case 'llm_unreachable':
-      return { kind: 'network', message, code };
-    case 'plan_schema_invalid':
-    case 'plan_not_json':
-      return { kind: 'bad_plan', message, code };
-    case 'op_not_supported':
-      return { kind: 'unsupported', message, code };
-    default:
-      // 官方把"密钥无效"报成 1004 / authorized_error，即便类别没对上也要认出来
-      if (code === 1004 || /authorized_error|invalid api key/i.test(message)) {
-        return { kind: 'key', message, code };
-      }
-      return { kind: 'unknown', message, code };
-  }
-}
+export type { PlanFailure, PlanFailureKind } from './failures';
+export { classifyPlanFailure } from './failures';
 
 /** 统一的取 JSON（失败时也要把响应体带出来：分类要看 body.error） */
 async function postJson<T>(url: string, body: unknown): Promise<{ status: number; body: T | null }> {
