@@ -79,6 +79,15 @@ export const metadata: Metadata = {
     description: SITE_DESCRIPTION,
     images: ['/site/og.png'],
   },
+  // 图标：写成**相对路径**。
+  //
+  // 为什么不用 app/icon.svg 那个文件约定：它生成的 link 是**根绝对路径**
+  // （/icon.svg?icon.<hash>.svg），不带 metadataBase —— 站点挂在
+  // /cartouche/ 子路径下时，那个 URL 会跑到域名根目录去，实测 404。
+  // 相对路径则由 metadataBase 补全，落到 /cartouche/icon.svg ✓
+  icons: {
+    icon: 'icon.svg',
+  },
 };
 
 export const viewport: Viewport = {
