@@ -263,8 +263,24 @@ export function describeZeroImpact(input: {
 /** 一条预演结果里影响像元的最小字段 */
 export interface PreviewLike {
   readonly op: string;
-  readonly affectedPixels: number;
-  readonly totalPixels: number;
+  /** 像元口径的 op 才有这两个数；非像元型 op 是 null */
+  readonly affectedPixels: number | null;
+  readonly totalPixels: number | null;
+  /**
+   * 预演结果的种类：raster = 像元口径，value = 非像元型 op（改属性那种）。
+   *
+   * 为什么必须分清：矢量型 op 本来就没有像元，"0 像元"对它**不代表什么也没改**。
+   * 按栅格口径去判，等于把每一次矢量改动都拦下来，还配一句完全对不上的解释
+   * （"多半是区域落在影像之外"—— 矢量 op 压根没有区域）。
+   *
+   * 没给 kind 时按像元口径处理（宁可拦着，也不要放一个说不清的东西过去）。
+   */
+  readonly kind?: 'raster' | 'value' | undefined;
+}
+
+/** 这条预演是不是像元口径（只有像元口径才有"0 像元 = 什么都没改"这条规则） */
+export function isPixelImpactPreview(preview: PreviewLike): boolean {
+  return preview.kind !== 'value';
 }
 
 /**
@@ -272,9 +288,11 @@ export interface PreviewLike {
  *
  * 这种改动**什么都不会发生**：引擎会把它判成失败，界面也不能给执行按钮 ——
  * 不然用户看到的还是「0 / 1,200 像元（0.0%）」，像是最轻松的一次改动。
+ *
+ * 只看**像元口径**的预演：非像元型 op 的"0"不是"没改到"（见 isPixelImpactPreview）。
  */
 export function findZeroImpactOps(previews: readonly PreviewLike[]): number[] {
   return previews
-    .map((p, index) => (p.affectedPixels === 0 ? index : -1))
+    .map((p, index) => (isPixelImpactPreview(p) && p.affectedPixels === 0 ? index : -1))
     .filter((index) => index >= 0);
 }

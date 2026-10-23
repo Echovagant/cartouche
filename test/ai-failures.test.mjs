@@ -160,6 +160,21 @@ test('找出"一个像元都没改到"的那几条', () => {
   assert.deepEqual(findZeroImpactOps([{ op: 'x', affectedPixels: 1, totalPixels: 1 }]), []);
 });
 
+test('非像元型 op 的"0"不是"没改到"：不能按栅格口径拦下来', () => {
+  // 2026-10-24 实测的洞：矢量 op（改属性、加字段…）本来就没有像元，
+  // 预演返回 affectedPixels=0，按栅格口径去判就成了"这次什么都没发生"——
+  // 每一次矢量改动都被拦下来，还配一句"多半是区域落在影像之外"（矢量 op 压根没有区域）。
+  const previews = [
+    { op: 'vector.addField', affectedPixels: null, totalPixels: null, kind: 'value' },
+    { op: 'raster.paint', affectedPixels: 0, totalPixels: 1200, kind: 'raster' },
+  ];
+  assert.deepEqual(findZeroImpactOps(previews), [1], '只有像元口径的 0 像元才该被拦');
+});
+
+test('没给 kind 时按像元口径处理：宁可拦着，也不要放一个说不清的过去', () => {
+  assert.deepEqual(findZeroImpactOps([{ op: 'vector.addField', affectedPixels: 0, totalPixels: 0 }]), [0]);
+});
+
 /* ── 密钥红线 ────────────────────────────────────────────────── */
 
 test('文案里的密钥被抹掉：前端自己也不回显', () => {

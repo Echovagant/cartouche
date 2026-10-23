@@ -717,20 +717,34 @@ const OP_LABELS: Readonly<Record<string, string>> = {
   'raster.clip': '裁切',
   'raster.resample': '重采样',
   'raster.mosaic': '拼接',
+  'vector.query': '属性查询',
+  'vector.addField': '计算字段',
+  'vector.spatialJoin': '空间连接',
+  'vector.reproject': '重投影',
+  'vector.renameFields': '重命名字段',
+  'vector.recode': '重编码',
 };
 
 /**
- * 本轮放行给 AI 提议的 op：**引擎已经实现的栅格编辑 op**。
+ * 放行给 AI 提议的 op 前缀。
  *
- * 为什么不直接用引擎注册表的全部：`feature.*` / `vector.*` 仍在并行开发中，
+ * 为什么按前缀过滤而不是写死一份名单：引擎注册表是唯一的真相，
+ * 写死的名单必然会漏 —— 2026-10-24 实测踩的就是这个坑：
+ * `vector.*` 的六个 op 早就实现并登记进执行器了，提示词却只放行 `raster.*`，
+ * 模型**根本看不到**它们，于是所有矢量需求都落到「该操作尚未支持」。
+ * 这种缺口不报错，只是功能凭空少了一半 —— 比报错更难发现。
+ *
+ * `feature.*` 暂时不在列：那几个几何写回的 op 还没实现，
  * 放行它们等于让模型提议一个"看起来能做、其实做不了"的操作。
- * 引擎注册表里真有了，再放行也不迟 —— 这里按前缀过滤，不是写死一份名单。
+ * 等它们进了执行器（`listImplementedOps()` 里有了），再把前缀加进来。
  */
+const AI_OP_PREFIXES: readonly string[] = ['raster.', 'vector.'];
+
 export function opCatalog(schema: SchemaNode, implemented: readonly string[]): OpCatalogEntry[] {
   const allowed = schema.$defs?.['operation']?.properties?.['op']?.enum ?? [];
   const out: OpCatalogEntry[] = [];
   for (const op of implemented) {
-    if (!op.startsWith('raster.')) continue;
+    if (!AI_OP_PREFIXES.some((prefix) => op.startsWith(prefix))) continue;
     if (!allowed.includes(op)) continue;
     const params = schema.$defs?.[`params.${op}`];
     if (!params) continue;

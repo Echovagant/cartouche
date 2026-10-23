@@ -302,6 +302,41 @@ test('整条链：一句话 → 提议 → 契约校验，目标是上下文里�
   assert.ok(result.context.prompt.includes('底图.tff'));
 });
 
+test('整条链：矢量 op 的计划不会被说成「尚未支持」（2026-10-24 补的洞）', async () => {
+  // 2026-10-24 实测出来的洞：提示词里的 op 清单只放行 raster.*，
+  // 而 vector.* 的 op 早就实现并登记进执行器了 —— 模型**根本看不到**它们，
+  // 于是所有矢量需求都落到「该操作尚未支持」。这种缺口不报错，只是功能凭空少了一半。
+  const vectorMock = await startMockModelServer({
+    planBuilder: () => ({
+      version: '1.0',
+      intent: '给底图加一列',
+      ops: [
+        {
+          op: 'vector.addField',
+          params: { target: 'dataset://底图.tff', name: '面积', expression: '1 + 1' },
+          requireUserConfirm: true,
+        },
+      ],
+    }),
+  });
+  try {
+    const result = await createPlan({
+      prompt: '给底图加一列叫面积的字段',
+      model: MOCK_MODELS[0],
+      context: CONTEXT,
+      fetchImpl: async (_url, init) => {
+        const res = await fetch(`${vectorMock.base}/v1/chat/completions`, init);
+        return { ok: res.ok, status: res.status, text: () => res.text() };
+      },
+    });
+    assert.deepEqual(result.unsupported, [], '矢量 op 不该被判为「尚未支持」');
+    assert.equal(result.plan?.ops?.[0]?.op, 'vector.addField');
+    assert.equal(result.error, null, `提议不该失败：${result.error ?? ''} ${result.message ?? ''}`);
+  } finally {
+    await vectorMock.close();
+  }
+});
+
 test('引擎拒绝不合约的计划时，错误说清是哪一条不合规', async () => {
   const broken = await startMockModelServer({
     planBuilder: () => ({

@@ -309,6 +309,31 @@ try {
       `HTTP ${extRes.status}, bbox=${JSON.stringify(extent.bbox)}`,
     );
 
+    // 矢量型 op 的预演：走的是"值结果"那条路，**没有像元可言**。
+    // 服务端必须报 kind=value + 一句人话结论，像元三个数给 null。
+    //
+    // 为什么不能给 0（2026-10-24 实测的洞）：0 会被前端的「一个像元都没改到」
+    // 闸门当成"这次什么都没发生"，于是每一次矢量改动都被拦下来，
+    // 还配一句"多半是区域落在影像之外"—— 矢量 op 压根没有区域。
+    const vecPreviewRes = await fetch(`${BASE}/api/op/preview`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        op: 'vector.addField',
+        params: { target: vecName, name: 'smoke_col', expression: '1 + 1' },
+      }),
+    });
+    const vecPreview = await vecPreviewRes.json();
+    check(
+      'POST /api/op/preview 矢量 op 走值口径（kind=value，不报像元）',
+      vecPreviewRes.ok &&
+        vecPreview.kind === 'value' &&
+        vecPreview.affectedPixels === null &&
+        typeof vecPreview.summary === 'string' &&
+        vecPreview.summary.length > 0,
+      `HTTP ${vecPreviewRes.status}, ${JSON.stringify(vecPreview).slice(0, 160)}`,
+    );
+
     for (const ext of ['.shp', '.shx', '.dbf', '.prj', '.cpg']) {
       await rm(join(wsRoot, vecName.replace(/\.shp$/, ext)), { force: true });
     }

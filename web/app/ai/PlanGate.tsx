@@ -31,12 +31,23 @@ export interface PlanGateOp {
 export interface PlanGatePreview {
   readonly op: string;
   readonly target: string;
-  readonly affectedPixels: number;
-  readonly totalPixels: number;
-  readonly affectedRatio: number;
+  /** 像元口径的 op 才有这三个数；非像元型 op 是 null */
+  readonly affectedPixels: number | null;
+  readonly totalPixels: number | null;
+  readonly affectedRatio: number | null;
   readonly backupPath: string | null;
   readonly backupNamePattern?: string | null;
   readonly verified: boolean;
+  /**
+   * raster = 像元口径；value = 非像元型 op（改属性、改编码那种）。
+   *
+   * 为什么确认卡要分这个：矢量 op 没有像元，"将影响的像元 0 / 0"对它毫无意义，
+   * 硬显示出来等于给用户一个假数字。它自己有一句人话结论（如"12 条要素会赋值"），
+   * 那才是用户该看的。
+   */
+  readonly kind?: 'raster' | 'value' | undefined;
+  /** 非像元型 op 自己的人话结论 */
+  readonly summary?: string | null;
 }
 
 export interface PlanGateProps {
@@ -81,7 +92,7 @@ export default function PlanGate({
   }, [ops]);
 
   const largeImpact = previews.some(
-    (p) => p.totalPixels > 0 && ratioOf(p) > LARGE_IMPACT_RATIO,
+    (p) => p.kind !== 'value' && (p.totalPixels ?? 0) > 0 && ratioOf(p) > LARGE_IMPACT_RATIO,
   );
 
   /**
@@ -128,18 +139,31 @@ export default function PlanGate({
           {ops.map((op, index) => {
             const preview = previews[index];
             const ratio = preview ? ratioOf(preview) : 0;
+            // 非像元型 op（矢量改属性那种）：不报像元，报它自己的结论。
+            const isValue = preview?.kind === 'value';
             const backupText = preview?.backupPath
               ? preview.backupPath
               : preview?.backupNamePattern
-                ? `${preview.backupNamePattern}（与原文件同目录）`
+                ? isValue
+                  ? `如需写文件，自动备份为 ${preview.backupNamePattern}（与原文件同目录）`
+                  : `${preview.backupNamePattern}（与原文件同目录）`
                 : '（引擎执行时自动生成备份）';
             const gates = [
-              {
-                label: '将影响的像元',
-                value: preview
-                  ? `${formatCount(preview.affectedPixels)} / ${formatCount(preview.totalPixels)} 像元（${(ratio * 100).toFixed(1)}%）`
-                  : '正在计算…',
-              },
+              ...(isValue
+                ? [
+                    {
+                      label: '这次会做什么',
+                      value: preview?.summary ?? '（引擎没有给出结论）',
+                    },
+                  ]
+                : [
+                    {
+                      label: '将影响的像元',
+                      value: preview
+                        ? `${formatCount(preview.affectedPixels ?? 0)} / ${formatCount(preview.totalPixels ?? 0)} 像元（${(ratio * 100).toFixed(1)}%）`
+                        : '正在计算…',
+                    },
+                  ]),
               { label: '目标文件', value: preview?.target ?? targetOf(op.params) },
               { label: '将生成的备份', value: backupText },
               { label: '操作类型', value: `${opLabel(op.op)}（${op.op}）` },
@@ -245,8 +269,10 @@ export default function PlanGate({
 }
 
 function ratioOf(preview: PlanGatePreview): number {
-  if (preview.totalPixels <= 0) return 0;
-  return preview.affectedRatio > 0 ? preview.affectedRatio : preview.affectedPixels / preview.totalPixels;
+  const total = preview.totalPixels ?? 0;
+  if (total <= 0) return 0;
+  const ratio = preview.affectedRatio ?? 0;
+  return ratio > 0 ? ratio : (preview.affectedPixels ?? 0) / total;
 }
 
 /** 执行成功后给的一句收尾（成功 / 部分成功 / 失败） */

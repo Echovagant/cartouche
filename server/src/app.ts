@@ -308,6 +308,9 @@ async function recordOperations(
               },
             }
           : {}),
+        // 非像元型 op（矢量改属性那种）没有像元口径的影响面，
+        // 但它有一句人话结论 —— 记进留痕，交差时能直接说清"改了几条"。
+        ...(r.value?.summary ? { summary: r.value.summary } : {}),
         ...(r.error ? { error: r.error } : {}),
       };
       await projects.appendHistory(projectRoot, entry);
@@ -1228,18 +1231,40 @@ export function createEngineServer(): Server {
             json(400, { error: 'bad_request', message: record.error ?? '预演失败', ...record });
             return;
           }
+          // 像元口径只对**栅格型** op 有意义。矢量型 op（属性查询/计算字段/空间连接…）
+          // 走的是"值结果"那条路，根本没有像元可言 —— 这里给 null 而不是 0：
+          // 0 会被前端的「一个像元都没改到」闸门当成"这次什么都没发生"，
+          // 于是每一次矢量改动都会被拦下来，还配一句完全对不上的解释。
+          //
+          // 为什么现在才分开：2026-10-24 之前 AI 只能改栅格，矢量 op 没进过这条路；
+          // 现在矢量 op 放行了，预演响应就必须分得清这两种 op。
+          const impact = record.impact;
           json(200, {
             op: record.op,
             target: record.target,
-            affectedPixels: record.impact?.affectedPixels ?? 0,
-            totalPixels: record.impact?.totalPixels ?? 0,
-            affectedRatio: record.impact?.affectedRatio ?? 0,
-            backupPath: record.impact?.backupPath ?? null,
+            kind: impact ? 'raster' : 'value',
+            ...(impact
+              ? {
+                  affectedPixels: impact.affectedPixels,
+                  totalPixels: impact.totalPixels,
+                  affectedRatio: impact.affectedRatio,
+                  backupPath: impact.backupPath,
+                  verified: impact.verified,
+                }
+              : {
+                  affectedPixels: null,
+                  totalPixels: null,
+                  affectedRatio: null,
+                  backupPath: null,
+                  verified: false,
+                  // 值型 op 自己有一句人话结论（如"将加字段「面积」：12 条要素会赋值"），
+                  // 确认卡直接显示它。只给结论、不给 data：data 里可能有整张属性表。
+                  summary: record.value?.summary ?? null,
+                }),
             // 预演不会真的生成备份，但备份**叫什么**是定死的：
             // `<原名>.bak.<yyyyMMdd-HHmmss>`。确认卡上写清这个名字，
             // 用户才知道改完能在哪儿找到原件 —— 写"执行时自动生成"等于没说。
             backupNamePattern: `${basename(record.target)}.bak.<yyyyMMdd-HHmmss>`,
-            verified: record.impact?.verified ?? false,
           });
         } catch (err) {
           const bad = err instanceof PathEscapeError ? 400 : 500;
