@@ -100,6 +100,14 @@ export interface PdfPayload {
   readonly height: number;
   readonly title: string;
   readonly operator: string;
+  /**
+   * 页面尺寸（点；1 点 = 1/72 英寸）。
+   *
+   * 不给就用引擎默认的 A4 横向 —— 出图版式里选了 A3 或竖版时，
+   * 不传这两个值，出来的 PDF 还是 A4 横向：**版式与图纸对不上**。
+   */
+  readonly pageWidthPt?: number;
+  readonly pageHeightPt?: number;
 }
 
 export interface EngineApi {

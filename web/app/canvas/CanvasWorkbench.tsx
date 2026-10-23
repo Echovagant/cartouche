@@ -31,7 +31,12 @@ import { MarkdownView } from './markdown';
 import { ThemeToggle } from './ThemeToggle';
 import { ActionButton, TextField } from './ui';
 import { setActiveSheetState, metersPerPixelAt } from './sheet';
-import { DEFAULT_LAYOUT, type SheetLayout, type SheetLegendItem } from './layout/types';
+import {
+  DEFAULT_LAYOUT,
+  pageSizeMm,
+  type SheetLayout,
+  type SheetLegendItem,
+} from './layout/types';
 import { useEditTools } from './useEditTools';
 import { useEngine, type CompatReportPayload } from './useEngine';
 import { useProjects } from './useProjects';
@@ -521,12 +526,17 @@ export default function CanvasWorkbench() {
     const stamp = formatNow();
     const shot = mapHandleRef.current?.exportJpeg({ quality: 0.92, producedAt: stamp });
     if (!shot) return { ok: false, error: '地图还没准备好，稍后再试一次。' };
+    // 页面尺寸跟着出图版式走：版式选了 A3 或竖版，PDF 就得是那张纸，
+    // 不然"版式"只是画布上的装饰，导出的图纸还是 A4 横向。
+    const pageMm = pageSizeMm(layout.page);
     const res = await exportPdf({
       jpeg: shot.jpeg,
       width: shot.width,
       height: shot.height,
       title,
       operator,
+      pageWidthPt: (pageMm.width / 25.4) * 72,
+      pageHeightPt: (pageMm.height / 25.4) * 72,
     });
     if (!res.ok) return { ok: false, error: res.error };
     setProducedAt(stamp);
@@ -539,7 +549,7 @@ export default function CanvasWorkbench() {
       });
     }
     return { ok: true, filename };
-  }, [exportPdf, title, operator, projectPath, writeOutput]);
+  }, [exportPdf, title, operator, projectPath, writeOutput, layout]);
 
   const handleExportPdf = useCallback(async () => {
     const res = await exportView();
