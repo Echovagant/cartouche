@@ -50,7 +50,12 @@ export async function vectorToGeoJson(
 
   const args: string[] = ['-f', 'GeoJSON'];
   if (options.targetCrs) args.push('-t_srs', options.targetCrs);
-  for (const f of options.fields ?? []) args.push('-select', f);
+  // ⚠️ `-select` 只能给**一次**（逗号分隔多个字段）：
+  //    重复给 GDAL 会报 `Duplicate argument -select`，多列时整个转换失败。
+  //    （2026-10-23 实测；本仓库的矢量读写层也踩过同一个坑。）
+  if (options.fields && options.fields.length > 0) {
+    args.push('-select', options.fields.join(','));
+  }
   if (options.limit !== undefined && options.limit > 0) args.push('-limit', String(options.limit));
   // ⚠️ ogr2ogr 的参数顺序是 **dst 在前、src 在后**（与 ogrinfo 相反）。
   //    写反了会把目标当成数据源去打开，报 "Unable to open datasource <目标>"。

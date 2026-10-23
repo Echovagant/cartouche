@@ -22,9 +22,10 @@ export {
   companionFiles,
 } from './write.ts';
 
-export { runVectorQuery, assertQueryParams } from './query.ts';
-export type { VectorOpDeps } from './query.ts';
+export { runVectorQuery } from './query.ts';
 export { runVectorAddField } from './field.ts';
+export { runVectorSpatialJoin } from './spatial-join.ts';
+export type { VectorOpDeps } from './query.ts';
 
 export { toRelPath, toRelPathChecked, makeTempDir, timestamp } from './paths.ts';
 
