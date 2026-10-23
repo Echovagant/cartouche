@@ -66,10 +66,10 @@ export default function ConfirmCard({
   }, [op, preview]);
 
   const ratio =
-    preview && preview.totalPixels > 0
-      ? preview.affectedRatio > 0
-        ? preview.affectedRatio
-        : preview.affectedPixels / preview.totalPixels
+    preview && (preview.totalPixels ?? 0) > 0
+      ? (preview.affectedRatio ?? 0) > 0
+        ? (preview.affectedRatio ?? 0)
+        : (preview.affectedPixels ?? 0) / (preview.totalPixels ?? 1)
       : 0;
   const largeImpact = ratio > LARGE_IMPACT_RATIO;
 
@@ -94,13 +94,25 @@ export default function ConfirmCard({
     : preview?.backupNamePattern
       ? `${preview.backupNamePattern}（与原文件同目录）`
       : '（引擎执行时自动生成备份）';
+  // 非像元型 op（改属性那种）没有像元口径，报它自己的结论。
+  // 报「0 / 0 像元」是给用户一个假数字。
+  const isValue = preview?.kind === 'value';
   const gates = [
-    {
-      label: '将影响的像元',
-      value: preview
-        ? formatPixelGate(preview.affectedPixels, preview.totalPixels, ratio)
-        : '正在计算…',
-    },
+    ...(isValue
+      ? [
+          {
+            label: '这次会做什么',
+            value: preview?.summary ?? '（引擎没有给出结论）',
+          },
+        ]
+      : [
+          {
+            label: '将影响的像元',
+            value: preview
+              ? formatPixelGate(preview.affectedPixels, preview.totalPixels, ratio)
+              : '正在计算…',
+          },
+        ]),
     {
       label: '目标文件',
       value: preview?.target || (typeof opTarget === 'string' ? opTarget : '（未指定）'),

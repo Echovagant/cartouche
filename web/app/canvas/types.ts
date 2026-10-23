@@ -113,9 +113,16 @@ export interface EditOp {
 export interface OpPreview {
   readonly op: string;
   readonly target: string;
-  readonly affectedPixels: number;
-  readonly totalPixels: number;
-  readonly affectedRatio: number;
+  /**
+   * 像元口径的 op 才有这三个数；非像元型 op（改属性那种）是 null。
+   *
+   * 为什么要可空：非像元型 op 本来就没有像元可言，硬塞一个 0 会被
+   * 「一个像元都没改到」那道闸门当成"这次什么都没发生"——
+   * 每一次矢量改动都被拦下来。null 才是"这条不适用"。
+   */
+  readonly affectedPixels: number | null;
+  readonly totalPixels: number | null;
+  readonly affectedRatio: number | null;
   readonly backupPath: string | null;
   /**
    * 备份文件名的样式（如 `底图.tff.bak.<yyyyMMdd-HHmmss>`）。
@@ -125,6 +132,14 @@ export interface OpPreview {
    */
   readonly backupNamePattern?: string | null;
   readonly verified: boolean;
+  /**
+   * raster = 像元口径；value = 非像元型 op（改属性、改编码那种）。
+   *
+   * 确认卡靠它决定报「将影响的像元」还是报 op 自己的结论。
+   */
+  readonly kind?: 'raster' | 'value' | undefined;
+  /** 非像元型 op 自己的人话结论（如「给 12 条要素加上了字段「面积」」） */
+  readonly summary?: string | null;
 }
 
 /** 单条操作的执行结果 */
