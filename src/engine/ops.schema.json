@@ -112,6 +112,9 @@
             "vector.recode",
             "vector.reproject",
             "vector.overlay",
+            "vector.query",
+            "vector.addField",
+            "vector.spatialJoin",
             "export.image",
             "export.report"
           ]
@@ -166,6 +169,9 @@
         { "if": { "properties": { "op": { "const": "vector.recode" } }, "required": ["op"] }, "then": { "properties": { "params": { "$ref": "#/$defs/params.vector.recode" } } } },
         { "if": { "properties": { "op": { "const": "vector.reproject" } }, "required": ["op"] }, "then": { "properties": { "params": { "$ref": "#/$defs/params.vector.reproject" } } } },
         { "if": { "properties": { "op": { "const": "vector.overlay" } }, "required": ["op"] }, "then": { "properties": { "params": { "$ref": "#/$defs/params.vector.overlay" } } } },
+        { "if": { "properties": { "op": { "const": "vector.query" } }, "required": ["op"] }, "then": { "properties": { "params": { "$ref": "#/$defs/params.vector.query" } } } },
+        { "if": { "properties": { "op": { "const": "vector.addField" } }, "required": ["op"] }, "then": { "properties": { "params": { "$ref": "#/$defs/params.vector.addField" } } } },
+        { "if": { "properties": { "op": { "const": "vector.spatialJoin" } }, "required": ["op"] }, "then": { "properties": { "params": { "$ref": "#/$defs/params.vector.spatialJoin" } } } },
         { "if": { "properties": { "op": { "const": "export.image" } }, "required": ["op"] }, "then": { "properties": { "params": { "$ref": "#/$defs/params.export.image" } } } },
         { "if": { "properties": { "op": { "const": "export.report" } }, "required": ["op"] }, "then": { "properties": { "params": { "$ref": "#/$defs/params.export.report" } } } }
       ]
@@ -454,6 +460,41 @@
         "update": { "$ref": "#/$defs/layerRef" },
         "operation": { "enum": ["clip-to-base", "difference", "union", "intersection", "snap-to-base"] },
         "preserveAttributes": { "type": "boolean", "default": true }
+      }
+    },
+    "params.vector.query": {
+      "type": "object",
+      "required": ["target"],
+      "additionalProperties": false,
+      "properties": {
+        "target": { "$ref": "#/$defs/pathRef" },
+        "where": { "type": "string", "maxLength": 500, "description": "筛选条件。SQL 子集（POP2020 > 100 AND NAME LIKE '北%'）或中文人话（\"人口大于100并且名字以北开头\"）——人话会自动翻译。" },
+        "fields": { "type": "array", "items": { "type": "string" }, "description": "只返回这几个字段；不给就全部" },
+        "limit": { "type": "integer", "minimum": 1, "maximum": 100000, "description": "最多返回多少条要素" }
+      }
+    },
+    "params.vector.addField": {
+      "type": "object",
+      "required": ["target", "name", "expression"],
+      "additionalProperties": false,
+      "properties": {
+        "target": { "$ref": "#/$defs/pathRef" },
+        "name": { "type": "string", "maxLength": 63, "description": "新字段名（Shapefile 的字段名限 10 字符，超了会明确报错）" },
+        "expression": { "type": "string", "maxLength": 500, "description": "取值表达式。SQL 子集或中文人话，如 \"POP2020 / AREA\"。" },
+        "where": { "type": "string", "maxLength": 500, "description": "只对符合条件的要素赋值，其余留空" }
+      }
+    },
+    "params.vector.spatialJoin": {
+      "type": "object",
+      "required": ["target", "source", "relation"],
+      "additionalProperties": false,
+      "properties": {
+        "target": { "$ref": "#/$defs/pathRef", "description": "被连接的目标图层：汇总值写回这一层" },
+        "source": { "$ref": "#/$defs/pathRef", "description": "提供属性与几何的源图层" },
+        "relation": { "enum": ["within", "intersects", "contains"], "description": "within = 目标完全落在源内部；intersects = 有交集即可；contains = 源完全落在目标内部（与 within 反向）" },
+        "aggregate": { "enum": ["first", "count", "sum", "mean"], "default": "first", "description": "汇总方式。count 给匹配到的源要素条数；sum/mean 只对数值字段生效" },
+        "fields": { "type": "array", "items": { "type": "string" }, "description": "参与汇总的源字段；不给就全部数值字段" },
+        "fieldPrefix": { "type": "string", "maxLength": 32, "description": "汇总字段名前缀。不给就用源字段名 —— 此时写回目标图层若已存在同名字段会明确报错，不会静默覆盖" }
       }
     },
     "params.export.image": {
