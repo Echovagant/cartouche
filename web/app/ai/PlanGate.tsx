@@ -19,6 +19,7 @@ import { useEffect, useState } from 'react';
 import { CheckCircleIcon, WarningIcon } from '@phosphor-icons/react';
 import { ActionButton } from '../canvas/ui';
 import { opLabel } from './opLabels';
+import { describeZeroImpact, findZeroImpactOps } from './failures';
 
 /** 计划里的一条操作 */
 export interface PlanGateOp {
@@ -90,9 +91,7 @@ export default function PlanGate({
    * 引擎会把它判成失败（2026-10-23 起），所以界面也不能给执行按钮 ——
    * 不然用户看到的还是「0 / 192 像元（0.0%）」，像是最轻松的一次改动。
    */
-  const zeroImpactIndexes = previews
-    .map((p, index) => (p.affectedPixels === 0 ? index : -1))
-    .filter((index) => index >= 0);
+  const zeroImpactIndexes = findZeroImpactOps(previews);
   const hasZeroImpact = zeroImpactIndexes.length > 0;
 
   const handleConfirm = (): void => {
@@ -201,7 +200,14 @@ export default function PlanGate({
               第 {zeroImpactIndexes.map((i) => i + 1).join('、')} 条预演下来影响像元是 0
               （多半是区域落在影像之外，或掩膜没盖住任何像元）。
               <br />
-              <span className="text-studio-ink-2">先确认区域和影像对得上，再执行。</span>
+              <span className="text-studio-ink-2">
+                下一步：
+                {describeZeroImpact({
+                  index: zeroImpactIndexes[0],
+                  op: previews[zeroImpactIndexes[0] ?? 0]?.op,
+                  totalPixels: previews[zeroImpactIndexes[0] ?? 0]?.totalPixels ?? 0,
+                }).next}
+              </span>
             </span>
           </div>
         ) : null}
