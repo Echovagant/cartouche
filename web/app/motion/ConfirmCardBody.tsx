@@ -120,7 +120,7 @@ export function ConfirmCardBody({
             <span
               className={
                 ink
-                  ? 'mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-accent-lit/18 font-mono text-[10.5px] text-accent-lit'
+                  ? 'mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-accent-lit/18 font-mono text-[11px] text-accent-lit'
                   : 'mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-accent/20 font-mono text-[10px] text-accent'
               }
             >
@@ -130,7 +130,7 @@ export function ConfirmCardBody({
               <div
                 className={
                   ink
-                    ? 'text-[11.5px] text-paper/85'
+                    ? 'text-[13px] text-paper/85'
                     : 'text-[11px] text-studio-ink-3'
                 }
               >
