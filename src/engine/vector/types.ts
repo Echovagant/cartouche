@@ -39,6 +39,14 @@ export interface ReadFeaturesOptions {
   /** 矢量文件绝对路径 */
   readonly path: string;
   /**
+   * 读的时候按哪个编码解码属性表（Shapefile 的 DBF）。
+   *
+   * 不给就按 .cpg / GDAL 自己的判断来。
+   * .cpg 说的与实际不符时（属性表本来就是按另一种编码写的），
+   * 显式给这个才能把字读对。
+   */
+  readonly encoding?: string;
+  /**
    * 条件表达式（SQL）。由表达式引擎产出。
    *
    * 注意：这个条件**由引擎自己算**，不交给 GDAL 的 SQL。
@@ -75,6 +83,23 @@ export interface WriteFeaturesOptions {
   readonly format?: VectorWriteFormat;
   /** 备份目录名里的标签，默认取时间戳 */
   readonly label?: string;
+  /**
+   * 写回时贴的坐标系 WKT。
+   *
+   * 不给就沿用目标文件原来的坐标系（"原样保留"，见 write.ts 开头）——
+   * 坐标没变、只把标签保住。
+   *
+   * 给了就表示"这次要把坐标系换成它"：写回时用它当标签，
+   * 写完也按它核对（而不是按原坐标系核对）。
+   * 重投影走的就是这条：坐标已经是新坐标系的值，标签也得跟着换。
+   */
+  readonly srsWkt?: string;
+  /**
+   * 写回属性表用的编码（Shapefile 的 DBF）。
+   *
+   * 不给就用 UTF-8（这是现在的行为，也是转码交差的默认目标）。
+   */
+  readonly encoding?: string;
 }
 
 export interface WriteFeaturesResult {

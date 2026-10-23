@@ -36,7 +36,7 @@ import { replaceFileAtomically } from '../gdal/writeback.ts';
 import type { GdalLocation } from '../gdal/env.ts';
 import type { WorkspaceAdapter } from '../workspace/index.ts';
 import { makeTempDir, timestamp, toRelPathChecked } from './paths.ts';
-import { probeLayer, sameSrs } from './read.ts';
+import { probeLayer, sameSrs, srsMatchesWkt, epsgOf } from './read.ts';
 import {
   VectorError,
   type FeatureRecord,
@@ -161,9 +161,13 @@ export async function writeFeatures(
     if (format === 'shapefile') {
       // 不给 ENCODING 时 Shapefile 驱动默认 ISO-8859-1，
       // 中文的列名会直接写失败（实测：Failed to create field name '列 名'）
-      args.push('-lco', 'ENCODING=UTF-8');
+      args.push('-lco', `ENCODING=${options.encoding ?? 'UTF-8'}`);
     }
-    if (sourceInfo?.srsWkt) {
+    if (options.srsWkt) {
+      // 显式指定要写成的坐标系：坐标已经是这个坐标系的值，标签也得跟着换。
+      // 不给 srsWkt 时用 -a_srs 原样保留源坐标系（见文件开头的说明）。
+      args.push('-a_srs', options.srsWkt);
+    } else if (sourceInfo?.srsWkt) {
       // 只贴标签不重投影：坐标原样搬过去，坐标系标签原样带过去
       args.push('-a_srs', sourceInfo.srsWkt);
     }
@@ -249,9 +253,15 @@ export async function writeFeatures(
           `写回后要素数不对：写进去 ${options.features.length} 条，读回来 ${after.featureCount} 条`,
         );
       }
-      if (sourceInfo && !sameSrs(sourceInfo, after)) {
+      if (sourceInfo && !options.srsWkt && !sameSrs(sourceInfo, after)) {
         throw new VectorError(
           '写回后坐标系变了（投影丢了）：已经回滚，原数据的坐标系保持不变',
+        );
+      }
+      // 指定了目标坐标系时，要核对的是"写成了要的那个"，不是"跟原来一样"
+      if (options.srsWkt && !srsMatchesWkt(after, options.srsWkt)) {
+        throw new VectorError(
+          `写回后坐标系与要求的不一致（要 EPSG:${epsgOf(options.srsWkt) ?? '自定义'}）：已经回滚`,
         );
       }
       return {
