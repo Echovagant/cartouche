@@ -45,7 +45,9 @@ export function GateStack({ gates }: { gates: readonly Gate[] }) {
           if (index === 0) return;
           gsap.fromTo(
             card,
-            { y: 44, scale: 0.97, opacity: 0 },
+            // 位移 34px —— 全站硬顶（实测中文站上限 50px，我们取更保守的 34）。
+            // 旧值 44px 超了硬顶，入场距离改小不影响叠压效果（叠压靠负 margin）。
+            { y: 34, scale: 0.97, opacity: 0 },
             {
               y: 0,
               scale: 1,
@@ -84,17 +86,22 @@ export function GateStack({ gates }: { gates: readonly Gate[] }) {
           }`}
         >
           <div className="flex items-start gap-5">
-            <span className="font-mono text-[13px] tracking-[0.14em] text-accent">{g.n}</span>
+            {/* 序号：墨绿**只**出现在第 1 卡的小圆点上（全站第四处强调色），
+                其余三张用墨色——状态色不是用来做序列装饰的。 */}
+            <span className="flex items-center gap-2 font-mono text-[13px] tracking-[0.08em] text-ink-3">
+              {i === 0 ? (
+                <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-accent" />
+              ) : null}
+              {g.n}
+            </span>
             <div>
-              <h3 className="font-display text-[19px] leading-snug font-semibold tracking-tight text-ink">
-                {g.title}
-              </h3>
-              <p className="mt-2.5 max-w-[52ch] text-[14.5px] leading-relaxed text-ink-2">{g.body}</p>
+              <h3 className="font-display text-display-3 text-ink">{g.title}</h3>
+              <p className="mt-2.5 max-w-[52ch] text-body leading-relaxed text-ink-2">{g.body}</p>
             </div>
           </div>
           <span
             aria-hidden="true"
-            className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-accent/45 to-transparent"
+            className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-line-2 to-transparent"
           />
         </article>
       ))}

@@ -24,6 +24,23 @@ export interface NavItem {
 
 export function SiteHeader({ items }: { items: readonly NavItem[] }) {
   const [open, setOpen] = useState(false);
+  /**
+   * 导航实体化阈值 **16px**：首屏顶部是透明的，滚过 16px 才获得实体。
+   *
+   * 为什么不是"永远实体"：永远有底色的导航会读成「管理后台」，不是官网。
+   * 阈值取 16px（NIO 实测 10px、理想整页透明），16px 是本站自己的取值。
+   *
+   * 注意：这一条与 ScrollChoreography 里 `top 72px` 的**表面色切换**是
+   * 两件事——72px 管的是"导航落在浅段还是深段"，16px 管的是"要不要实体"。
+   */
+  const [solid, setSolid] = useState(false);
+
+  useEffect(() => {
+    const update = (): void => setSolid(window.scrollY > 16);
+    update();
+    window.addEventListener('scroll', update, { passive: true });
+    return () => window.removeEventListener('scroll', update);
+  }, []);
 
   // 打开菜单时锁住背景滚动：菜单浮层下面不该还能滚页面
   useEffect(() => {
@@ -37,12 +54,25 @@ export function SiteHeader({ items }: { items: readonly NavItem[] }) {
 
   return (
     <header className="fixed inset-x-0 top-0 z-50 px-4 pt-4 sm:px-6">
-      <nav className="glass mx-auto flex max-w-6xl flex-nowrap items-center gap-3 rounded-full px-3.5 py-2.5 sm:px-5">
+      {/*
+        skip link：**首个可聚焦元素**。它是键盘用户的第一站，
+        平时视觉隐藏，聚焦时出现在左上角。
+      */}
+      <a
+        href="#main"
+        className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[60] focus:rounded-lg focus:bg-paper focus:px-4 focus:py-2.5 focus:text-[15px] focus:font-medium focus:text-ink focus:shadow-[var(--shadow-nav)]"
+      >
+        跳到主内容
+      </a>
+
+      <nav
+        className={`${solid ? 'glass' : 'nav-bar-plain'} mx-auto flex max-w-6xl flex-nowrap items-center gap-3 rounded-full px-3.5 py-2.5 sm:px-5`}
+      >
         <Link
           href="./"
           className="nav-fg flex shrink-0 items-center gap-2.5 text-[13.5px] font-medium tracking-tight whitespace-nowrap"
         >
-          <span className="grid h-7 w-7 place-items-center rounded-full bg-accent text-paper">
+          <span className="grid h-7 w-7 place-items-center rounded-full border border-current">
             <CompassIcon aria-hidden="true" size={15} weight="bold" />
           </span>
           图签 Cartouche
@@ -96,7 +126,7 @@ export function SiteHeader({ items }: { items: readonly NavItem[] }) {
 
         <a
           href="canvas.html"
-          className="shrink-0 rounded-full bg-accent px-4 py-2 text-[13px] font-medium whitespace-nowrap text-paper transition-colors hover:bg-accent-deep"
+          className="nav-fg shrink-0 rounded-full border border-current px-4 py-2 text-[13px] font-medium whitespace-nowrap transition-colors hover:bg-[var(--nav-hover-bg)]"
         >
           打开画布
         </a>

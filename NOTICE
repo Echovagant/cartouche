@@ -7,13 +7,23 @@ Copyright 2026 图签 Cartouche 贡献者
 - PROJ — MIT License, https://proj.org
 - GEOS — LGPL-2.1, https://libgeos.org
 - MapLibre GL JS — BSD-3-Clause, https://maplibre.org
-- Turf.js — MIT License, https://turfjs.org
-- polygon-clipping — MIT License, https://github.com/mfogel/polygon-clipping
-- Vercel AI SDK — Apache-2.0, https://ai-sdk.dev
 - Next.js — MIT License, https://nextjs.org
-- geos-wasm (GEOS compiled to WebAssembly) — LGPL-2.1, https://geos-wasm.netlify.app
+- React / React DOM — MIT License, https://react.dev
+- Tailwind CSS — MIT License, https://tailwindcss.com
+- PostCSS — MIT License, https://postcss.org
 - GSAP / @gsap/react — GSAP Standard "No Charge" License, https://gsap.com/standard-license
 - Geist / Geist Mono — SIL Open Font License 1.1, https://github.com/vercel/geist-font
 - Phosphor Icons — MIT License, https://phosphoricons.com
 
 本项目不包含、不分发任何 Esri 专有软件或数据。ArcGIS 是 Esri 的注册商标。
+
+官网首屏示例图（web/public/site/china-sheet.png 与 china-sheet.webp）
+由本工具真实出图，图中所用数据来源如下：
+
+- Natural Earth 自然地理底图与主要河流 — 公共领域（Public Domain），
+  https://www.naturalearthdata.com
+- DataV.GeoAtlas 中国省级行政区划 — 公开数据接口，
+  https://geo.datav.aliyun.com
+
+两者的许可与出处另见 samples/manifest.json（随仓库入库，逐条记录每个样本的
+来源与许可；样本数据本身不入库，按需另行下载）。
