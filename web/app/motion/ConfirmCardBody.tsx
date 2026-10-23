@@ -53,17 +53,11 @@ export interface ConfirmCardBodyProps {
 /**
  * 像元闸门那一行的口径。
  *
- * 官网与画布必须**逐字一致**——官网写「165 / 1,200 像元（13.8%）」，
- * 画布算出来也必须是同一串字，不然官网就在说谎了。
- * 抽成函数，两边共用同一个格式化口径。
+ * 实现在 ./pixel-gate.ts：纯函数单独放 .ts，才能被单测直接测到
+ * （这个文件是 .tsx，含 JSX，node 的类型剥离不支持）。
+ * 这里转出去一份，官网与画布的 import 路径不用改。
  */
-export function formatPixelGate(
-  affectedPixels: number,
-  totalPixels: number,
-  ratio: number,
-): string {
-  return `${affectedPixels.toLocaleString('zh-CN')} / ${totalPixels.toLocaleString('zh-CN')} 像元（${(ratio * 100).toFixed(1)}%）`;
-}
+export { formatPixelGate } from './pixel-gate.ts';
 
 export function ConfirmCardBody({
   title,
