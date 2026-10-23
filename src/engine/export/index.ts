@@ -8,8 +8,15 @@
  * 图面要素（比例尺/图例/指北针/图框/标题栏）由前端 canvas 绘制，
  * 因此中文字体正常，且与屏幕上所见完全一致。
  */
-export { renderRasterPng, readPngSize, RasterRenderError } from './raster-image.ts';
-export type { BBox4326, RasterRenderOptions, RasterRenderResult, RasterStretch } from './raster-image.ts';
+export { renderRasterPng, renderRasterBytes, readPngSize, RasterRenderError } from './raster-image.ts';
+export type {
+  BBox4326,
+  RasterRenderOptions,
+  RasterRenderResult,
+  RasterBytesResult,
+  RasterOutputFormat,
+  RasterStretch,
+} from './raster-image.ts';
 
 export { buildPdfFromJpeg, inspectPdf, PdfBuildError, A4_LANDSCAPE_PT, A4_PORTRAIT_PT } from './pdf.ts';
 export type { PdfOptions } from './pdf.ts';
@@ -19,3 +26,12 @@ export type { VectorToGeoJsonOptions, VectorToGeoJsonResult } from './vector-geo
 
 export { datasetExtent, DatasetExtentError } from './dataset-extent.ts';
 export type { DatasetExtentOptions, DatasetExtentResult } from './dataset-extent.ts';
+
+export { exportImage, isImageExportFormat, IMAGE_EXPORT_FORMATS, IMAGE_EXPORT_EXTENSIONS } from './image-export.ts';
+export type { ImageExportOptions, ImageExportResult, ImageExportFormat } from './image-export.ts';
+
+export { exportReport, REPORT_INCLUDE_ITEMS } from './report-export.ts';
+export type { ReportExportOptions, ReportExportResult, ReportKind, ReportFormat } from './report-export.ts';
+
+export { csvEscape, csvRow, csvTable, parseCsv, parseCsvRecords } from './csv-text.ts';
+export { markdownToHtml, htmlDocument, escapeHtml } from './markdown-html.ts';
