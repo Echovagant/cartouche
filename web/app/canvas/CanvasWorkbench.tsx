@@ -41,6 +41,12 @@ import { useEditTools } from './useEditTools';
 import { useEngine, type CompatReportPayload } from './useEngine';
 import { useProjects } from './useProjects';
 import {
+  aiEntryBasePath,
+  buildAiEntryHref,
+  describeAiEntry,
+  type AiEntryContext,
+} from '../ai/entryContext';
+import {
   type EditOp,
   type LayerKind,
   type LevelsParams,
@@ -567,6 +573,40 @@ export default function CanvasWorkbench() {
     [layers, activeLayerId],
   );
 
+  /* ───────── 用一句话改图（跳到 AI 工作台） ───────── */
+
+  /**
+   * 带过去的上下文。
+   *
+   * 项目根是**必须**的：没有它，AI 工作台那边拿不到项目清单，
+   * 模型看不到任何图层，提议出来的计划只能是瞎猜。
+   * 当前图层是"用户正在看哪张"的指代信息，一并带过去。
+   */
+  const aiEntryContext = useMemo(
+    (): AiEntryContext => ({
+      root: projectPath,
+      projectName: manifest?.name ?? null,
+      layerId: activeLayer?.id ?? null,
+      layerName: activeLayer?.name ?? null,
+      layerCount: layers.length,
+      fromCanvas: true,
+    }),
+    [projectPath, manifest?.name, activeLayer?.id, activeLayer?.name, layers.length],
+  );
+
+  const aiEntry = useMemo(() => describeAiEntry(aiEntryContext), [aiEntryContext]);
+
+  /** 跳过去：用整页跳转而不是弹层——AI 工作台是独立页面，状态不共享 */
+  const openAiWorkbench = useCallback(() => {
+    if (!aiEntry.enabled) return;
+    // 静态产物里 ai.html 与 canvas.html 同目录；next dev 不认 .html 后缀
+    const href = buildAiEntryHref(
+      aiEntryContext,
+      aiEntryBasePath(process.env.NODE_ENV === 'development'),
+    );
+    window.location.href = href;
+  }, [aiEntry.enabled, aiEntryContext]);
+
   const fetchCompatReport = engine.fetchCompatReport;
   const handleCompatReport = useCallback(async () => {
     if (!activeLayer) return;
@@ -847,6 +887,8 @@ export default function CanvasWorkbench() {
         onReloadHealth={engine.reloadHealth}
         stretch={stretch}
         onStretchChange={setStretch}
+        onOpenAi={openAiWorkbench}
+        aiBlockedReason={aiEntry.enabled ? '' : aiEntry.reason}
       />
 
       <EditToolbar

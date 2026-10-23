@@ -33,11 +33,24 @@ import type { EditOp, OpPreview } from '../canvas/types';
 import PlanGate, { type PlanGatePreview } from './PlanGate';
 import { opLabel } from './opLabels';
 import {
+  describeExecuteFailure,
+  describePlanFailure,
+  describePreviewFailure,
+  describeZeroImpact,
+  findZeroImpactOps,
+  type HumanFailure,
+} from './failures';
+import {
+  EMPTY_ENTRY_CONTEXT,
+  describeAiEntry,
+  parseAiEntryQuery,
+  type AiEntryContext,
+} from './entryContext';
+import {
   useLlm,
   ENGINE_BASE,
   type ContextPreview,
   type LlmSource,
-  type PlanFailureKind,
   type PlanPayload,
 } from './useLlm';
 
@@ -63,16 +76,6 @@ const SOURCE_TEXT: Record<LlmSource, string> = {
   none: '还没配置密钥',
   env: '来自启动脚本注入的环境变量（磁盘上只有 DPAPI 密文）',
   session: '来自这次会话里粘贴的（只在引擎内存里，引擎退出即失效）',
-};
-
-/** 失败类别 → 一句话标题（把"该怎么办"摆到最前面） */
-const FAILURE_TITLE: Record<PlanFailureKind, string> = {
-  not_configured: '还没配置密钥',
-  key: '密钥被官方拒了',
-  network: '连不上模型服务',
-  bad_plan: '模型返回的计划不合法',
-  unsupported: '这个操作还没做',
-  unknown: '提议失败',
 };
 
 /** 闸门②的结论 → 一句人话 */
@@ -110,18 +113,33 @@ export default function AiWorkbench() {
   /** 闸门③：逐条预演出来的影响面 */
   const [previews, setPreviews] = useState<PlanGatePreview[]>([]);
   const [previewing, setPreviewing] = useState(false);
-  const [previewError, setPreviewError] = useState<string | null>(null);
+  /** 预演没过时的说明（算不出影响面 / 一个像元都没改到） */
+  const [previewFailure, setPreviewFailure] = useState<HumanFailure | null>(null);
   const [executing, setExecuting] = useState(false);
   /** 执行结果（逐条） */
   const [execResult, setExecResult] = useState<ExecResultPayload | null>(null);
   /** 「本次将发送什么」的预览 */
   const [contextPreview, setContextPreview] = useState<ContextPreview | null>(null);
+  /** 画布带过来的上下文（直接打开本页时为空） */
+  const [entry, setEntry] = useState<AiEntryContext>(EMPTY_ENTRY_CONTEXT);
+  /** 预演失败 / 零影响：这两种都不给执行按钮，用人话说明原因 */
+  const [blocker, setBlocker] = useState<HumanFailure | null>(null);
+  /** 整次执行请求失败（不是单条 op 失败）：同样要人话 */
+  const [execFailure, setExecFailure] = useState<HumanFailure | null>(null);
 
   // 进来先看一眼当前状态：密钥是不是已经在环境变量里了
   useEffect(() => {
     void llm.refreshStatus();
     // 只在挂载时问一次
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // 从画布跳过来时，把项目根与"正在看哪个图层"接上。
+  // 项目根是关键：没有它，模型看不到任何图层，只能凭空猜。
+  useEffect(() => {
+    const ctx = parseAiEntryQuery(window.location.search);
+    setEntry(ctx);
+    if (ctx.root) setProjectRoot(ctx.root);
   }, []);
 
   // 模型清单到手后，默认选中第一个（列表按官方返回的顺序）
@@ -168,13 +186,18 @@ export default function AiWorkbench() {
    * 闸门③：逐条预演，把影响面算出来。
    *
    * 算不出来就不给执行按钮 —— 影响面都没算出来，确认卡就成了摆设。
+   *
+   * 返回算出来的预演结果：调用方要靠它判断"是不是一个像元都没改到"，
+   * 那种情况连确认卡都不该开（开了也是白开）。
    */
-  const runPreviews = async (ops: readonly { op: string; params: Record<string, unknown> }[]): Promise<void> => {
+  const runPreviews = async (
+    ops: readonly { op: string; params: Record<string, unknown> }[],
+  ): Promise<PlanGatePreview[]> => {
     setPreviewing(true);
-    setPreviewError(null);
+    setPreviewFailure(null);
     setPreviews([]);
     const list: PlanGatePreview[] = [];
-    for (const op of ops) {
+    for (const [index, op] of ops.entries()) {
       try {
         const res = await fetch(`${ENGINE_BASE}/api/op/preview`, {
           method: 'POST',
@@ -189,19 +212,32 @@ export default function AiWorkbench() {
           message?: string;
         } & Partial<PlanGatePreview>;
         if (!res.ok) {
-          setPreviewError(body?.message ?? `预演失败（HTTP ${res.status}）`);
+          setPreviewFailure(
+            describePreviewFailure({
+              op: op.op,
+              index,
+              message: body?.message ?? `预演失败（HTTP ${res.status}）`,
+            }),
+          );
           break;
         }
         list.push(body as PlanGatePreview);
+        // 逐条刷新：多条操作时用户能看着影响面一条条长出来
+        setPreviews([...list]);
       } catch (err) {
-        setPreviewError(
-          `无法连接引擎服务 ${ENGINE_BASE}（请确认已运行 npm run dev:server）：${(err as Error).message}`,
+        setPreviewFailure(
+          describePreviewFailure({
+            op: op.op,
+            index,
+            message: `无法连接引擎服务 ${ENGINE_BASE}（请确认已运行 npm run dev:server）：${(err as Error).message}`,
+          }),
         );
         break;
       }
     }
     setPreviews(list);
     setPreviewing(false);
+    return list;
   };
 
   /** 要一份操作计划 */
@@ -210,9 +246,11 @@ export default function AiWorkbench() {
     if (!text) return;
     setProposal(null);
     setPreviews([]);
-    setPreviewError(null);
+    setPreviewFailure(null);
     setExecResult(null);
     setGateOpen(false);
+    setBlocker(null);
+    setExecFailure(null);
     const res = await llm.requestPlan({
       prompt: text,
       model,
@@ -224,8 +262,24 @@ export default function AiWorkbench() {
     if (res.context) setContextPreview(res.context);
     // 闸门①（Schema）或闸门②（尚未支持）没过：只报告，不给确认
     if (!res.ok) return;
+    const ops = res.plan?.ops ?? [];
+    const previewed = await runPreviews(ops);
+    // 影响面没算出来：确认卡不该开（开了也只能给一个"正在计算…"）
+    if (previewed.length !== ops.length) return;
+    // 一个像元都没改到：这种改动什么都不会发生，别开确认卡骗用户
+    const zero = findZeroImpactOps(previewed);
+    if (zero.length > 0) {
+      const first = zero[0]!;
+      setBlocker(
+        describeZeroImpact({
+          op: previewed[first]?.op,
+          index: first,
+          totalPixels: previewed[first]?.totalPixels ?? 0,
+        }),
+      );
+      return;
+    }
     setGateOpen(true);
-    await runPreviews(res.plan?.ops ?? []);
   };
 
   /** 闸门④：用户点头了才真的改文件 */
@@ -258,25 +312,34 @@ export default function AiWorkbench() {
       });
       const body = (await res.json().catch(() => null)) as ExecResultPayload | null;
       if (!res.ok || !body) {
+        const failure = describeExecuteFailure({
+          message: `执行失败（HTTP ${res.status}）`,
+        });
+        setExecFailure(failure);
         setExecResult({
           ok: false,
           completed: 0,
           results: [],
           failedAt: 0,
-          warning: `执行失败（HTTP ${res.status}）`,
+          warning: failure.detail,
         });
         setGateOpen(false);
         return;
       }
+      setExecFailure(null);
       setExecResult(body);
       setGateOpen(false);
     } catch (err) {
+      const failure = describeExecuteFailure({
+        message: `无法连接引擎服务 ${ENGINE_BASE}：${(err as Error).message}`,
+      });
+      setExecFailure(failure);
       setExecResult({
         ok: false,
         completed: 0,
         results: [],
         failedAt: 0,
-        warning: `无法连接引擎服务 ${ENGINE_BASE}：${(err as Error).message}`,
+        warning: failure.detail,
       });
       setGateOpen(false);
     } finally {
@@ -288,7 +351,8 @@ export default function AiWorkbench() {
   const cancelPlan = (): void => {
     setGateOpen(false);
     setPreviews([]);
-    setPreviewError(null);
+    setPreviewFailure(null);
+    setBlocker(null);
   };
 
   return (
@@ -320,11 +384,26 @@ export default function AiWorkbench() {
         </p>
         <p className="mt-3 max-w-xl text-[12.5px] leading-relaxed text-studio-ink-3">
           <span className="text-studio-ink-2">上面三步是「模型接入」：</span>
-          配密钥、实时拉模型清单、发一句话测连通。
+          配密钥、实时拉模型清单、发一句话测连通 —— 这三步已经能用了。
           <span className="text-studio-ink-2">第四步是「用一句话改图」：</span>
           模型只负责提议一份操作计划，真正改文件的是确定性引擎，
           而且要你先看清影响面、再点确认。
+          <span className="text-studio-ink-2">这一条还在收口：</span>
+          链路已经接通，但目前还没有用真实模型跑完过一次，界面上的「开发中」就是这个意思。
         </p>
+
+        {/* 从画布跳过来时，把带过来的上下文说清楚：用户得知道模型看的是哪张图 */}
+        {entry.fromCanvas ? (
+          <div className="mt-5 rounded-lg border border-studio-line bg-studio-2/70 px-4 py-3 text-[12.5px] leading-relaxed text-studio-ink-2">
+            <span className="text-studio-ink-3">来自画布：</span>
+            {describeAiEntry(entry).summary}
+            {entry.root ? (
+              <div className="mt-1 font-mono text-[11.5px] break-all text-studio-ink-3">
+                {entry.root}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
 
         {llm.error ? (
           <div className="mt-6 flex items-start gap-2.5 rounded-lg border border-warn/45 bg-warn/12 px-4 py-3 text-[12.5px] leading-relaxed text-warn">
@@ -570,7 +649,7 @@ export default function AiWorkbench() {
 
           <div className="mt-4 flex flex-col gap-1.5">
             <label className="text-[12px] text-studio-ink-3" htmlFor="ai-project-root">
-              项目根目录（可选）
+              项目根目录{entry.root ? '（已从画布带过来）' : '（可选）'}
             </label>
             <TextField
               id="ai-project-root"
@@ -592,7 +671,11 @@ export default function AiWorkbench() {
             onChange={(e) => setInstruction(e.target.value)}
             rows={3}
             className="mt-4 w-full resize-y rounded-lg border border-studio-line bg-studio/70 px-2.5 py-2 text-[12.5px] leading-relaxed text-studio-ink placeholder:text-studio-ink-3 focus:border-accent focus:outline-none"
-            placeholder="例如：把底图右上角那片提亮一点，别动别的"
+            placeholder={
+              entry.layerName
+                ? `例如：把《${entry.layerName}》右上角那片提亮一点，别动别的`
+                : '例如：把底图右上角那片提亮一点，别动别的'
+            }
           />
 
           <div className="mt-3 flex flex-wrap items-center gap-2">
@@ -617,14 +700,18 @@ export default function AiWorkbench() {
             ) : null}
           </div>
 
-          {/* 失败：分类说清楚，并给重试 */}
+          {/* 失败：说清出了什么事、为什么、下一步做什么，并给重试 */}
           {llm.planFailure ? (
             <div className="mt-4 rounded-lg border border-warn/45 bg-warn/12 px-4 py-3 text-[12.5px] leading-relaxed text-warn">
               <div className="flex items-start gap-2.5">
                 <WarningCircleIcon size={15} weight="fill" className="mt-px shrink-0" />
                 <div className="min-w-0 flex-1">
-                  <div className="font-medium">{FAILURE_TITLE[llm.planFailure.kind]}</div>
-                  <div className="mt-1 text-studio-ink-2">{llm.planFailure.message}</div>
+                  <div className="font-medium">{describePlanFailure(llm.planFailure).title}</div>
+                  <div className="mt-1 text-studio-ink-2">{describePlanFailure(llm.planFailure).detail}</div>
+                  <div className="mt-1 text-studio-ink-2">
+                    <span className="text-studio-ink-3">下一步：</span>
+                    {describePlanFailure(llm.planFailure).next}
+                  </div>
                   {llm.planFailure.code !== null ? (
                     <div className="mt-1 font-mono text-[11.5px] text-studio-ink-3">
                       官方错误码 {llm.planFailure.code}
@@ -634,6 +721,23 @@ export default function AiWorkbench() {
                     <ActionButton onClick={() => void sendPlan()} disabled={llm.planBusy}>
                       重试
                     </ActionButton>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : null}
+
+          {/* 预演说「一个像元都没改到」：不给确认卡，直接说清怎么办 */}
+          {blocker ? (
+            <div className="mt-4 rounded-lg border border-warn/45 bg-warn/12 px-4 py-3 text-[12.5px] leading-relaxed text-warn">
+              <div className="flex items-start gap-2.5">
+                <WarningCircleIcon size={15} weight="fill" className="mt-px shrink-0" />
+                <div className="min-w-0 flex-1">
+                  <div className="font-medium">{blocker.title}</div>
+                  <div className="mt-1 text-studio-ink-2">{blocker.detail}</div>
+                  <div className="mt-1 text-studio-ink-2">
+                    <span className="text-studio-ink-3">下一步：</span>
+                    {blocker.next}
                   </div>
                 </div>
               </div>
@@ -749,11 +853,36 @@ export default function AiWorkbench() {
             </div>
           ) : null}
 
-          {previewError ? (
-            <div className="mt-4 rounded-lg border border-warn/40 bg-warn/12 px-3 py-2.5 text-[12.5px] leading-relaxed text-warn">
-              <strong>预演失败：</strong>
-              {previewError}
-              <div className="mt-1 text-studio-ink-3">影响面算不出来，这次先不执行。</div>
+          {previewFailure ? (
+            <div className="mt-4 rounded-lg border border-warn/40 bg-warn/12 px-4 py-3 text-[12.5px] leading-relaxed text-warn">
+              <div className="flex items-start gap-2.5">
+                <WarningCircleIcon size={15} weight="fill" className="mt-px shrink-0" />
+                <div className="min-w-0 flex-1">
+                  <div className="font-medium">{previewFailure.title}</div>
+                  <div className="mt-1 text-studio-ink-2">{previewFailure.detail}</div>
+                  <div className="mt-1 text-studio-ink-2">
+                    <span className="text-studio-ink-3">下一步：</span>
+                    {previewFailure.next}
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : null}
+
+          {/* 整次执行请求失败：说清是什么错、接下来怎么办 */}
+          {execFailure ? (
+            <div className="mt-4 rounded-lg border border-warn/45 bg-warn/12 px-4 py-3 text-[12.5px] leading-relaxed text-warn">
+              <div className="flex items-start gap-2.5">
+                <WarningCircleIcon size={15} weight="fill" className="mt-px shrink-0" />
+                <div className="min-w-0 flex-1">
+                  <div className="font-medium">{execFailure.title}</div>
+                  <div className="mt-1 text-studio-ink-2">{execFailure.detail}</div>
+                  <div className="mt-1 text-studio-ink-2">
+                    <span className="text-studio-ink-3">下一步：</span>
+                    {execFailure.next}
+                  </div>
+                </div>
+              </div>
             </div>
           ) : null}
 
@@ -762,41 +891,58 @@ export default function AiWorkbench() {
             <div className="mt-4 rounded-lg border border-studio-line bg-studio/60 p-3.5">
               <div className="mb-2 font-mono text-[11px] text-studio-ink-3">执行结果</div>
               {execResult.results.length > 0 ? (
-                <ul className="space-y-1.5">
-                  {execResult.results.map((result) => (
-                    <li key={result.index} className="flex items-start gap-2 text-[12.5px]">
-                      {result.ok ? (
-                        <CheckCircleIcon
-                          size={14}
-                          weight="fill"
-                          className="mt-0.5 shrink-0 text-accent"
-                        />
-                      ) : (
-                        <WarningCircleIcon
-                          size={14}
-                          weight="fill"
-                          className="mt-0.5 shrink-0 text-warn"
-                        />
-                      )}
-                      <span className="min-w-0">
-                        <span className="font-mono text-[11.5px]">{result.op}</span>
-                        <span className="ml-1.5 text-studio-ink-2">
-                          {result.ok ? '成功' : `失败：${result.error ?? '未知原因'}`}
+                <ul className="space-y-2">
+                  {execResult.results.map((result) => {
+                    // 失败条目不甩英文异常：说清是什么错、接下来怎么办
+                    const failure = result.ok
+                      ? null
+                      : describeExecuteFailure({
+                          op: result.op,
+                          message: result.error ?? '未知原因',
+                        });
+                    return (
+                      <li key={result.index} className="flex items-start gap-2 text-[12.5px]">
+                        {result.ok ? (
+                          <CheckCircleIcon
+                            size={14}
+                            weight="fill"
+                            className="mt-0.5 shrink-0 text-accent"
+                          />
+                        ) : (
+                          <WarningCircleIcon
+                            size={14}
+                            weight="fill"
+                            className="mt-0.5 shrink-0 text-warn"
+                          />
+                        )}
+                        <span className="min-w-0 flex-1">
+                          <span className="font-mono text-[11.5px]">{result.op}</span>
+                          <span className="ml-1.5 text-studio-ink-2">
+                            {result.ok ? '成功' : (failure?.title ?? '失败')}
+                          </span>
+                          {result.target ? (
+                            <span className="ml-1.5 font-mono text-[11px] text-studio-ink-3">
+                              {result.target}
+                            </span>
+                          ) : null}
+                          {result.ok && result.impact ? (
+                            <span className="ml-1.5 font-mono text-[11px] text-studio-ink-3">
+                              影响 {Number(result.impact['affectedPixels'] ?? 0).toLocaleString('zh-CN')}{' '}
+                              像元
+                            </span>
+                          ) : null}
+                          {failure ? (
+                            <span className="mt-1 block text-studio-ink-2">
+                              {failure.detail}
+                              <span className="mt-0.5 block text-studio-ink-3">
+                                下一步：{failure.next}
+                              </span>
+                            </span>
+                          ) : null}
                         </span>
-                        {result.target ? (
-                          <span className="ml-1.5 font-mono text-[11px] text-studio-ink-3">
-                            {result.target}
-                          </span>
-                        ) : null}
-                        {result.ok && result.impact ? (
-                          <span className="ml-1.5 font-mono text-[11px] text-studio-ink-3">
-                            影响 {Number(result.impact['affectedPixels'] ?? 0).toLocaleString('zh-CN')}{' '}
-                            像元
-                          </span>
-                        ) : null}
-                      </span>
-                    </li>
-                  ))}
+                      </li>
+                    );
+                  })}
                 </ul>
               ) : (
                 <p className="text-[12.5px] text-studio-ink-2">{execResult.warning ?? '没有可报告的结果'}</p>
@@ -853,7 +999,7 @@ export default function AiWorkbench() {
             }
             preview={(previews[0] ?? null) as OpPreview | null}
             previewing={previewing}
-            previewError={previewError}
+            previewError={previewFailure?.detail ?? null}
             executing={executing}
             outcome={null}
             onConfirm={() => void confirmExecute()}
@@ -864,7 +1010,7 @@ export default function AiWorkbench() {
             ops={proposal.plan.ops.map((op) => ({ op: op.op, params: op.params }))}
             previews={previews}
             previewing={previewing}
-            previewError={previewError}
+            previewError={previewFailure?.detail ?? null}
             executing={executing}
             onConfirm={() => void confirmExecute()}
             onCancel={cancelPlan}
