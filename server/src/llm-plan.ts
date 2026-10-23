@@ -540,6 +540,163 @@ export function implementedOps(): readonly string[] {
 }
 
 /* ────────────────────────────────────────────────────────────
+ * §2b 一份计划能不能进执行（/api/llm/plan 与 /api/op/execute 共用）
+ * ──────────────────────────────────────────────────────────── */
+
+/** 契约里是「工作区相对路径」的参数（pathRef） */
+const PATH_PARAM_KEYS = ['target', 'source', 'clip', 'output'] as const;
+
+/**
+ * 把计划里的路径参数统一成**契约形状**（dataset://<相对路径>）。
+ *
+ * 契约里的 pathRef 只认 `dataset://` 这一种；裸相对路径「引擎能跑，但不符合契约」。
+ * `/api/op/execute` 收到的是裸相对路径（画布就是这么发的），
+ * 所以先统一形状，再交给**同一份**校验器 ——
+ * 两套校验器各说各话，测出来的「绿」是假的。
+ *
+ * 只动**引擎已实现**的 op：其余 op 的 target 是图层引用（layer://），
+ * 不是文件路径，不能这么改写。
+ */
+export function canonicalizePlanPaths(plan: PlanDocument): PlanDocument {
+  const implemented = new Set(implementedOps());
+  return {
+    ...plan,
+    ops: plan.ops.map((op) =>
+      implemented.has(op.op) ? { ...op, params: canonicalizeParams(op.params) } : op,
+    ),
+  };
+}
+
+/**
+ * 把契约里声明的 `default` 补进计划。
+ *
+ * 校验器实现的是 required / allOf / type / enum 这些**约束**，
+ * 不实现 JSON Schema 的 `default`（那是"缺省时该取什么值"的注解）。
+ * 于是契约写着 `requireUserConfirm: { default: true }`、引擎却按
+ * "没写就不拦"执行 —— **契约与行为不同向**，而这条恰好是破坏性操作的安全网。
+ * 同一个毛病也让「声明了 default 又列进 required」的字段自相矛盾
+ * （缺了就该报错，可它明明有缺省值）。
+ *
+ * 补上之后：契约声明了 default 的属性，缺省就按 default 走；
+ * 引擎那边「写了 true 才拦」才真正等于契约说的「默认 true」。
+ *
+ * 注入的值与引擎自己的缺省**逐个核对过**
+ * （brightness 0 / contrast 1 / method linear-stretch / gamma 2.2 /
+ *  radiusPx 4 / featherPx 0），所以对已实现的 8 个栅格 op 是**行为不变**的；
+ * 对尚未实现的 op 只是让计划自描述，不产生副作用。
+ */
+export function applySchemaDefaults(plan: PlanDocument): PlanDocument {
+  const defs = readOpsSchema().$defs ?? {};
+  const opProps = defs['operation']?.properties ?? {};
+  return {
+    ...plan,
+    ops: plan.ops.map((op) => {
+      let changed = false;
+
+      /* ① operation 级：requireUserConfirm 就声明在这一层（与 op / params 平级） */
+      const spec: Record<string, unknown> = { ...op };
+      for (const [key, prop] of Object.entries(opProps)) {
+        if (spec[key] !== undefined) continue;
+        if (prop.default === undefined) continue;
+        spec[key] = prop.default;
+        changed = true;
+      }
+
+      /* ② params 级：brightness / contrast / method / gamma … */
+      const paramsSchema = defs[`params.${op.op}`];
+      const params: Record<string, unknown> = { ...op.params };
+      if (paramsSchema?.properties) {
+        for (const [key, prop] of Object.entries(paramsSchema.properties)) {
+          if (params[key] !== undefined) continue;
+          if (prop.default === undefined) continue;
+          params[key] = prop.default;
+          changed = true;
+        }
+      }
+
+      if (!changed) return op;
+      return { ...(spec as unknown as OperationSpec), params };
+    }),
+  };
+}
+
+function canonicalizeParams(params: Readonly<Record<string, unknown>>): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...params };
+  for (const key of PATH_PARAM_KEYS) {
+    const v = out[key];
+    if (typeof v === 'string') out[key] = toPathRef(v);
+  }
+  const inputs = out['inputs'];
+  if (Array.isArray(inputs)) {
+    out['inputs'] = inputs.map((x) => (typeof x === 'string' ? toPathRef(x) : x));
+  }
+  return out;
+}
+
+/**
+ * 裸相对路径 → dataset:// 形状。
+ *
+ * 绝对路径与含 `..` 的路径**原样保留**：它们本来就非法，
+ * 改写成"看起来合法"的样子只会把问题藏起来 —— 该由校验器/路径闸门报错。
+ */
+function toPathRef(raw: string): string {
+  const v = raw.trim();
+  if (v === '') return v;
+  if (/^(?:dataset|layer|summary):\/\//.test(v)) return v;
+  if (isAbsolute(v) || /^[A-Za-z]:/.test(v) || v.startsWith('/') || v.startsWith('\\')) return v;
+  if (v.split(/[\\/]/).includes('..')) return v;
+  return `dataset://${v.replace(/\\/g, '/')}`;
+}
+
+export interface PlanGateResult {
+  /** true = 可以进执行 */
+  readonly ok: boolean;
+  /** 不能进执行时的原因（人话） */
+  readonly message: string | null;
+  /** 统一成契约形状之后的计划（ok 时它就是被执行的那一份） */
+  readonly plan: PlanDocument;
+  readonly schemaIssues: readonly PlanSchemaIssue[];
+  readonly unsupported: readonly UnsupportedOp[];
+}
+
+/**
+ * 闸门①：一份计划能不能进入执行。
+ *
+ * `/api/llm/plan`（模型产物）与 `/api/op/execute`（直接提交的计划）
+ * 走的是**同一个函数** —— 计划从哪来不影响它合不合契约。
+ */
+export function checkPlanAgainstContract(plan: PlanDocument): PlanGateResult {
+  // 顺序：先统一路径形状，再补契约声明的缺省值，最后校验。
+  const canonical = applySchemaDefaults(canonicalizePlanPaths(plan));
+  // 单条快捷写法没有 version；契约要求 version = "1.0"，这里按 1.0 校。
+  const versioned: PlanDocument = {
+    ...canonical,
+    version: canonical.version ?? '1.0',
+  };
+  const schemaIssues = validatePlanSchema(versioned, readOpsSchema());
+  if (schemaIssues.length > 0) {
+    return {
+      ok: false,
+      message: `计划不符合操作契约：${schemaIssues[0]?.message ?? ''}`,
+      plan: versioned,
+      schemaIssues,
+      unsupported: [],
+    };
+  }
+  const unsupported = findUnsupportedOps(versioned, implementedOps());
+  if (unsupported.length > 0) {
+    return {
+      ok: false,
+      message: unsupported[0]?.message ?? '该操作尚未支持',
+      plan: versioned,
+      schemaIssues,
+      unsupported,
+    };
+  }
+  return { ok: true, message: null, plan: versioned, schemaIssues, unsupported };
+}
+
+/* ────────────────────────────────────────────────────────────
  * §4 可提议的 op 目录与提示词
  * ──────────────────────────────────────────────────────────── */
 

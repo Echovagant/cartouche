@@ -233,6 +233,12 @@ export async function readRasterPixels(
   // 退出码仍是 0、stderr 也是空的，实测 GDAL 3.13.3）——值被改坏了却没有任何提示。
   // 要保真就得让 GDAL 按源类型导出，导完再按 ENVI 头的类型与字节序读回来。
   // 源类型不认识（Int16 / Float32 …）在这里就报错，不带着坏数据往下走。
+  //
+  // ⚠️ 这里**不再**按「非 Byte 一律拒绝」处理：16 位读写的内核已经上线
+  // （见 pixels.ts），16 位影像要能读能改。把好好的 16 位影像劝去转成 8 位，
+  // 等于亲手制造我们要消灭的那种数据损坏。
+  // 真正不支持的类型（Int16 / Int32 / Float32 …）由 pixelTypeFromGdal 报错，
+  // 「不静默把高位丢掉」这条底线不变。
   const pixelType = pixelTypeFromGdal(info.bands?.[0]?.type);
   const colorInterpretation = (info.bands ?? []).map((b) => b.colorInterpretation ?? 'Undefined');
 

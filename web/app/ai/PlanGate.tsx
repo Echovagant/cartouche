@@ -83,6 +83,18 @@ export default function PlanGate({
     (p) => p.totalPixels > 0 && ratioOf(p) > LARGE_IMPACT_RATIO,
   );
 
+  /**
+   * 预演说「一个像元都没改到」的操作。
+   *
+   * 这种改动**什么都不会发生**：多半是区域落在影像之外，或掩膜没盖住任何像元。
+   * 引擎会把它判成失败（2026-10-23 起），所以界面也不能给执行按钮 ——
+   * 不然用户看到的还是「0 / 192 像元（0.0%）」，像是最轻松的一次改动。
+   */
+  const zeroImpactIndexes = previews
+    .map((p, index) => (p.affectedPixels === 0 ? index : -1))
+    .filter((index) => index >= 0);
+  const hasZeroImpact = zeroImpactIndexes.length > 0;
+
   const handleConfirm = (): void => {
     if (largeImpact && !armed) {
       setArmed(true);
@@ -91,7 +103,8 @@ export default function PlanGate({
     onConfirm();
   };
 
-  const canExecute = previews.length === ops.length && ops.length > 0 && previewError === null && !executing;
+  const canExecute =
+    previews.length === ops.length && ops.length > 0 && previewError === null && !executing && !hasZeroImpact;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-studio/78 p-6 backdrop-blur-sm">
@@ -180,6 +193,19 @@ export default function PlanGate({
           </div>
         ) : null}
 
+        {hasZeroImpact && previewError === null ? (
+          <div className="mt-3 flex items-start gap-2 rounded-lg border border-warn/45 bg-warn/14 px-3 py-2.5 text-[12.5px] leading-relaxed text-warn">
+            <WarningIcon size={16} weight="bold" className="mt-0.5 shrink-0" />
+            <span>
+              <strong>有操作一个像元都没改到：</strong>
+              第 {zeroImpactIndexes.map((i) => i + 1).join('、')} 条预演下来影响像元是 0
+              （多半是区域落在影像之外，或掩膜没盖住任何像元）。
+              <br />
+              <span className="text-studio-ink-2">先确认区域和影像对得上，再执行。</span>
+            </span>
+          </div>
+        ) : null}
+
         <div className="mt-4 flex items-center justify-end gap-2">
           <ActionButton variant="quiet" onClick={onCancel} disabled={executing}>
             取消
@@ -189,7 +215,13 @@ export default function PlanGate({
               variant="primary"
               onClick={handleConfirm}
               disabled={!canExecute}
-              title={canExecute ? '执行这次改动' : '正在预演…'}
+              title={
+                canExecute
+                  ? '执行这次改动'
+                  : hasZeroImpact
+                    ? '有操作一个像元都没改到，先把区域对齐再执行'
+                    : '正在预演…'
+              }
             >
               {executing
                 ? '执行中…'

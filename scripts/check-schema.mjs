@@ -39,7 +39,7 @@ const sample = {
     {
       op: 'raster.replaceRegion',
       params: {
-        source: 'layer://2024_basemap',
+        source: 'dataset://scan-2024.tff',
         target: 'dataset://current.tff',
         bbox: [120.3, 30.52, 120.32, 30.54],
         featherPx: 8,
@@ -56,7 +56,7 @@ const checks = [
   ['op 在枚举内', ops.includes(plan.op)],
   ['params 必填字段齐全', ['source', 'target', 'bbox'].every((k) => k in plan.params)],
   ['bbox 为 4 元数值数组', Array.isArray(plan.params.bbox) && plan.params.bbox.length === 4 && plan.params.bbox.every((n) => typeof n === 'number')],
-  ['layerRef 形如 layer:// 或 dataset://', ['source', 'target'].every((k) => /^(layer|dataset):\/\/.+/.test(plan.params[k]))],
+  ['路径引用形如 dataset://（引擎只认这一种）', ['source', 'target'].every((k) => /^dataset:\/\/.+/.test(plan.params[k]))],
   ['preconditions 含 crsEqual', 'crsEqual' in plan.preconditions],
   ['expect 含影响上限', 'maxAffectedPixels' in plan.expect],
 ];

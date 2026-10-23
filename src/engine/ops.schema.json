@@ -79,9 +79,9 @@
     "rgb": {
       "type": "array",
       "minItems": 3,
-      "maxItems": 4,
+      "maxItems": 3,
       "items": { "type": "integer", "minimum": 0, "maximum": 255 },
-      "description": "[r, g, b]（0~255 整数）"
+      "description": "[r, g, b]（0~255 整数）。只收三通道：引擎的 parseColor 只取前三个，第 4 个 alpha 会被丢掉——写了也没用"
     },
     "operation": {
       "type": "object",
@@ -224,8 +224,7 @@
           "$ref": "#/$defs/region",
           "description": "替换范围。两种形状二选一：①像元坐标对象 { minX, minY, maxX, maxY }；②地理范围数组 [minX, minY, maxX, maxY]（目标图层坐标系）。不要写 layer:// / dataset:// 引用"
         },
-        "featherPx": { "type": "integer", "minimum": 0, "maximum": 200, "default": 0 },
-        "resample": { "type": "string", "enum": ["nearest", "bilinear", "cubic"], "default": "bilinear" }
+        "featherPx": { "type": "integer", "minimum": 0, "maximum": 200, "default": 0, "description": "边缘羽化宽度（像素）。0 = 硬边；给了就真的按羽化混合" }
       },
       "description": "source/target 必填；bbox 与 region 至少给一个"
     },
@@ -239,9 +238,7 @@
           "$ref": "#/$defs/region",
           "description": "要擦除的区域。两种形状二选一：①像元坐标对象 { minX, minY, maxX, maxY }；②地理范围数组 [minX, minY, maxX, maxY]（目标图层坐标系）。不要写 layer:// / dataset:// 引用"
         },
-        "bbox": { "$ref": "#/$defs/bbox" },
-        "fill": { "type": "string", "enum": ["underlying", "transparent", "color"], "default": "underlying" },
-        "color": { "type": "array", "minItems": 3, "maxItems": 4, "items": { "type": "integer", "minimum": 0, "maximum": 255 } }
+        "source": { "$ref": "#/$defs/pathRef", "description": "干净底图。给了就用底图像素替换该区域，不给则用边界内插近似修补" }
       }
     },
     "params.raster.inpaint": {
@@ -254,22 +251,20 @@
           "$ref": "#/$defs/region",
           "description": "要修补的区域。两种形状二选一：①像元坐标对象 { minX, minY, maxX, maxY }；②地理范围数组 [minX, minY, maxX, maxY]（目标图层坐标系）。不要写 layer:// / dataset:// 引用"
         },
-        "bbox": { "$ref": "#/$defs/bbox" },
-        "method": { "type": "string", "enum": ["telea", "navier-stokes", "nearest-fill"], "default": "telea" },
-        "radiusPx": { "type": "integer", "minimum": 1, "maximum": 100, "default": 5 }
+        "radiusPx": { "type": "integer", "minimum": 1, "maximum": 100, "default": 4, "description": "边界内插半径（像素），缺省 4" }
       }
     },
     "params.raster.clip": {
       "type": "object",
-      "required": ["clip"],
+      "required": ["target"],
       "additionalProperties": false,
       "properties": {
         "target": { "$ref": "#/$defs/pathRef" },
-        "inputs": { "type": "string", "description": "批量模式下的通配路径，如 batch/*.tif" },
-        "clip": { "$ref": "#/$defs/pathRef" },
-        "mode": { "type": "string", "enum": ["inside", "outside"], "default": "inside" },
-        "naming": { "type": "string", "enum": ["source-basename", "source-basename-index"], "default": "source-basename" }
-      }
+        "clip": { "$ref": "#/$defs/pathRef", "description": "矢量裁切范围（工作区相对路径）" },
+        "bbox": { "$ref": "#/$defs/bbox", "description": "地理范围裁切（目标图层坐标系）" }
+      },
+      "anyOf": [{ "required": ["clip"] }, { "required": ["bbox"] }],
+      "description": "target 必填；clip 与 bbox 至少给一个——都不给引擎会明确报错，不会空跑一遍"
     },
     "params.raster.mosaic": {
       "type": "object",
@@ -277,22 +272,19 @@
       "additionalProperties": false,
       "properties": {
         "inputs": { "type": "array", "minItems": 2, "items": { "$ref": "#/$defs/pathRef" } },
-        "overlap": { "type": "string", "enum": ["first", "last", "blend"], "default": "blend" },
-        "resample": { "type": "string", "enum": ["nearest", "bilinear", "cubic"], "default": "bilinear" },
-        "output": { "$ref": "#/$defs/pathRef" }
+        "output": { "$ref": "#/$defs/pathRef", "description": "输出路径；不给则用第一幅的名字加 -merged.tif" }
       }
     },
     "params.raster.resample": {
       "type": "object",
-      "required": ["inputs", "resampleMethod"],
+      "required": ["target", "targetResolution", "resampleMethod"],
       "additionalProperties": false,
       "properties": {
-        "inputs": { "type": "string", "description": "通配路径或单数据集引用" },
-        "targetResolution": { "type": "number", "exclusiveMinimum": 0 },
-        "targetGrid": { "$ref": "#/$defs/layerRef" },
-        "resampleMethod": { "type": "string", "enum": ["nearest", "bilinear", "cubic", "average"] },
-        "align": { "type": "string", "enum": ["union", "grid", "each"], "default": "union" }
-      }
+        "target": { "$ref": "#/$defs/pathRef" },
+        "targetResolution": { "type": "number", "exclusiveMinimum": 0, "description": "目标像元大小（与源图同一单位）" },
+        "resampleMethod": { "type": "string", "enum": ["nearest", "bilinear", "cubic", "average"] }
+      },
+      "description": "target / targetResolution / resampleMethod 必填：引擎按 -tr <分辨率> 重采样，改的是这一张图"
     },
     "params.raster.adjustLevels": {
       "type": "object",
@@ -300,10 +292,10 @@
       "additionalProperties": false,
       "properties": {
         "target": { "$ref": "#/$defs/pathRef" },
-        "brightness": { "type": "number", "minimum": -1, "maximum": 1 },
-        "contrast": { "type": "number", "minimum": 0, "maximum": 4 },
+        "brightness": { "type": "number", "minimum": -1, "maximum": 1, "default": 0 },
+        "contrast": { "type": "number", "minimum": 0, "maximum": 4, "default": 1 },
         "method": { "type": "string", "enum": ["linear-stretch", "gamma", "manual"], "default": "linear-stretch" },
-        "autoDerive": { "type": "boolean", "default": true, "description": "为 true 时由直方图推导参数，忽略手填的 brightness/contrast" }
+        "gamma": { "type": "number", "exclusiveMinimum": 0, "default": 2.2, "description": "伽马值；method=gamma 时生效，缺省 2.2" }
       }
     },
     "params.raster.paint": {
@@ -317,7 +309,7 @@
           "description": "要涂色的区域。两种形状二选一：①像元坐标对象 { minX, minY, maxX, maxY }；②地理范围数组 [minX, minY, maxX, maxY]（目标图层坐标系）。不要写 layer:// / dataset:// 引用"
         },
         "color": {
-          "description": "涂色颜色：'#RRGGBB'、'sample-from-edge'（从区域外沿取色）或 [r, g, b]",
+          "description": "涂色颜色：'#RRGGBB'、'sample-from-edge'（从区域外沿取色）或 [r, g, b]（只三通道）",
           "allOf": [
             { "if": { "type": "string" }, "then": { "$ref": "#/$defs/hexColor" }, "else": { "$ref": "#/$defs/rgb" } }
           ]
@@ -470,11 +462,7 @@
       "additionalProperties": false,
       "properties": {
         "target": { "$ref": "#/$defs/layerRef" },
-        "region": {
-          "$ref": "#/$defs/region",
-          "description": "导出范围。两种形状二选一：①像元坐标对象 { minX, minY, maxX, maxY }；②地理范围数组 [minX, minY, maxX, maxY]（目标图层坐标系）。不要写 layer:// / dataset:// 引用"
-        },
-        "bbox": { "$ref": "#/$defs/bbox" },
+        "bbox": { "$ref": "#/$defs/bbox", "description": "导出范围（EPSG:4326 经纬度）。出图端点只认地理范围，不认像元坐标对象" },
         "format": { "enum": ["png", "jpeg", "pdf", "tif"] },
         "dpi": { "type": "integer", "minimum": 72, "maximum": 1200 },
         "layers": { "type": "array", "items": { "$ref": "#/$defs/layerRef" } }

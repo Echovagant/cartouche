@@ -79,12 +79,11 @@
   --duration-narrative: 500ms;
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
 
-  /* 材质分级：浅段（纸面） */
-  --home-grain-opacity: 0.045;
+  /* 材质分级：浅段（纸面）。
+     纸纹是一层 1px 点阵（3px 间距），alpha 直接写死在渐变里（0.045），
+     所以这里的 opacity 只当「开关」用——暗段整层关掉（暗段不用纸纹）。 */
+  --home-grain-opacity: 1;
   --home-grain-blend: multiply;
-  --home-vignette-start: 78%;
-  --home-vignette-rgb: 90 80 62;
-  --home-vignette-strength: 0.1;
 
   /* 导航的文字色：浅段用深墨，深段翻成浅纸。
      深色段上玻璃皮会换成墨底，若文字还沿用浅段那套深墨，就是"深底上的深字"——
@@ -97,13 +96,11 @@
   --nav-warn: var(--color-warn);
 }
 
-/* 深段（墨面）：颗粒更弱、叠加混合；暗角来得更早、更重 */
+/* 深段（墨面）：**不用纸纹**。
+   纸纹是纸的材质，深底上再叠一层颗粒会把字糊掉（规格 §3.5.2）。 */
 [data-surface='dark'] {
-  --home-grain-opacity: 0.035;
-  --home-grain-blend: overlay;
-  --home-vignette-start: 62%;
-  --home-vignette-rgb: 10 9 8;
-  --home-vignette-strength: 0.38;
+  --home-grain-opacity: 0;
+  --home-grain-blend: normal;
 
   /* 深段导航：文字翻成纸色。深底小字透明度不低于 0.85（见规范 §3.2 规则 2）。 */
   --nav-fg: var(--color-paper);
@@ -171,57 +168,75 @@
   --radius-panel: 1.25rem;
 
   /* ── 字阶刻度 ──────────────────────────────────────────────────
-     一套字重只用 400/500/600/700：中文 300 会断笔，
-     Windows 回落到微软雅黑后字形还会漂。
-     张力：display-1 / body = 76/16 ≈ 4.75:1；display-2 / body ≈ 3:1。 */
-  --text-display-1: clamp(2.75rem, 5.8vw, 4.75rem);
-  --text-display-1--line-height: 1.04;
-  --text-display-1--font-weight: 700;
-  --text-display-1--letter-spacing: -0.035em;
+     字重**只留 400 / 500 / 600 三档**：700 全面退役。
+     依据（规格 §3.4.2 / §2.3）：中文品牌站收敛到 ≤3 档离散字重是实测规律；
+     DJI DESIGN.md 是「标题 600、功能件 400」。
 
-  --text-display-2: clamp(1.9rem, 3.6vw, 3rem);
-  --text-display-2--line-height: 1.1;
-  --text-display-2--font-weight: 700;
-  --text-display-2--letter-spacing: -0.03em;
+     display / body 比值核对（§3.4.4，正文 17px）：
+       display-2    50 ÷ 17 = 2.94
+       display-1    76 ÷ 17 = 4.47
+       hero-figure  84 ÷ 17 = 4.94      全部落在 2.9–5.0
+
+     字距（§3.4.3）：中文标题 0 ~ -0.01em —— **不照抄 DJI 的 -0.03em**
+     （那是拉丁字体的值，中文字面满格，收紧会让「图签」这类密集字粘连）；
+     等宽数字反过来要放开：+0.02em + tabular-nums。 */
+  --text-display-1: clamp(2.75rem, 5.8vw, 4.75rem);
+  --text-display-1--line-height: 1.08;
+  --text-display-1--font-weight: 600;
+  --text-display-1--letter-spacing: -0.01em;
+
+  --text-display-2: clamp(2rem, 3.8vw, 3.125rem);
+  --text-display-2--line-height: 1.14;
+  --text-display-2--font-weight: 600;
+  --text-display-2--letter-spacing: -0.01em;
 
   --text-display-3: clamp(1.3rem, 2.1vw, 1.75rem);
-  --text-display-3--line-height: 1.2;
+  --text-display-3--line-height: 1.25;
   --text-display-3--font-weight: 600;
-  --text-display-3--letter-spacing: -0.02em;
+  --text-display-3--letter-spacing: -0.005em;
 
-  /* 呼吸段的巨号等宽数字 */
-  --text-hero-figure: clamp(3.25rem, 7.5vw, 6.5rem);
-  --text-hero-figure--line-height: 1;
-  --text-hero-figure--font-weight: 600;
-  --text-hero-figure--letter-spacing: -0.02em;
+  /* 呼吸段的巨号等宽数字：字重 **400** ——
+     数字越大越安静，重要性靠尺寸表达，不靠加粗（规律 L6）。 */
+  --text-hero-figure: clamp(2.75rem, 6.5vw, 5.25rem);
+  --text-hero-figure--line-height: 1.02;
+  --text-hero-figure--font-weight: 400;
+  --text-hero-figure--letter-spacing: 0;
 
-  --text-lead: clamp(1.05rem, 1.4vw, 1.25rem);
-  --text-lead--line-height: 1.5;
+  --text-lead: clamp(1.0625rem, 1.4vw, 1.3125rem);
+  --text-lead--line-height: 1.65;
+  --text-lead--font-weight: 400;
 
-  --text-body: 1rem;
+  /* 正文统一 token：17px 下限（特斯拉 f20l28w400 同级）。
+     **禁止 12px 正文**——基层用户常戴老花镜、在强光下看屏幕。 */
+  --text-body: 1.0625rem;
   --text-body--line-height: 1.65;
+  --text-body--font-weight: 400;
 
-  --text-body-sm: 0.9rem;
+  /* 注解与脚注（**不是正文**）：正文 17px，注解下限 13px。 */
+  --text-body-sm: 0.8125rem;
   --text-body-sm--line-height: 1.6;
 
   --text-label: 0.875rem;
-  --text-label--line-height: 1.4;
+  --text-label--line-height: 1.5;
   --text-label--font-weight: 500;
+  --text-label--letter-spacing: 0.01em;
 
   --text-eyebrow: 0.75rem;
-  --text-eyebrow--line-height: 1.3;
+  --text-eyebrow--line-height: 1.4;
   --text-eyebrow--font-weight: 500;
-  --text-eyebrow--letter-spacing: 0.18em;
+  --text-eyebrow--letter-spacing: 0.08em;
 
+  /* 等宽数据：正字距（等宽字体负字距会糊），配 tabular-nums */
   --text-mono-data: 0.8125rem;
-  --text-mono-data--line-height: 1.5;
+  --text-mono-data--line-height: 1.45;
   --text-mono-data--font-weight: 500;
+  --text-mono-data--letter-spacing: 0.02em;
 
-  /* ── 阴影：全站只留两条 ────────────────────────────────────────
-     --shadow-product 只给真实产品影像；
-     --shadow-nav 给玻璃导航。
-     --shadow-lift 仍保留（画布的主题开关在用），
-     但官网的卡片一律不再挂阴影——改用 surface + 1px hairline 分层。 */
+  /* ── 阴影：三档，各有唯一归属 ──────────────────────────────────
+     --shadow-product 只给**产品影像**（s1 成品图面、s5 三件交付物、图面缩图）；
+     --shadow-nav 只给**实体化之后的导航条**；
+     --shadow-lift 仍保留（画布的主题开关在用），但**官网静态区块一律不用**——
+     官网的层级靠「纸 → 厚纸 → 卡片白」三级表面阶，不靠投影分层。 */
   --shadow-product: 0 24px 48px -24px rgb(28 26 22 / 0.18);
   --shadow-nav: 0 18px 40px -24px rgb(28 26 22 / 0.35);
   --shadow-lift: 0 2px 10px -2px rgb(28 26 22 / 0.10), 0 1px 2px -1px rgb(28 26 22 / 0.06);
@@ -313,14 +328,33 @@
   }
 
   :focus-visible {
+    /* 双层焦点环：内圈是纸色、外圈是墨绿。
+       墨绿全站只在这一处出现（规格 §3.5.3 的四个位置之一）。
+       outline 保留（forced-colors 模式下 box-shadow 会被系统吃掉，
+       只剩 outline 才不会丢失焦点指示）。 */
     outline: 2px solid var(--color-accent);
     outline-offset: 2px;
-    border-radius: 4px;
+    box-shadow: 0 0 0 2px var(--color-paper);
   }
 
+  /* 中文标题的字距：0 ~ -0.01em。
+     负字距只对拉丁字母与等宽数字生效，中文字面满格，收紧会粘连。 */
+  :lang(zh) h1,
+  :lang(zh) h2 {
+    letter-spacing: -0.01em;
+  }
+
+  /* 选中态：墨色/纸色互翻，**不用墨绿**——
+     墨绿全站只允许出现在主 CTA、焦点环、s7 可写组左边条、s4 第 1 卡序号点
+     这四处（规格 §3.5.3）。深段反过来翻。 */
   ::selection {
-    background: var(--color-accent);
-    color: #fff;
+    background: var(--color-ink);
+    color: var(--color-paper);
+  }
+
+  [data-surface='dark'] ::selection {
+    background: var(--color-paper);
+    color: var(--color-ink);
   }
 
   /* 细滚动条，避免打断纸面 */
@@ -376,6 +410,18 @@
       0 18px 40px -24px rgb(0 0 0 / 0.45);
   }
 
+  /* 导航条在**首屏顶部**是透明的：滚过 16px 才获得实体
+     （NIO 实测阈值 10px，我们取 16px）。
+     永远有底色的导航会读成「管理后台」，不是官网。
+     ⚠ 与 .glass 同样的声明顺序：前缀在前、标准属性在后。 */
+  .nav-bar-plain {
+    background: transparent;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    border-color: transparent;
+    box-shadow: none;
+  }
+
   /* 导航的文字与描边：跟着 <html data-surface> 翻。
      这些是**组件类**而不是 Tailwind 工具类——工具类会被构建期固定成浅段那套
      颜色，深段就没法翻。hover 态写在类里（Tailwind 不会为自定义类生成
@@ -412,8 +458,9 @@
   }
 
   /* 纸纹：固定的、不接收指针事件的伪元素层，绝不放在滚动容器里。
-     深浅两段的颗粒是分级的：浅段 multiply 0.045，深段 overlay 0.035
-     —— 深底上再叠一层不透明颗粒会糊掉字。 */
+     1px 点阵、3px 间距、alpha 0.045 —— alpha 再高纸面就会显脏
+     （B 端用户对「脏」比对「糊」敏感得多）。暗段整层关掉：
+     纸纹是纸的材质，深底上不该有。 */
   .grain::after {
     content: '';
     position: fixed;
@@ -423,24 +470,13 @@
     opacity: var(--home-grain-opacity);
     mix-blend-mode: var(--home-grain-blend);
     transition: opacity 400ms linear;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='128' height='128'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3'/%3E%3Cfilter%3E%3Crect width='128' height='128' filter='url(%23n)'/%3E%3C/svg%3E");
+    background-image: radial-gradient(rgba(28, 26, 22, 0.045) 0.5px, transparent 0.5px);
+    background-size: 3px 3px;
   }
 
-  /* 官网的暗角：与颗粒同一套分级（浅段 78% 起步、0.10；深段 62% 起步、0.38）。
-     画布那一套仍用 .vignette + --studio-* 变量，两边互不干扰。 */
-  .page-vignette::before {
-    content: '';
-    position: absolute;
-    inset: 0;
-    z-index: 0;
-    pointer-events: none;
-    background: radial-gradient(
-      118% 92% at 50% 46%,
-      transparent 42%,
-      rgb(var(--home-vignette-rgb) / calc(var(--home-vignette-strength) * 0.45)) var(--home-vignette-start),
-      rgb(var(--home-vignette-rgb) / var(--home-vignette-strength)) 100%
-    );
-  }
+  /* 官网**不加暗角**：暗角是消费电子 / 摄影品牌的语言，
+     在制图台美学里暗角 = 「照片滤镜」，与「图纸」冲突。
+     画布那一套 .vignette + --studio-* 变量不动，两边互不干扰。 */
 
   /* 顶部高光描边：给深色块一点"被光打到"的质感 */
   .rim-light {
@@ -461,8 +497,7 @@
     pointer-events: none;
   }
 
-  /* 骨架屏：按真实布局尺寸出，不用转圈 */
-  .skeleton {
+  /* 骨架屏：按真实布局尺寸出，不用转圈 */  .skeleton {
     background: linear-gradient(
       100deg,
       var(--color-paper-deep) 30%,
@@ -615,6 +650,14 @@
   .tnum {
     font-variant-numeric: tabular-nums;
   }
+
+  /* 等宽数据：等宽字体**要放开**字距（负字距会糊），
+     再配 tabular-nums 让数字对齐成列。 */
+  .mono-num {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: 'tnum' 1;
+    letter-spacing: 0.02em;
+  }
 }
 
 /**
@@ -663,7 +706,6 @@
  */
 @media (forced-colors: active) {
   .grain::after,
-  .page-vignette::before,
   .film-grain::after,
   .vignette::before,
   .rim-light::before {
