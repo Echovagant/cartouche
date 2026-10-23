@@ -61,6 +61,63 @@ const PREBUILT = [
 const SKIP_DIR = new Set(['node_modules', '.git', '.next', '.turbo', 'coverage', '.impeccable', 'shots', 'workspace']);
 const SKIP_FILE = new Set(['.DS_Store', 'Thumbs.db']);
 
+/**
+ * 文件名像开发日志 / 临时产物的，一律不进包。
+ *
+ * 为什么单独列：`.gitignore` 挡住了它们进**仓库**，但打包走的是**文件系统**，
+ * 不是 git —— 本机残留的日志会被原样打进给别人的包。
+ * 实测（2026-10-23）：已发布的 v0.1.0 包里带着 `scripts/gdal-setup.log`，
+ * 里面写着打包者本机的 conda 安装路径 —— 别人的包不该带打包者的本机路径。
+ */
+const SKIP_FILE_RE = /(\.log(\.err)?|\.err\.log|\.tmp|\.bak|\.old)$/i;
+
+/**
+ * 本机路径的特征 —— 只认**指向具体账号**的那几种。
+ *
+ * 命中就**拒绝出包**（见 {@link findLocalPathLeaks}）。
+ *
+ * 为什么不含「系统目录」那一类：Windows 的系统目录（System32、Program Files 之类）
+ * 谁都一样，不是身份信息；而**用户目录**（Windows 的 Users 下、macOS 的 Users 下、
+ * Linux 的 home 下）指向的是**某一个人**，那才是要拦的。
+ * 误报一次就足以让人不再信任这道闸，所以宁可少认几种、别多认。
+ */
+const LOCAL_PATH_PATTERNS = [
+  /[A-Za-z]:\\Users\\[^\\\s"'<>|]+/g, // Windows 的用户目录
+  /\/Users\/[^/\s"'<>|]+/g, // macOS 的用户目录
+  /\/home\/[^/\s"'<>|]+/g, // Linux 的用户目录
+];
+
+/* ── 出包前的最后一道闸 ─────────────────────────────────────── */
+
+/**
+ * 找出打进包里的本机路径。
+ *
+ * 为什么要有这道闸：包是给别人的。带着打包者本机的用户目录路径出去，
+ * 等于把打包者的本机路径公开 —— 2026-10-23 的 v0.1.0 就是这么漏出去的
+ * （`scripts/gdal-setup.log` 里有 `打包者本机的用户目录\miniconda3`）。
+ * 与其事后从已发布的资产里删，不如**打不出来**：出了包就是已经扩散了。
+ *
+ * 只扫文本文件：二进制（含 NUL 字节）跳过 —— 扫它没有意义，
+ * 而且一次误报就足以让人不再信任这道闸。
+ */
+function findLocalPathLeaks(entries) {
+  const leaks = [];
+  for (const e of entries) {
+    const head = e.data.subarray(0, 4096);
+    if (head.includes(0)) continue; // 二进制，跳过
+    const text = e.data.toString('utf8');
+    for (const re of LOCAL_PATH_PATTERNS) {
+      re.lastIndex = 0;
+      const m = re.exec(text);
+      if (m) {
+        leaks.push({ name: e.name, sample: m[0].slice(0, 120) });
+        break;
+      }
+    }
+  }
+  return leaks;
+}
+
 /* ── 最小 ZIP 写入器（store + deflate） ── */
 
 function crc32(buf) {
@@ -176,6 +233,8 @@ async function walk(abs, rel, out) {
     }
   } else if (st.isFile()) {
     if (SKIP_FILE.has(rel)) return;
+    // 文件名像日志/临时产物的：不进包（见 SKIP_FILE_RE 的说明）
+    if (SKIP_FILE_RE.test(rel.split(sep).pop() ?? rel)) return;
     if (rel.split('/').some((seg) => SKIP_DIR.has(seg))) return;
     out.push({ rel, abs, size: st.size });
   }
@@ -279,11 +338,30 @@ async function main() {
     entries.push({ name: f.rel.split(sep).join('/'), data });
   }
 
+  // 出包前的最后一道闸：包里不许有本机路径。
+  // 放在写文件之前 —— 写下去就等于扩散了，删本地文件追不回已发布的资产。
+  const leaks = findLocalPathLeaks(entries);
+  if (leaks.length > 0) {
+    console.error(`[pack] 拒绝出包：发现 ${leaks.length} 处本机路径痕迹`);
+    for (const l of leaks) {
+      console.error(`        ${l.name}  →  ${l.sample}`);
+    }
+    console.error(
+      '        这些是打包者本机的路径，不该出现在给别人的包里。\n' +
+        '        处理：把对应文件排除掉（scripts/pack-release.mjs 的 SKIP_FILE_RE），' +
+        '        并确认它已被 .gitignore 挡住。',
+    );
+    process.exitCode = 1;
+    return;
+  }
+
   const buf = zip(entries);
   await mkdir(outDir, { recursive: true });
   const version = JSON.parse(await readFile(join(root, 'package.json'), 'utf8')).version ?? '0.0.0';
-  const stamp = new Date().toISOString().slice(0, 10);
-  const outFile = join(outDir, `cartouche-${version}-${stamp}.zip`);
+  // 资产名不带日期：发布资产的链接要稳定。
+  // 带日期的话，每重打一次包就是一个新文件名 —— 那不是"发布"，是"再发一次"。
+  // 要区分不同构建，看同名的 .sha256 就行。
+  const outFile = join(outDir, `cartouche-${version}.zip`);
   await writeFile(outFile, buf);
 
   const sha = createHash('sha256').update(buf).digest('hex');
