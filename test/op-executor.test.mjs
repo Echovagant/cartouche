@@ -154,7 +154,11 @@ test('调度器：未实现的 op 明确说"尚未支持"，不静默跳过', as
   try {
     const res = await executePlan({ loc, store }, {
       version: '1.0',
-      ops: [{ op: 'feature.setAttributes', params: { target: 'marked.tif', where: 'x=1', set: { a: 1 } } }],
+      // 用**仍未实现**的那个 op 当例子（feature.create / feature.editGeometry /
+      // vector.overlay / vector.repairGeometry 还没做）。
+      // 早先这里用的是 feature.setAttributes —— 它 2026-10-24 起已经实现了，
+      // 拿它当"未实现"的例子会让这条测试变成假绿。
+      ops: [{ op: 'feature.create', params: { target: 'marked.tif' } }],
     });
     assert.equal(res.ok, false);
     assert.equal(res.results.length, 1);
@@ -272,11 +276,22 @@ test('计划归一化：单条 op 与计划文档走同一条路', () => {
   assert.equal(doc.intent, '把标注涂绿');
 });
 
-test('已实现的 op 清单：矢量编辑类不在其中（矢量编辑类 op 尚未实现）', () => {
+test('已实现的 op 清单：登记的都能真跑，没实现的不能混进来', () => {
   const ops = listImplementedOps();
   assert.ok(ops.includes('raster.paint'));
   assert.ok(ops.includes('raster.adjustLevels'));
   assert.ok(ops.includes('raster.erase'));
-  assert.ok(!ops.includes('feature.setAttributes'), '矢量编辑还没做，不能登记成已实现');
-  assert.ok(!ops.includes('vector.overlay'));
+  // 已实现的矢量侧与属性侧 op 要在清单里（2026-10-24 起陆续补上）
+  assert.ok(ops.includes('vector.query'));
+  assert.ok(ops.includes('vector.addField'));
+  assert.ok(ops.includes('vector.spatialJoin'));
+  assert.ok(ops.includes('vector.reproject'));
+  assert.ok(ops.includes('feature.setAttributes'));
+  assert.ok(ops.includes('feature.delete'));
+  assert.ok(ops.includes('feature.summarize'));
+  // 还没实现的**不能**混进来：登记成"已实现"等于对用户说能做，做不了就是骗人
+  assert.ok(!ops.includes('vector.overlay'), '叠加还没实现，不能登记成已实现');
+  assert.ok(!ops.includes('vector.repairGeometry'), '修复几何还没实现');
+  assert.ok(!ops.includes('feature.editGeometry'), '改几何还没实现');
+  assert.ok(!ops.includes('feature.create'), '新建要素还没实现');
 });

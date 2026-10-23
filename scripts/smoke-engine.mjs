@@ -513,13 +513,17 @@ try {
     );
     check('预演不会改文件（仍能出图）', afterPreview.ok, `HTTP ${afterPreview.status}`);
 
-    // 未实现的 op 要明确报 400，不能假装成功
+    // 未实现的 op 要明确报 400，不能假装成功。
+    // 用**仍未实现**的那个 op（feature.create / feature.editGeometry /
+    // vector.overlay / vector.repairGeometry 还没做）——
+    // 早先这里用的是 feature.setAttributes，它 2026-10-24 起已经实现了，
+    // 拿它当"未实现"的例子，这条冒烟检查就变成了假绿。
     const unimplemented = await fetch(`${BASE}/api/op/preview`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        op: 'feature.setAttributes',
-        params: { target: opRaster, where: 'a=1', set: { b: 2 } },
+        op: 'feature.create',
+        params: { target: opRaster, geometry: { type: 'Point', coordinates: [1, 2] } },
       }),
     });
     check(

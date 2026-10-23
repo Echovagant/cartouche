@@ -182,8 +182,9 @@ test('提示词：发出去的内容里没有白名单之外的字段', () => {
   assert.ok(!prompt.includes('WORKSTATION-01'), '机器名不能在提示词里');
   assert.ok(!prompt.includes('sk-not-a-real-key'), '密钥不能在提示词里');
   assert.ok(!prompt.includes('deadbeef'), '校验和不能在提示词里');
-  // 只放行栅格 op：矢量 op 不该出现在清单里
-  assert.ok(!prompt.includes('"feature.delete"'), '未实现的 op 不该进清单');
+  // 清单里放行的是 raster.* 与 vector.*：feature.* 虽然已实现，但**故意不给 AI**
+  // （删要素风险高，且按执行顺序排在后面）—— 见 server/src/llm-plan.ts 的说明。
+  assert.ok(!prompt.includes('"feature.delete"'), '故意不放行的 op 不该进清单');
   assert.ok(prompt.includes('"raster.adjustLevels"'), '已实现的栅格 op 要进清单');
 });
 
@@ -218,19 +219,16 @@ test('op 清单：引擎实现了的矢量 op 必须看得见（2026-10-24 补�
   assert.ok(addField?.params, '参数契约要一起给模型');
 });
 
-test('op 清单：还没实现的 op 不进清单（几何写回那几个还在开发）', () => {
+test('op 清单：故意不放行的 op 不进清单（feature.* 已实现，但删要素风险高）', () => {
   // 用**生产真源**（引擎注册表）来断言，而不是自己编一份名单：
   // 清单只放行 raster.* 与 vector.* 两个前缀，而注册表里只有真能跑的 op，
   // 两边一交叉就既不会漏（已实现的看得见），也不会多（没实现的看不见）。
   const implemented = implementedOps();
-  assert.ok(
-    !implemented.includes('feature.delete'),
-    'feature.* 还没实现，不该在注册表里',
-  );
+  assert.ok(implemented.includes('feature.delete'), 'feature.delete 已实现，在注册表里');
   const catalog = opCatalog(readOpsSchema(), implemented);
   assert.ok(
     !catalog.some((c) => c.op.startsWith('feature.')),
-    'feature.* 不该进清单',
+    'feature.* 故意不给 AI：让模型从一句模糊的话里推出"删要素"风险太高',
   );
   assert.ok(
     catalog.some((c) => c.op.startsWith('vector.')),
@@ -457,14 +455,21 @@ test('端到端（假模型）：计划不合法 → 说清是哪一条，不假
 
 test('端到端（假模型）：请求了还没做的 op → 明确说「该操作尚未支持」', async () => {
   const res = await createPlan({
-    prompt: '删掉一些要素',
+    prompt: '新建一个要素',
     model: 'MiniMax-M3.1-Flash',
     context: RAW_CONTEXT,
-    // 这条计划过得了契约（feature.delete 的参数齐），但引擎还没实现
+    // 这条计划过得了契约（feature.create 的参数齐），但引擎还没实现。
+    // 早先这里用的是 feature.delete —— 它 2026-10-24 起已经实现了，
+    // 拿它当"还没做"的例子，这条测试就变成了假绿。
     fetchImpl: fakeChat(
       JSON.stringify({
         version: '1.0',
-        ops: [{ op: 'feature.delete', params: { target: 'dataset://a.shp', where: 'x=1' } }],
+        ops: [
+          {
+            op: 'feature.create',
+            params: { target: 'dataset://a.shp', geometry: { type: 'Point', coordinates: [120.3, 30.5] } },
+          },
+        ],
       }),
     ),
   });
@@ -472,7 +477,7 @@ test('端到端（假模型）：请求了还没做的 op → 明确说「该操
   assert.equal(res.ok, false);
   assert.equal(res.error, 'op_not_supported');
   assert.equal(res.unsupported.length, 1);
-  assert.match(res.unsupported[0]?.message ?? '', /该操作尚未支持：feature\.delete/);
+  assert.match(res.unsupported[0]?.message ?? '', /该操作尚未支持：feature\.create/);
   assert.match(res.message ?? '', /该操作尚未支持/);
 });
 

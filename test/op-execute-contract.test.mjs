@@ -145,8 +145,12 @@ test('引擎还没实现的 op 打 /api/op/execute → 400（不是执行了才�
       version: '1.0',
       ops: [
         {
-          op: 'feature.setAttributes',
-          params: { target: 'layer://survey.shp', where: 'a=1', set: { b: 2 } },
+          // 用**仍未实现**的那个 op（feature.create / feature.editGeometry /
+          // vector.overlay / vector.repairGeometry 还没做）。
+          // 早先这里用的是 feature.setAttributes —— 它 2026-10-24 起已经实现了，
+          // 拿它当"还没实现"的例子，这条测试就变成了假绿。
+          op: 'feature.create',
+          params: { target: 'layer://survey.shp', geometry: { type: 'Point', coordinates: [1, 2] } },
         },
       ],
     },
