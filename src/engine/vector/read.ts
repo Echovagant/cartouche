@@ -116,10 +116,20 @@ export function parseLayerInfo(stdout: string): LayerInfo {
   };
 }
 
-/** 从 WKT 里抠出 EPSG 码；抠不出就是 null（自定义坐标系很常见）。 */
+/**
+ * 从 WKT 里抠出 EPSG 码；抠不出就是 null（自定义坐标系很常见）。
+ *
+ * ⚠️ **必须取最后一个 ID["EPSG",N]**：
+ * 投影坐标系的 WKT2 里，BASEGEOGCRS 自带的 ID（基准地理 CRS，如 4326）
+ * 排在前面，投影 CRS 自己的 ID（如 3857 / 32631）在最后。
+ * 取第一个的话，EPSG:3857 的图层会被报成 EPSG:4326 ——
+ * 于是"两个图层坐标系是不是一样"的判断会把 3857 与 4326 当成同一个，
+ * 写回时"坐标系没丢"的校验也就形同虚设。
+ * （gdal/probe.ts 的 parseCrs 是同一口径，两处必须一致。）
+ */
 export function epsgOf(wkt: string): number | null {
-  const m = /ID\s*\[\s*"EPSG"\s*,\s*(\d+)\s*\]/.exec(wkt);
-  return m ? Number(m[1]) : null;
+  const ids = [...wkt.matchAll(/ID\s*\[\s*"EPSG"\s*,\s*(\d+)\s*\]/g)].map((m) => Number(m[1]));
+  return ids.length > 0 ? ids[ids.length - 1]! : null;
 }
 
 /** 两个图层的坐标系是不是同一个。 */

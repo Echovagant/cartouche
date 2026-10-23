@@ -18,6 +18,22 @@ export function readStringParam(
 }
 
 /**
+ * 读一个数值参数；不给或不是有限数字都算没给。
+ *
+ * ⚠️ 这个函数分不出"没给"与"给了但类型不对"（两者都是 undefined）。
+ * 要区分的调用方先看 params[key] 是不是 undefined，再调这个 ——
+ * "没给"走默认值，"给错了"必须报错（否则 0 会被当成一个合法的阈值，
+ * 把"转换残差上限"悄悄变成 0）。
+ */
+export function readNumberParam(
+  params: Readonly<Record<string, unknown>>,
+  key: string,
+): number | undefined {
+  const v = params[key];
+  return typeof v === 'number' && Number.isFinite(v) ? v : undefined;
+}
+
+/**
  * 读一个对象参数（对照表）。
  *
  * 形状不对要当场报错：把数组或字符串当对照表传进来，
