@@ -131,6 +131,22 @@ export function sameSrs(a: LayerInfo, b: LayerInfo): boolean {
   return norm(a.srsWkt) === norm(b.srsWkt);
 }
 
+/**
+ * 一个图层的坐标系是不是就是这段 WKT 说的那个。
+ *
+ * 为什么单列一个函数：写回时要核对"写成了要求的那个坐标系"，
+ * 而要求的那段 WKT 不是探查出来的（探查得到的是 GDAL 复读后的形式，
+ * 两者在空白与拼写上可能不同）。所以先比 EPSG 码 —— 那是稳定的身份；
+ * EPSG 认不出（自定义坐标系）时才退回逐字比 WKT。
+ */
+export function srsMatchesWkt(info: LayerInfo, wkt: string): boolean {
+  const wanted = epsgOf(wkt);
+  if (wanted !== null && info.epsg !== null) return wanted === info.epsg;
+  if (info.srsWkt === null) return false;
+  const norm = (w: string): string => w.replace(/\s+/g, '').toUpperCase();
+  return norm(info.srsWkt) === norm(wkt);
+}
+
 /** 条件里的列名（用于提前报错：这一层根本没有这一列）。 */
 export function referencedFields(node: ExprNode): string[] {
   const out: string[] = [];
@@ -248,6 +264,11 @@ export async function readFeatures(
   const out = join(tempDir, 'read.geojson');
   try {
     const args: string[] = ['-f', 'GeoJSON'];
+    if (options.encoding) {
+      // 按 .cpg 之外的编码解读 DBF：属性表本来就是按另一种编码写的时候，
+      // 不给这个就读出来是乱码（GDAL 的 open option，不是 layer option）。
+      args.push('-oo', `ENCODING=${options.encoding}`);
+    }
     if (select) args.push('-select', select);
     // 有条件时不在 GDAL 侧限量：限量要发生在筛选之后
     if (options.limit !== undefined && options.limit > 0 && whereNode === null) {
