@@ -16,6 +16,7 @@
  *   - 计划文档 `{ version, intent?, ops: [...] }`（ops.schema.json 里的那个形状）
  *   - 单条 `{ op, params }`（模板产出的形状）
  */
+import { randomBytes } from 'node:crypto';
 import { RasterEditor, type OverviewOutcome, type RasterOpResult } from '../raster/index.ts';
 import {
   buildPixelMask,
@@ -27,7 +28,9 @@ import {
   type PixelMask,
   type PixelRegion,
 } from '../raster/mask.ts';
-import { probeDataset } from '../gdal/probe.ts';
+import { probeDataset, type DatasetInfo } from '../gdal/probe.ts';
+import { runHealthCheck } from '../health/checks.ts';
+import { renderCompatReport } from '../report/compat-report.ts';
 import type { GdalLocation } from '../gdal/env.ts';
 import type { WorkspaceAdapter } from '../workspace/index.ts';
 
@@ -73,6 +76,23 @@ export interface OpImpact {
   readonly dryRun?: boolean;
 }
 
+/**
+ * 非栅格型 op 的结果。
+ *
+ * 为什么需要它：执行器的影响面模型是**像元**形状的（改了多少像元、校验和…），
+ * 而"打开数据集""做体检""快照"这类 op 不改像元 ——
+ * 硬塞一个 affectedPixels: 0 进去，只会被"改了 0 像元就是失败"那道闸门误杀。
+ */
+export interface OpValueResult {
+  readonly kind: 'value';
+  /** 一句话结论，进报告与确认卡 */
+  readonly summary: string;
+  /** 产出文件（工作区相对路径）；没有产出就不要这个字段 */
+  readonly outputPath?: string;
+  /** 结构化结果 */
+  readonly data?: Readonly<Record<string, unknown>>;
+}
+
 export interface OpExecutionRecord {
   readonly index: number;
   readonly op: string;
@@ -80,7 +100,10 @@ export interface OpExecutionRecord {
   readonly target: string;
   /** 该 op 尚未实现 */
   readonly unimplemented?: boolean;
+  /** 栅格型 op 的影响面；非栅格型 op 不填 */
   readonly impact?: OpImpact;
+  /** 非栅格型 op 的结果（打开 / 体检 / 快照）：与 impact 二选一 */
+  readonly value?: OpValueResult;
   readonly error?: string;
 }
 
@@ -127,24 +150,242 @@ interface OpHandler {
    *        （「改了 0 像元却报成功」是最严重的一类缺陷）。
    * false = affectedPixels 只是产出规模（拼接）或粗略对比（GDAL 级操作），
    *        0 不代表失败。
+   *
+   * 非栅格型 op（打开 / 体检 / 快照）不走像元口径，这条对它没有意义。
    */
   readonly countsChangedPixels: boolean;
   run(
     editor: RasterEditor,
     params: Readonly<Record<string, unknown>>,
     dryRun: boolean,
-  ): Promise<RasterOpResult>;
+    /**
+     * 工作区与 GDAL 环境。
+     *
+     * 为什么放在最后：非栅格型 op 不碰栅格编辑器，需要的是 store（路径闸门）
+     * 与 loc（探查 / 体检）。放在末尾就不用改已有那八个 handler 的签名。
+     */
+    deps: ExecutorDeps,
+  ): Promise<RasterOpResult | OpValueResult>;
 }
+
+/* ── 数据集类 op 的常量 ─────────────────────────────────────── */
+
+/**
+ * 契约里 `dataset.healthCheck` 的 checks 取值全集。
+ *
+ * 为什么在这里再抄一份而不是读 ops.schema.json：
+ * 引擎的运行时产物（dist）不带 schema 文件，读它会把 JSON 拖进运行期依赖。
+ * 抄一份的风险是**漂移** —— schema 改了这里没改就会把合法检查项当成非法值拒掉，
+ * 所以 `npm run check:schema` 要盯着这一处。
+ */
+const HEALTH_CHECK_NAMES: readonly string[] = [
+  'crs-present', 'crs-mismatch', 'crs-range-sanity', 'axis-order', 'extent-plausibility',
+  'systematic-offset', 'encoding', 'field-naming', 'field-type', 'default-fields',
+  'null-geometry', 'zero-area', 'sharp-angle', 'outlier-extent', 'extent-compare',
+];
+
+/**
+ * 检查项 → 引擎里对应的规则前缀。
+ *
+ * R- 前缀的规则只对栅格生效，V- 前缀的只对矢量生效。
+ * 没出现在这张表里的检查项 = 引擎还没做，不是"检查了没问题"。
+ */
+const HEALTH_CHECK_RULES: Readonly<Record<string, readonly string[]>> = {
+  'crs-present': ['R-CRS-', 'V-CRS-'],
+  'encoding': ['V-ENC-'],
+  'field-naming': ['V-FIELD-002'],
+  'default-fields': ['V-FIELD-001'],
+  'null-geometry': ['V-GEOM-001'],
+  'zero-area': ['V-GEOM-002'],
+};
+
+/** 快照目录（工作区相对路径） */
+const SNAPSHOT_ROOT = '_snapshots';
+
+/**
+ * 数据伴随文件的后缀白名单。
+ *
+ * 判定口径：与主文件**同名**（同一主名）、后缀不同、且后缀在下表里。
+ * 锁标记（.lock / .lck）**不在**下表里 —— 它们表示"数据正被 ArcGIS 打开"，
+ * 拷进快照只会让人误以为快照里也有一份数据被锁着。
+ *
+ * 为什么把 Shapefile 的数据部件也算进来：Shapefile 是多文件数据集，
+ * 只拷 .shp 会得到一个**打不开**的快照 —— 那不是快照，是半个数据集。
+ */
+const DATA_SIDECAR_SUFFIXES: readonly string[] = [
+  // 坐标系与编码标记
+  '.prj', '.cpg',
+  // 世界文件
+  '.tfw', '.wld', '.tifw', '.jgw',
+  // 辅助元数据
+  '.aux.xml',
+  // Shapefile 的数据部件
+  '.shx', '.dbf', '.sbn', '.sbx', '.qix', '.fbn', '.fbx', '.ain', '.aih', '.ixs', '.mxs', '.atx',
+];
 
 /**
  * 已实现的 op。
  *
- * 这里只登记**引擎里真的能跑**的。schema 里的 23 个 op 有 10 个是矢量编辑
- * （矢量编辑类 op 尚未实现），另有 dataset.* 与 export.* 已经由各自的端点承担
- * （`/api/report/compat`、`/api/render/raster.png`、`/api/export/pdf`），
- * 所以这里不重复登记。
+ * 这里只登记**引擎里真的能跑**的。schema 里的 23 个 op 里，矢量编辑类
+ * （feature.* / vector.* 共 6 个）尚未实现；export.* 要等渲染 / 报告管线
+ * 把"产出文件"的语义定下来。dataset.* 的三个（打开 / 体检 / 快照）在这里落地 ——
+ * 它们**不改像元**，走的是非栅格型结果那条路。
  */
 const IMPLEMENTED: Readonly<Record<string, OpHandler>> = {
+  'dataset.open': {
+    label: '打开数据集',
+    previewable: true,
+    countsChangedPixels: false,
+    run: async (_editor, params, _dryRun, deps) => {
+      const targets = requireStringArray(params, 'targets');
+      const purpose = readString(params, 'purpose');
+      const opened: Array<{ readonly rel: string; readonly info: DatasetInfo }> = [];
+      for (const raw of targets) {
+        const rel = toRelPathChecked(raw, 'targets');
+        // 路径闸门在这里生效：绝对路径与 .. 都过不去
+        const { dataset, error } = await probeDataset(deps.loc, deps.store.resolve(rel));
+        if (!dataset) {
+          // 任一目标打不开 → 整个 op 失败，并点名是哪个目标。
+          // 只报一半等于让调用方以为其余的都打开了。
+          throw new Error(`打不开数据集：${rel}（${error?.message ?? '未知原因'}）`);
+        }
+        opened.push({ rel, info: dataset });
+      }
+      return {
+        kind: 'value',
+        summary: `打开 ${opened.length} 个数据集：${opened
+          .map(({ rel, info }) => `${stemOf(rel)}（${describeDatasetKind(info)}）`)
+          .join('、')}`,
+        data: {
+          datasets: opened.map(({ rel, info }) => datasetRecord(rel, info)),
+          ...(purpose ? { purpose } : {}),
+        },
+      };
+    },
+  },
+  'dataset.healthCheck': {
+    label: '数据体检',
+    previewable: true,
+    countsChangedPixels: false,
+    run: async (_editor, params, _dryRun, deps) => {
+      const rel = requireTarget(params);
+      const checks = requireStringArray(params, 'checks');
+      const unknown = checks.filter((c) => !HEALTH_CHECK_NAMES.includes(c));
+      if (unknown.length > 0) {
+        throw new Error(
+          `参数 checks 里有契约里没有的检查项：${unknown.join('、')}（可选值见 ops.schema.json）`,
+        );
+      }
+      const abs = deps.store.resolve(rel);
+      // 体检内部自己探查一次；渲染兼容性报告还要 DatasetInfo，所以这里探查两遍。
+      // 探查失败必须报错 —— 拿不到数据集就没有"体检结论"可言。
+      const { dataset, error } = await probeDataset(deps.loc, abs);
+      if (!dataset) {
+        throw new Error(`打不开数据集，无法体检：${rel}（${error?.message ?? '未知原因'}）`);
+      }
+      const health = await runHealthCheck(deps.loc, abs);
+      const compat = renderCompatReport({ path: rel, dataset, health, at: localTimestamp() });
+
+      // 契约里的 15 项检查，引擎只实现了其中一部分。
+      // 三种状态要分清：查了 / 这类数据集没有这项检查的适用面 / 引擎还没做。
+      // 混成一句"检查通过"就是骗人。
+      const covered: string[] = [];
+      const notApplicable: string[] = [];
+      const unsupported: string[] = [];
+      for (const c of checks) {
+        const rules = HEALTH_CHECK_RULES[c];
+        if (!rules) {
+          unsupported.push(c);
+        } else if (rulesApplies(rules, dataset.kind)) {
+          covered.push(c);
+        } else {
+          notApplicable.push(c);
+        }
+      }
+      const blockers = health.blockers.length;
+      const errors = health.findings.filter((f) => f.severity === 'error').length;
+      const warnings = health.findings.filter((f) => f.severity === 'warn').length;
+      const caveats: string[] = [];
+      if (unsupported.length > 0) {
+        caveats.push(`请求的 ${unsupported.join('、')} 引擎尚未实现，未检查`);
+      }
+      if (notApplicable.length > 0) {
+        caveats.push(`${notApplicable.join('、')} 对${dataset.kind === 'raster' ? '栅格' : '矢量'}不适用`);
+      }
+      return {
+        kind: 'value',
+        summary:
+          `体检：${blockers} 条阻断项、${errors} 条错误、${warnings} 条提示` +
+          (caveats.length > 0 ? `（${caveats.join('；')}）` : ''),
+        data: {
+          path: rel,
+          kind: dataset.kind,
+          driver: dataset.driver,
+          passed: health.passed,
+          hasBlocker: compat.hasBlocker,
+          manualChecks: compat.manualChecks,
+          requestedChecks: checks,
+          coveredChecks: covered,
+          notApplicableChecks: notApplicable,
+          unsupportedChecks: unsupported,
+          findings: health.findings.map((f) => ({
+            ruleId: f.ruleId,
+            severity: f.severity,
+            title: f.title,
+            ...(f.hint ? { hint: f.hint } : {}),
+          })),
+          markdown: compat.markdown,
+        },
+      };
+    },
+  },
+  'dataset.snapshot': {
+    label: '快照',
+    previewable: true,
+    countsChangedPixels: false,
+    run: async (_editor, params, dryRun, deps) => {
+      const rel = requireTarget(params);
+      const label = readString(params, 'label');
+      const includeSidecars = readBoolean(params, 'includeSidecars') ?? true;
+      const abs = deps.store.resolve(rel);
+      if (!(await deps.store.exists(rel))) {
+        throw new Error(`目标不存在，无法快照：${rel}`);
+      }
+      const sidecars = includeSidecars ? await findDataSidecars(deps.store, rel) : [];
+      // 目录名带时间戳：同一份数据要能反复快照，不能互相覆盖。
+      // 预演算出来的目录名与真正落盘时差一个时刻 —— 快照目录本来就由执行时刻决定。
+      const dirName = await uniqueSnapshotDir(
+        deps.store,
+        `${sanitizeLabel(label ?? 'snapshot')}-${timestamp()}`,
+      );
+      const snapshotDir = `${SNAPSHOT_ROOT}/${dirName}`;
+      const outputPath = `${snapshotDir}/${baseNameOf(rel)}`;
+      if (!dryRun) {
+        // 预演绝不落盘：确认卡上点一下就留下快照文件，这个"预演"就是假的
+        await copySnapshotFile(deps.store, rel, outputPath);
+        for (const sc of sidecars) {
+          await copySnapshotFile(deps.store, sc.path, `${snapshotDir}/${sc.name}`);
+        }
+      }
+      const copiedSidecars = sidecars.map((sc) => `${snapshotDir}/${sc.name}`);
+      return {
+        kind: 'value',
+        summary:
+          `${dryRun ? '将快照' : '已快照'}：${rel} → ${outputPath}` +
+          `（${sidecars.length} 个伴随文件）`,
+        outputPath,
+        data: {
+          target: rel,
+          directory: snapshotDir,
+          label: label ?? 'snapshot',
+          includeSidecars,
+          files: [outputPath, ...copiedSidecars],
+          sidecars: copiedSidecars,
+          dryRun,
+        },
+      };
+    },
+  },
   'raster.paint': {
     label: '涂色',
     previewable: true,
@@ -354,8 +595,14 @@ export async function previewOp(deps: ExecutorDeps, spec: OperationSpec): Promis
   try {
     const params = await normalizeParams(deps, spec);
     const editor = new RasterEditor({ loc: deps.loc, store: deps.store });
-    const result = await handler.run(editor, params, true);
-    return { index: 0, op: spec.op, ok: true, target, impact: verdictOf(handler, result, params) };
+    const result = await handler.run(editor, params, true, deps);
+    return {
+      index: 0,
+      op: spec.op,
+      ok: true,
+      target,
+      ...outcomeOf(verdictOf(handler, result, params)),
+    };
   } catch (err) {
     return { index: 0, op: spec.op, ok: false, target, error: messageOf(err) };
   }
@@ -432,8 +679,25 @@ export async function executePlan(deps: ExecutorDeps, input: PlanInput): Promise
         break;
       }
       try {
-        const preview = await handler.run(editor, params, true);
-        impact = verdictOf(handler, preview, params);
+        const preview = await handler.run(editor, params, true, deps);
+        const outcome = verdictOf(handler, preview, params);
+        if (isValueResult(outcome)) {
+          // 非栅格型 op 不改像元，像元上限无从核对 —— 明确报出来，
+          // 不能悄悄跳过这道闸门（那等于让用户以为上限被核对过了）
+          results.push({
+            index: i,
+            op: spec.op,
+            ok: false,
+            target,
+            value: outcome,
+            error:
+              `maxAffectedPixels 上限只对像素级操作有效；${handler.label} 不改像元，无法核对上限，` +
+              '已中止；未做任何改动。',
+          });
+          failedAt = i;
+          break;
+        }
+        impact = outcome;
         if (impact.affectedPixels > cap) {
           results.push({
             index: i,
@@ -456,8 +720,14 @@ export async function executePlan(deps: ExecutorDeps, input: PlanInput): Promise
     }
 
     try {
-      const result = await handler.run(editor, params, false);
-      results.push({ index: i, op: spec.op, ok: true, target, impact: verdictOf(handler, result, params) });
+      const result = await handler.run(editor, params, false, deps);
+      results.push({
+        index: i,
+        op: spec.op,
+        ok: true,
+        target,
+        ...outcomeOf(verdictOf(handler, result, params)),
+      });
       completed++;
     } catch (err) {
       results.push({ index: i, op: spec.op, ok: false, target, error: messageOf(err) });
@@ -474,6 +744,176 @@ export async function executePlan(deps: ExecutorDeps, input: PlanInput): Promise
   };
 }
 
+/* ── 数据集类 op 的工具 ─────────────────────────────────────── */
+
+/** 相对路径里的主名（不含扩展名） */
+function stemOf(rel: string): string {
+  const base = baseNameOf(rel);
+  const dot = base.lastIndexOf('.');
+  return dot > 0 ? base.slice(0, dot) : base;
+}
+
+/** 相对路径里的文件名（含扩展名） */
+function baseNameOf(rel: string): string {
+  return rel.slice(rel.lastIndexOf('/') + 1);
+}
+
+/** 相对路径里的目录（没有目录时是空串） */
+function dirOf(rel: string): string {
+  const slash = rel.lastIndexOf('/');
+  return slash >= 0 ? rel.slice(0, slash) : '';
+}
+
+/** 一句话描述数据集的规模，给 summary 用 */
+function describeDatasetKind(info: DatasetInfo): string {
+  return info.kind === 'raster'
+    ? `栅格 ${info.width}×${info.height}`
+    : `矢量 ${info.featureCount} 个要素`;
+}
+
+/**
+ * 数据集信息（工作区相对路径口径）。
+ *
+ * 探查返回的是**绝对路径**（探查发生在工作区根之下），直接放进结果会让报告里
+ * 出现本机路径 —— 结果是要给人看、也可能外发的，所以这里换成相对路径，
+ * 尺寸、波段、要素、字段、坐标系这些量一律照抄探查结果，不自己重算。
+ */
+function datasetRecord(rel: string, info: DatasetInfo): Record<string, unknown> {
+  const crs = {
+    present: info.crs.present,
+    source: info.crs.source,
+    ...(info.crs.epsg !== undefined ? { epsg: info.crs.epsg } : {}),
+    ...(info.crs.authority !== undefined ? { authority: info.crs.authority } : {}),
+  };
+  if (info.kind === 'raster') {
+    return {
+      path: rel,
+      kind: 'raster',
+      driver: info.driver,
+      width: info.width,
+      height: info.height,
+      bandCount: info.bandCount,
+      bandTypes: info.bandTypes,
+      nodata: info.nodata,
+      geotransform: info.geotransform,
+      pixelSize: info.pixelSize,
+      crs,
+    };
+  }
+  return {
+    path: rel,
+    kind: 'vector',
+    driver: info.driver,
+    layerName: info.layerName,
+    featureCount: info.featureCount,
+    fieldCount: info.fields.length,
+    fields: info.fields.map((f) => ({ name: f.name, type: f.type })),
+    geometryType: info.geometryType,
+    encoding: info.encoding,
+    crs,
+  };
+}
+
+/** 规则前缀是否对这类数据集适用（R- 只对栅格，V- 只对矢量） */
+function rulesApplies(rulePrefixes: readonly string[], kind: 'raster' | 'vector'): boolean {
+  return rulePrefixes.some((p) => (kind === 'raster' ? p.startsWith('R-') : p.startsWith('V-')));
+}
+
+/**
+ * 找出与主文件同名的数据伴随文件。
+ *
+ * 判据：同目录 + 同一主名 + 后缀在白名单里。
+ * 锁标记（.lock / .lck）不在白名单 —— 它们是"数据正被打开"的信号，
+ * 拷进快照会误导人以为快照里的数据也被锁着。
+ */
+async function findDataSidecars(
+  store: WorkspaceAdapter,
+  rel: string,
+): Promise<Array<{ readonly name: string; readonly path: string }>> {
+  const dir = dirOf(rel);
+  const stem = stemOf(rel);
+  const base = baseNameOf(rel);
+  let siblings: string[];
+  try {
+    siblings = await store.list(dir);
+  } catch (err) {
+    // 读不到目录就说不清有没有伴随文件 —— 不能当成"没有伴随文件"糊弄过去
+    throw new Error(`读取目标目录失败，无法识别伴随文件：${dir || '.'}（${messageOf(err)}）`);
+  }
+  const out: Array<{ readonly name: string; readonly path: string }> = [];
+  for (const name of siblings) {
+    if (name === base) continue;
+    if (!name.startsWith(`${stem}.`)) continue;
+    const lower = name.toLowerCase();
+    if (lower.endsWith('.lock') || lower.endsWith('.lck')) continue;
+    if (!DATA_SIDECAR_SUFFIXES.some((ext) => lower.endsWith(ext))) continue;
+    out.push({ name, path: dir ? `${dir}/${name}` : name });
+  }
+  return out.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/** 快照目录名去重：同一秒内做两次快照也要各自独立 */
+async function uniqueSnapshotDir(store: WorkspaceAdapter, name: string): Promise<string> {
+  if (await store.exists(`${SNAPSHOT_ROOT}/${name}`)) {
+    return `${name}.${randomBytes(3).toString('hex')}`;
+  }
+  return name;
+}
+
+/**
+ * 快照标签清洗。
+ *
+ * 标签会进目录名，所以必须挡住路径分隔符与 .. ——
+ * 快照目录只允许落在工作区里，不能被标签带到别处去。
+ */
+function sanitizeLabel(label: string): string {
+  const cleaned = label
+    .replace(/[^\w.\-㐀-鿿]/g, '_')
+    .replace(/^\.+/, '')
+    .slice(0, 60);
+  return cleaned || 'snapshot';
+}
+
+/** 复制一个快照文件；失败要把原因说出来（空间不足、源文件没了…） */
+async function copySnapshotFile(
+  store: WorkspaceAdapter,
+  fromRel: string,
+  toRel: string,
+): Promise<void> {
+  try {
+    await store.copy(fromRel, toRel);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException | undefined)?.code;
+    if (code === 'ENOSPC') {
+      throw new Error(`磁盘空间不足，快照未完成：${fromRel} → ${toRel}`);
+    }
+    if (code === 'ENOENT') {
+      throw new Error(`快照源文件已消失：${fromRel}`);
+    }
+    throw new Error(`复制快照文件失败：${fromRel} → ${toRel}（${messageOf(err)}）`);
+  }
+}
+
+/** 时间戳（与备份文件名的口径一致：20261023-200000） */
+function timestamp(): string {
+  const d = new Date();
+  const p = (n: number) => String(n).padStart(2, '0');
+  return (
+    `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}` +
+    `-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`
+  );
+}
+
+/** 给人看的本地时间（兼容性报告抬头用） */
+function localTimestamp(): string {
+  const d = new Date();
+  const p = (n: number) => String(n).padStart(2, '0');
+  return (
+    `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ` +
+    `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+  );
+}
+
 /* ── 内部工具 ─────────────────────────────────────────────── */
 
 /**
@@ -486,12 +926,16 @@ export async function executePlan(deps: ExecutorDeps, input: PlanInput): Promise
  * 判断放在这里，预演与执行共用同一段代码：
  * 之前预演如实报 0、执行却无条件 ok:true，两边结论对不上，
  * 确认卡上那个「0 / 192 像元（0.0%）」看着像"最轻松的改动"，点下去却什么都不会发生。
+ *
+ * 非栅格型 op（打开 / 体检 / 快照）**不适用**这条规则：它们本来就不改像元，
+ * 拿"0 像元"去判它们，等于把一次正常的体检报成失败。
  */
 function verdictOf(
   handler: OpHandler,
-  result: RasterOpResult,
+  result: RasterOpResult | OpValueResult,
   params: Readonly<Record<string, unknown>>,
-): OpImpact {
+): OpImpact | OpValueResult {
+  if (isValueResult(result)) return result;
   const impact = toImpact(result);
   if (!handler.countsChangedPixels || impact.affectedPixels > 0) return impact;
   const region = pixelRegionOf(params['region']);
@@ -499,6 +943,24 @@ function verdictOf(
     throw new Error(regionOffRasterMessage(region, impact.width, impact.height));
   }
   throw new Error(zeroImpactMessage(impact.width, impact.height, region));
+}
+
+/**
+ * 非栅格型结果的判别。
+ *
+ * 参数放宽到 object：栅格型结论（OpImpact）与栅格型原始结果（RasterOpResult）
+ * 都要拿它判，而这三者之间没有继承关系，只能靠有没有 kind 字段区分。
+ */
+function isValueResult(r: object): r is OpValueResult {
+  return (r as { kind?: string }).kind === 'value';
+}
+
+/** 把结论摊到执行记录上：栅格型给 impact，非栅格型给 value */
+function outcomeOf(outcome: OpImpact | OpValueResult): {
+  readonly impact?: OpImpact;
+  readonly value?: OpValueResult;
+} {
+  return isValueResult(outcome) ? { value: outcome } : { impact: outcome };
 }
 
 /** 从参数里读出一个像元区域（地理范围数组在 normalizeParams 里已换算成对象） */
@@ -540,7 +1002,9 @@ function toRelPath(raw: string): string {
   const m = /^(?:dataset|layer|summary):\/\/(.+)$/.exec(raw);
   if (m) {
     if (!/^dataset:\/\//.test(raw)) {
-      throw new Error(`目标引用不是文件路径（${raw}）；请用 dataset://<相对路径> 或直接给相对路径`);
+      throw new Error(
+        `目标引用不是文件路径（${raw}）；引擎只能处理 dataset:// 开头的工作区相对路径`,
+      );
     }
     return m[1]!;
   }
@@ -581,7 +1045,20 @@ function toRelPathChecked(raw: string, key: string): string {
 /** 目标路径（只用于报告展示）：剥 scheme，不做安全校验 */
 function targetOf(spec: OperationSpec): string {
   const raw = spec.params['target'];
-  if (typeof raw !== 'string' || raw.trim() === '') return '';
+  if (typeof raw === 'string' && raw.trim() !== '') return stripScheme(raw);
+  // dataset.open 这类 op 用的是 targets 数组：报告里要看得见它打开了哪些文件
+  const targets = spec.params['targets'];
+  if (Array.isArray(targets)) {
+    const names = targets
+      .filter((x): x is string => typeof x === 'string' && x.trim() !== '')
+      .map((x) => stripScheme(x));
+    if (names.length > 0) return names.join('、');
+  }
+  return '';
+}
+
+/** 剥掉 dataset:// / layer:// / summary:// 前缀 */
+function stripScheme(raw: string): string {
   const m = /^(?:dataset|layer|summary):\/\/(.+)$/.exec(raw);
   return m?.[1] ?? raw;
 }
@@ -589,6 +1066,30 @@ function targetOf(spec: OperationSpec): string {
 function readString(params: Readonly<Record<string, unknown>>, key: string): string | undefined {
   const v = params[key];
   return typeof v === 'string' && v.trim() !== '' ? v : undefined;
+}
+
+/** 字符串数组参数（如 dataset.open 的 targets）：至少一项，每项都要是非空字符串 */
+function requireStringArray(params: Readonly<Record<string, unknown>>, key: string): string[] {
+  const raw = params[key];
+  if (!Array.isArray(raw) || raw.length === 0) {
+    throw new Error(`缺少参数 ${key}（至少要给一项）`);
+  }
+  const out: string[] = [];
+  for (const x of raw) {
+    if (typeof x !== 'string' || x.trim() === '') {
+      throw new Error(`参数 ${key} 只能是非空字符串`);
+    }
+    out.push(x);
+  }
+  return out;
+}
+
+/** 可选的布尔参数；给了就必须是布尔值（"false" 那种字符串不算数） */
+function readBoolean(params: Readonly<Record<string, unknown>>, key: string): boolean | undefined {
+  const v = params[key];
+  if (v === undefined) return undefined;
+  if (typeof v !== 'boolean') throw new Error(`参数 ${key} 必须是布尔值`);
+  return v;
 }
 
 function readNumber(params: Readonly<Record<string, unknown>>, key: string): number | undefined {
