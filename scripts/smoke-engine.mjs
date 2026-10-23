@@ -220,6 +220,50 @@ try {
       `HTTP ${reportRes.status}, ${reportJson.markdown?.length ?? 0} 字符`,
     );
 
+    // 大影像：帧信息 + 金字塔。
+    // 这两个端点是前端"打开一张栅格"要用的：多大、有没有金字塔、能不能建。
+    const frameRes = await fetch(`${BASE}/api/raster/frame`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ path: rasterName }),
+    });
+    const frameJson = await frameRes.json();
+    check(
+      'POST /api/raster/frame 返回帧信息',
+      frameRes.ok
+        && frameJson.ok === true
+        && typeof frameJson.width === 'number'
+        && typeof frameJson.height === 'number'
+        && typeof frameJson.bandCount === 'number'
+        && Array.isArray(frameJson.geotransform)
+        && 'crs' in frameJson
+        && typeof frameJson.hasOverviews === 'boolean',
+      JSON.stringify(frameJson).slice(0, 200),
+    );
+
+    // 越界路径必须被拒（这两个端点能读写工作区外的文件就等于没有边界）
+    const frameEscape = await fetch(`${BASE}/api/raster/frame`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ path: join(wsRoot, '..', 'outside.tif') }),
+    });
+    check('POST /api/raster/frame 拒绝越界路径', frameEscape.status === 400, `HTTP ${frameEscape.status}`);
+
+    const ovrRes = await fetch(`${BASE}/api/raster/overview`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ path: rasterName }),
+    });
+    const ovrJson = await ovrRes.json();
+    check(
+      'POST /api/raster/overview 说清为什么没建',
+      ovrRes.ok
+        && ovrJson.ok === true
+        && ovrJson.built === false
+        && typeof ovrJson.skippedReason === 'string',
+      JSON.stringify(ovrJson).slice(0, 200),
+    );
+
     await rm(join(wsRoot, rasterName), { force: true });
   } else {
     console.log(`  ${DIM}·${RESET} 跳过出图冒烟（先跑 npm run fixture）`);

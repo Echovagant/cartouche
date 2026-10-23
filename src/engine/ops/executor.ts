@@ -16,7 +16,7 @@
  *   - 计划文档 `{ version, intent?, ops: [...] }`（ops.schema.json 里的那个形状）
  *   - 单条 `{ op, params }`（模板产出的形状）
  */
-import { RasterEditor, type RasterOpResult } from '../raster/index.ts';
+import { RasterEditor, type OverviewOutcome, type RasterOpResult } from '../raster/index.ts';
 import {
   buildPixelMask,
   geoToPixelRegion,
@@ -62,6 +62,13 @@ export interface OpImpact {
   readonly width: number;
   readonly height: number;
   readonly bandCount: number;
+  /**
+   * 金字塔这一步的结果（写回之后建没建成）。
+   *
+   * 为什么放进影响面：金字塔建不起来**不影响**改图本身（不能因此判整次操作失败），
+   * 但界面会因此"影像还是卡"，原因必须能查 —— 所以它跟着结果一路回到界面。
+   */
+  readonly overview?: OverviewOutcome;
   /** true = 这是预演的结果，文件没被写过 */
   readonly dryRun?: boolean;
 }
@@ -518,6 +525,7 @@ function toImpact(r: RasterOpResult): OpImpact {
     width: r.width,
     height: r.height,
     bandCount: r.bandCount,
+    ...(r.overview ? { overview: r.overview } : {}),
     ...(r.dryRun !== undefined ? { dryRun: r.dryRun } : {}),
   };
 }

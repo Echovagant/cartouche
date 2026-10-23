@@ -91,6 +91,8 @@ export { RasterEditor } from './raster/index.ts';
 export type { RasterOpResult, RasterDeps } from './raster/index.ts';
 export { readRasterPixels, writeRasterPixels } from './raster/index.ts';
 export type { RasterPixels } from './raster/index.ts';
+export { readRasterFrame, hasOverviews, ensureRasterOverviews } from './raster/index.ts';
+export type { RasterFrameInfo, OverviewOutcome } from './raster/index.ts';
 
 export {
   ByokKeyProvider,

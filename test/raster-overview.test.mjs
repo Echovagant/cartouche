@@ -24,6 +24,10 @@ const {
   hasOverviews,
   ensureOverviews,
 } = await import(eng('overview.ts'));
+const { RasterEditor, ensureRasterOverviews } = await import(eng('ops.ts'));
+const { LocalFolderStore } = await import(
+  pathToFileURL(join(root, 'src', 'engine', 'workspace', 'index.ts')).href
+);
 
 const loc = resolveGdal();
 assert.ok(loc, '本机需装好 GDAL');
@@ -160,4 +164,140 @@ test('金字塔：构建失败要抛错并带上 GDAL 的原文', async () => {
 
 test('金字塔：默认阈值是 200MB', () => {
   assert.equal(DEFAULT_OVERVIEW_THRESHOLD_BYTES, 200 * 1024 * 1024);
+});
+
+/* ── 接线：金字塔进流程（改完图自动建） ─────────────────────────────
+ *
+ * 上面几组验的是"模块本身能建"；下面几组验的是"**流程里真的有人叫它**"。
+ * 模块能用而没人调用，等于没有这个能力 —— 用户看不到，也享受不到。
+ */
+
+/** 涂一小块：走窗口路径（局部操作），写回后应自动建金字塔 */
+const PAINT_REGION = { minX: 10, minY: 10, maxX: 40, maxY: 40 };
+
+/**
+ * 造一个带编辑器的环境。
+ *
+ * 阈值压到 1 字节：真造几 GB 的文件不现实，
+ * 用小阈值把一张小图当成"大图"来验这条链路（与 overview.ts 的注入同理）。
+ */
+async function makeEditor(dir, deps = {}) {
+  const tif = join(dir, 'edit.tif');
+  await makeTif(tif);
+  const store = new LocalFolderStore(dir);
+  const editor = new RasterEditor({
+    loc,
+    store,
+    overviewThresholdBytes: 1,
+    ...deps,
+  });
+  return { tif, store, editor };
+}
+
+test('接线：改完一张图之后金字塔被建出来', async () => {
+  const dir = tmpDir('ovrwiring');
+  try {
+    const { tif, editor } = await makeEditor(dir);
+
+    const res = await editor.paint({
+      target: 'edit.tif',
+      region: PAINT_REGION,
+      color: '#FF0000',
+    });
+
+    assert.equal(res.verified, true, '改图本身要成功');
+    assert.ok(existsSync(`${tif}.ovr`), '改完图之后 .ovr 必须出现');
+    assert.ok(statSync(`${tif}.ovr`).size > 0, '.ovr 不能是空文件');
+    // 结果里要带得上这一步的记录：不然"建没建"无从查起
+    assert.equal(res.overview?.built, true, '结果里要带上"金字塔建成了"');
+    assert.equal(res.overview?.ovrPath, `${tif}.ovr`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('接线：小于阈值不建金字塔，但改图照样成功', async () => {
+  const dir = tmpDir('ovrwiring');
+  try {
+    const { tif, editor } = await makeEditor(dir, { overviewThresholdBytes: DEFAULT_OVERVIEW_THRESHOLD_BYTES });
+
+    const res = await editor.paint({
+      target: 'edit.tif',
+      region: PAINT_REGION,
+      color: '#FF0000',
+    });
+
+    assert.equal(res.verified, true, '金字塔不该影响改图本身');
+    assert.equal(existsSync(`${tif}.ovr`), false, '小于阈值就不该有 .ovr');
+    assert.equal(res.overview?.built, false);
+    assert.equal(res.overview?.skippedReason, 'below-threshold', '要能区分"太小不建"');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('接线：已经有 .ovr 时不重复建', async () => {
+  const dir = tmpDir('ovrwiring');
+  try {
+    const { tif, editor } = await makeEditor(dir);
+
+    // 先建好一个（模拟"之前已经建过"）
+    const first = await ensureOverviews(loc, tif, { thresholdBytes: 1 });
+    assert.equal(first.built, true, '前置条件：先建出 .ovr');
+    const ovrMtime = statSync(`${tif}.ovr`).mtimeMs;
+
+    const res = await editor.paint({
+      target: 'edit.tif',
+      region: PAINT_REGION,
+      color: '#FF0000',
+    });
+
+    assert.equal(res.verified, true, '改图本身要成功');
+    assert.equal(res.overview?.built, false, '已有 .ovr 就不该重建');
+    assert.equal(res.overview?.skippedReason, 'already-exists', '要能区分"已经有了"');
+    assert.equal(statSync(`${tif}.ovr`).mtimeMs, ovrMtime, '已有的 .ovr 不该被重建');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('接线：金字塔建不起来时，主操作仍然成功，但能查到原因', async () => {
+  const dir = tmpDir('ovrwiring');
+  try {
+    // 磁盘余量按天方量级要求 → 护栏必然拦下。
+    // 这是"金字塔建不出来"最现实的一种成因（盘满），而且不依赖任何 mock。
+    const { tif, editor } = await makeEditor(dir, { overviewMinFreeBytes: 2 ** 62 });
+
+    const res = await editor.paint({
+      target: 'edit.tif',
+      region: PAINT_REGION,
+      color: '#FF0000',
+    });
+
+    assert.equal(res.verified, true, '金字塔建不出来不能让改图变成失败');
+    assert.equal(existsSync(`${tif}.ovr`), false, '没建出来就不该有 .ovr');
+    assert.equal(res.overview?.built, false);
+    assert.ok(res.overview?.error, '必须能查到失败原因（不能静默吞掉）');
+    assert.match(res.overview.error, /磁盘/, '失败原因要说清是磁盘不够');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('接线：gdaladdo 本身失败时不抛错，原因写进结果', async () => {
+  const dir = tmpDir('ovrwiring');
+  try {
+    // 不是栅格的 .tif：gdaladdo 打不开
+    const bad = join(dir, 'bad.tif');
+    writeFileSync(bad, 'this is definitely not a raster');
+
+    const outcome = await ensureRasterOverviews(loc, bad, { thresholdBytes: 1 });
+
+    assert.equal(outcome.built, false);
+    assert.equal(outcome.ovrPath, null);
+    assert.ok(outcome.error, '必须带上失败原因');
+    assert.match(outcome.error, /构建金字塔失败/, '原因要能看出是建金字塔失败');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
