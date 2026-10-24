@@ -518,7 +518,13 @@ function healthMarkdown(target: string, at: string, health: HealthReport): strin
   md.push(`## 体检明细（${health.findings.length} 条）`);
   md.push('');
   if (health.findings.length === 0) {
-    md.push('- 没有发现问题。');
+    // 零结论不等于「都查过没问题」—— 没查的那几项要单独说清楚。
+    const notChecked = (health.coverage ?? []).filter((c) => c.status !== 'checked');
+    md.push(
+      notChecked.length === 0
+        ? '- 已执行的检查项都没发现问题。'
+        : `- 已执行的检查项都没发现问题；但有 ${notChecked.length} 项**没查**（见下方「未执行的检查」）。`,
+    );
   } else {
     for (const f of health.findings) {
       md.push(`- \`${f.ruleId}\` **[${f.severity}]** ${f.title} —— ${f.detail}`);
@@ -526,6 +532,31 @@ function healthMarkdown(target: string, at: string, health: HealthReport): strin
     }
   }
   md.push('');
+
+  // 「没查」必须写出来。
+  //
+  // 体检报告里一句「未发现自相交」会被读成「查过自相交、没问题」——
+  // 而引擎可能压根没查这一项。这个仓库在这件事上栽过：
+  // 曾经写「✅ 未发现自相交、空几何、零面积等几何问题」，而自相交从来没被查过。
+  const coverage = health.coverage ?? [];
+  const notChecked = coverage.filter((c) => c.status !== 'checked');
+  if (notChecked.length > 0) {
+    md.push(`## 未执行的检查（${notChecked.length} 项）`);
+    md.push('');
+    md.push('下面这些**没有查**，所以不能算「未发现问题」：');
+    md.push('');
+    for (const c of notChecked) {
+      const label =
+        c.status === 'skipped'
+          ? '未执行'
+          : c.status === 'not-applicable'
+            ? '不适用'
+            : '未实现';
+      md.push(`- \`${c.check}\` —— ${label}${c.reason ? `：${c.reason}` : ''}`);
+    }
+    md.push('');
+  }
+
   return md.join('\n');
 }
 

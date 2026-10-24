@@ -203,18 +203,30 @@ const HEALTH_CHECK_NAMES: readonly string[] = [
 ];
 
 /**
- * 检查项 → 引擎里对应的规则前缀。
+ * 检查项 → 引擎里对应的规则 id。
  *
  * R- 前缀的规则只对栅格生效，V- 前缀的只对矢量生效。
  * 没出现在这张表里的检查项 = 引擎还没做，不是"检查了没问题"。
+ *
+ * 这里列的是**规则 id**（不是前缀）：前缀写不出「这一项对应哪几条规则」，
+ * 而报告里要把「这一项查了没有」和「查到了什么」分开说，粒度得够细。
  */
 const HEALTH_CHECK_RULES: Readonly<Record<string, readonly string[]>> = {
-  'crs-present': ['R-CRS-', 'V-CRS-'],
-  'encoding': ['V-ENC-'],
+  'crs-present': ['R-CRS-001', 'V-CRS-001'],
+  'crs-mismatch': ['V-CRS-002'],
+  'crs-range-sanity': ['V-CRS-003'],
+  'axis-order': ['V-CRS-004'],
+  'extent-plausibility': ['V-CRS-005'],
+  'systematic-offset': ['V-CRS-006'],
+  'encoding': ['V-ENC-001', 'V-ENC-002'],
   'field-naming': ['V-FIELD-002'],
+  'field-type': ['V-FIELD-003'],
   'default-fields': ['V-FIELD-001'],
   'null-geometry': ['V-GEOM-001'],
   'zero-area': ['V-GEOM-002'],
+  'sharp-angle': ['V-GEOM-008'],
+  'outlier-extent': ['V-EXT-001'],
+  'extent-compare': ['V-EXT-002'],
 };
 
 /** 快照目录（工作区相对路径） */
@@ -326,30 +338,51 @@ const IMPLEMENTED: Readonly<Record<string, OpHandler>> = {
         );
       }
       const abs = deps.store.resolve(rel);
+      // 参照层：契约里的 reference 参数。跨图层比较（坐标系是否一致、
+      // 范围是否对得上、有没有整体平移）都要拿它当尺子，没有它这三项
+      // 只能是「未检查」—— 拿单层数据自己跟自己比没有意义。
+      const referenceRel = readRelPath(params, 'reference');
+      const referenceAbs = referenceRel ? deps.store.resolve(referenceRel) : undefined;
+      const angleThresholdDeg = readNumber(params, 'angleThresholdDeg');
       // 体检内部自己探查一次；渲染兼容性报告还要 DatasetInfo，所以这里探查两遍。
       // 探查失败必须报错 —— 拿不到数据集就没有"体检结论"可言。
       const { dataset, error } = await probeDataset(deps.loc, abs);
       if (!dataset) {
         throw new Error(`打不开数据集，无法体检：${rel}（${error?.message ?? '未知原因'}）`);
       }
-      const health = await runHealthCheck(deps.loc, abs);
+      const health = await runHealthCheck(deps.loc, abs, {
+        ...(referenceAbs ? { reference: referenceAbs } : {}),
+        ...(angleThresholdDeg !== undefined ? { angleThresholdDeg } : {}),
+      });
       const compat = renderCompatReport({ path: rel, dataset, health, at: localTimestamp() });
 
-      // 契约里的 15 项检查，引擎只实现了其中一部分。
-      // 三种状态要分清：查了 / 这类数据集没有这项检查的适用面 / 引擎还没做。
+      // 契约里的 15 项检查，引擎逐项报出**执行了没有**。
+      // 四种状态要分清：查了 / 这类数据集没有这项检查的适用面 /
+      // 实现了但这次没查成（缺参照层、缺 SpatiaLite…）/ 引擎还没做。
       // 混成一句"检查通过"就是骗人。
+      const runtime = new Map((health.coverage ?? []).map((c) => [c.check, c]));
       const covered: string[] = [];
       const notApplicable: string[] = [];
       const unsupported: string[] = [];
+      const skipped: string[] = [];
+      const skippedDetail: string[] = [];
       for (const c of checks) {
         const rules = HEALTH_CHECK_RULES[c];
         if (!rules) {
           unsupported.push(c);
-        } else if (rulesApplies(rules, dataset.kind)) {
-          covered.push(c);
-        } else {
-          notApplicable.push(c);
+          continue;
         }
+        if (!rulesApplies(rules, dataset.kind)) {
+          notApplicable.push(c);
+          continue;
+        }
+        const entry = runtime.get(c);
+        if (entry && entry.status === 'skipped') {
+          skipped.push(c);
+          skippedDetail.push(`${c}（${entry.reason ?? '未说明原因'}）`);
+          continue;
+        }
+        covered.push(c);
       }
       const blockers = health.blockers.length;
       const errors = health.findings.filter((f) => f.severity === 'error').length;
@@ -361,10 +394,14 @@ const IMPLEMENTED: Readonly<Record<string, OpHandler>> = {
       if (notApplicable.length > 0) {
         caveats.push(`${notApplicable.join('、')} 对${dataset.kind === 'raster' ? '栅格' : '矢量'}不适用`);
       }
+      if (skipped.length > 0) {
+        caveats.push(`${skippedDetail.join('、')} 未检查`);
+      }
       return {
         kind: 'value',
         summary:
           `体检：${blockers} 条阻断项、${errors} 条错误、${warnings} 条提示` +
+          `（已检查 ${covered.length}/${checks.length} 项）` +
           (caveats.length > 0 ? `（${caveats.join('；')}）` : ''),
         data: {
           path: rel,
@@ -377,6 +414,16 @@ const IMPLEMENTED: Readonly<Record<string, OpHandler>> = {
           coveredChecks: covered,
           notApplicableChecks: notApplicable,
           unsupportedChecks: unsupported,
+          skippedChecks: skipped,
+          checkCoverage: checks.map((c) => {
+            const entry = runtime.get(c);
+            return {
+              check: c,
+              status: entry?.status ?? (HEALTH_CHECK_RULES[c] ? 'checked' : 'unsupported'),
+              ...(entry?.reason ? { reason: entry.reason } : {}),
+              ...(entry?.rules ? { rules: entry.rules } : {}),
+            };
+          }),
           findings: health.findings.map((f) => ({
             ruleId: f.ruleId,
             severity: f.severity,

@@ -201,10 +201,20 @@
               "systematic-offset", "encoding", "field-naming", "field-type", "default-fields",
               "null-geometry", "zero-area", "sharp-angle", "outlier-extent", "extent-compare"
             ]
-          }
+          },
+          "description": "要执行的检查项。引擎会逐项报出**执行了没有**：查了没问题 / 没查成（缺参照层、缺 SpatiaLite、要素太少等）/ 对该数据集不适用。'没查'绝不写成'未发现问题'。"
         },
-        "angleThresholdDeg": { "type": "number", "exclusiveMinimum": 0, "maximum": 180 },
-        "reference": { "$ref": "#/$defs/layerRef" },
+        "angleThresholdDeg": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 180,
+          "default": 10,
+          "description": "尖角（spike）阈值，单位度：环上夹角小于该值、且是长环上的局部小尖刺时才算问题。默认 10°——实测公开样本里最锐的合法拐角约 19°，而数字化尖刺通常在 5° 以下。"
+        },
+        "reference": {
+          "$ref": "#/$defs/layerRef",
+          "description": "参照层：跨图层比较的尺子。crs-mismatch（坐标系是否一致）、extent-compare（范围是否对得上）、systematic-offset（有没有整体平移）三项都以它为准。不给这一项时，这三项只能标成'未检查'——拿单层数据自己跟自己比没有意义。"
+        },
         "encoding": { "type": "string", "enum": ["GBK", "UTF-8", "LATIN1", "auto"] }
       }
     },
