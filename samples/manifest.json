@@ -4,7 +4,7 @@
   "selection": "优先选：① 免登录可直连 ② 许可允许商用 ③ 能压到已知薄弱点（非 Byte 类型、缺 CRS、nodata、超大、超多字段、中文字段）",
   "layout": {
     "samples": "仓库内的 samples/ 目录（已被 .gitignore 排除，克隆后不会入库）",
-    "ext": "仓库外的扩展样本目录：位置由环境变量 CARTOUCHE_EXT_SAMPLES 决定，默认 D:\\Projects\\cartouche-samples（Windows）；每个样本一个同名子目录",
+    "ext": "仓库外的扩展样本目录：位置由环境变量 CARTOUCHE_EXT_SAMPLES 决定；不设则落在用户主目录下的 cartouche-samples；每个样本一个同名子目录",
     "rule": "按**解压后的实际占用**落位：占用 30 MB 以内放 samples/，超过放 ext/。只看压缩包大小会低估 —— 一个 3 MB 的 zip 解开有 50 MB，仓库外的目录要留出空间"
   },
   "samples": [
