@@ -819,8 +819,15 @@ export default function Home() {
                     能拿走自己改吗？
                   </h2>
                   <p className="mt-6 max-w-[52ch] text-body leading-relaxed text-paper/85">
-                    整个仓库都能拿走改。下载包里有引擎、前端产物和安装脚本；自己 clone
-                    也一样，跑 <span className="font-mono text-[14px]">npm install</span> 就完事。
+                    不用装任何东西：下载<strong className="font-semibold text-paper">绿色便携包</strong>，
+                    解压，双击 <span className="font-mono text-[14px]">START.cmd</span> 就能用——
+                    Node 与 GDAL 都在包里了。里面还带一份示例数据，你的工作区放在
+                    <span className="font-mono text-[14px]">%LOCALAPPDATA%</span> 下，删掉这个包也不丢图件。
+                  </p>
+                  <p className="mt-3 max-w-[52ch] text-body-sm leading-relaxed text-paper/70">
+                    整个仓库也都能拿走改。自己在本地跑的话，需要 Node.js ≥ 22 与 GDAL 命令行，
+                    装完跑 <span className="font-mono text-[14px]">npm install</span> 就完事——
+                    详细步骤见 GitHub 仓库的 README。
                   </p>
 
                   <div className="mt-8 flex flex-wrap gap-3">
@@ -852,7 +859,9 @@ export default function Home() {
                         前置条件
                       </dt>
                       <dd className="mt-1.5 text-body leading-relaxed text-paper/85">
-                        Node.js ≥ 22、GDAL 命令行。Windows 上装 GDAL 有现成脚本。
+                        用便携包：没有前置条件，解压就能用。
+                        <br />
+                        自己跑源码：Node.js ≥ 22、GDAL 命令行，Windows 上有现成安装脚本。
                       </dd>
                     </div>
                     <div>
