@@ -15,7 +15,7 @@
  * ## 怎么用
  *
  *   # 密钥从环境变量读（**不要**把密钥写进任何文件，也不要贴在命令行里）
- *   # 推荐的注入方式：读本机 DPAPI 密文，注入到当前进程的���境变量
+ *   # 推荐的注入方式：读本机 DPAPI 密文，注入到当前进程的环境变量
  *   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run-engine.ps1   # 另一种（会顺带起引擎）
  *
  *   $env:MINIMAX_API_KEY = <从密文解出来的明文>   # 只在这一条命令的进程里存在
