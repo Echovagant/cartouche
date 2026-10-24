@@ -236,6 +236,27 @@ export function ScrollChoreography() {
           );
       });
 
+      /* ── 一句话改图（分工屏）：top 82%，once ───────────────────────
+         三栏错峰 120ms；每栏淡入 + 位移 14px（不超全站 34px 上限）。
+         卡片自带 .reveal（初态 opacity 0），所以**必须**有这条编排，
+         否则它们会一直隐身（CSS 里 .reveal 就是 opacity: 0）。 */
+      const aiRoles = gsap.utils.toArray<HTMLElement>('[data-ai-role="card"]');
+      aiRoles.forEach((card, index) => {
+        gsap.fromTo(
+          card,
+          { y: 14, opacity: 0 },
+          {
+            y: 0,
+            opacity: 1,
+            duration: 0.6,
+            ease: 'power3.out',
+            delay: index * 0.12,
+            immediateRender: true,
+            scrollTrigger: { trigger: card, start: 'top 82%', once: true },
+          },
+        );
+      });
+
       /* ── S7 格式窄带：top 88% ───────────────────────────────────
          三组错峰 90ms；组内格式名逐行 stagger 35ms（x -18→0） */
       const groups = gsap.utils.toArray<HTMLElement>('[data-format="group"]');

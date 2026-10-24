@@ -112,6 +112,28 @@ function targetText(params: Record<string, unknown>): string {
   return raw.replace(/^(?:dataset|layer|summary):\/\//, '');
 }
 
+/**
+ * 三层分工：AI 只翻译、引擎算与写、你点头。
+ *
+ * 为什么把这句话摊开给用户看，而不是留一句"很聪明"：
+ * 多数人判断不了"逐轴容差 0.02 米"，但判断得了"我说一句话它就绕开了箱子"。
+ * 说清哪一段归谁、哪一段不归谁，用户才知道该信哪一段。
+ */
+const ROLE_SPLIT: readonly { who: string; body: string }[] = [
+  {
+    who: 'AI · 只翻译',
+    body: '把话翻成一份操作计划：做哪个动作、作用于哪个图层、参数是什么。它不产出任何数值。',
+  },
+  {
+    who: '确定性引擎 · 只算与写',
+    body: '按契约校验计划，预演一遍算出影响面，你确认后才按确定性规则写盘。精度与用哪个模型无关。',
+  },
+  {
+    who: '你 · 点头',
+    body: '确认前看得见：会改多少像元、改哪个文件、备份叫什么。改完原文件旁边就有备份，改了什么记进项目留痕。',
+  },
+];
+
 export default function AiWorkbench() {
   const llm = useLlm();
 
@@ -393,22 +415,25 @@ export default function AiWorkbench() {
       <main className="mx-auto max-w-3xl px-5 py-8">
         <h1 className="font-display text-[26px] font-semibold tracking-tight">
           AI 接入
-          <span className="ml-3 align-middle rounded-full border border-amber/45 px-2 py-0.5 font-mono text-[11px] font-normal text-amber">
-            开发中
-          </span>
         </h1>
         <p className="mt-2 max-w-xl text-[13px] leading-relaxed text-studio-ink-2">
           把密钥交给本机引擎，挑一个模型，然后发一句话试试通不通。
           密钥不出这台机器，也不进仓库。
         </p>
-        <p className="mt-3 max-w-xl text-[12.5px] leading-relaxed text-studio-ink-3">
-          <span className="text-studio-ink-2">上面三步是「模型接入」：</span>
-          配密钥、实时拉模型清单、发一句话测连通 —— 这三步已经能用了。
-          <span className="text-studio-ink-2">第四步是「用一句话改图」：</span>
-          模型只负责提议一份操作计划，真正改文件的是确定性引擎，
-          而且要你先看清影响面、再点确认。
-          <span className="text-studio-ink-2">这一条还在收口：</span>
-          链路已经接通，但目前还没有用真实模型跑完过一次，界面上的「开发中」就是这个意思。
+
+        {/* 三层分工：把"AI 做什么、不做什么"摊开。
+            徽标表达的是"我们没测过"，不是"这功能弱"——能说清分工就不必靠徽标。 */}
+        <ul className="mt-4 max-w-2xl space-y-1.5">
+          {ROLE_SPLIT.map((r) => (
+            <li key={r.who} className="flex gap-2.5 text-[12.5px] leading-relaxed text-studio-ink-2">
+              <span className="mt-px shrink-0 font-mono text-[11.5px] text-studio-ink-3">{r.who}</span>
+              <span>{r.body}</span>
+            </li>
+          ))}
+        </ul>
+        <p className="mt-3 max-w-xl text-[12px] leading-relaxed text-studio-ink-3">
+          这条链路目前是拿本地模拟端点跑通的（同样的 OpenAI 兼容协议）。
+          真实模型那条路我们还没跑过一次——配一枚密钥就能自己试，密钥留在你本机。
         </p>
 
         {/* 从画布跳过来时，把带过来的上下文说清楚：用户得知道模型看的是哪张图 */}
