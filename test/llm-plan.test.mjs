@@ -20,6 +20,7 @@ const {
   validatePlanSchema,
   findUnsupportedOps,
   implementedOps,
+  AI_OP_DENY,
   parsePlanReply,
   classifyPrecheck,
   createPlan,
@@ -250,6 +251,33 @@ test('提示词里看得见矢量 op：模型得能选得到它', () => {
   assert.ok(prompt.includes('"vector.query"'), '属性查询也要在');
   assert.ok(prompt.includes('"vector.reproject"'), '重投影也要在');
   assert.ok(!prompt.includes('"feature.delete"'), '没实现的 op 不该在');
+});
+
+test('每个已实现的 op，要么在 AI 清单里，要么在「故意不给 AI」名单里点名', () => {
+  // 这条是 2026-10-24 那个静默缺口的防线：
+  // 清单是硬编码的、注册表是活的 —— 新登记一个 op 却忘了改清单，
+  // 它的能力就**静默不可达**（模型看不见，功能像没做）。
+  // 所以要求：每个已实现的 op 都必须在两处之一有归属。
+  const implemented = implementedOps();
+  const inCatalog = new Set(opCatalog(readOpsSchema(), implemented).map((c) => c.op));
+  const denied = Object.keys(AI_OP_DENY);
+
+  for (const op of implemented) {
+    assert.ok(
+      inCatalog.has(op) || denied.includes(op),
+      `${op} 既不在 AI 清单里，也没在「故意不给 AI」名单里点名 —— 它会静默不可达`,
+    );
+  }
+  for (const op of denied) {
+    assert.ok(
+      implemented.includes(op),
+      `${op} 在「故意不给 AI」名单里，但引擎还没实现它 —— 名单该清理了`,
+    );
+    assert.ok(
+      !inCatalog.has(op),
+      `${op} 同时在「故意不给 AI」名单里、又出现在 AI 清单里 —— 两处说法打架`,
+    );
+  }
 });
 
 test('闸门①：合法的计划通过校验', () => {
