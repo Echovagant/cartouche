@@ -18,6 +18,7 @@ import { windowGeotransform, type RasterFrame, type RasterWindow } from './windo
 import {
   BYTES_PER_SAMPLE,
   clampSample,
+  copyBand,
   decodeSample,
   newBand,
   pixelTypeFromGdal,
@@ -34,7 +35,7 @@ export interface RasterPixels {
   readonly bandCount: number;
   /** 每个波段一份，长度 = width * height */
   readonly bands: readonly PixelBand[];
-  /** 像素类型：8 位还是 16 位 */
+  /** 像素类型：Byte / UInt16 / Int16 / UInt32 / Int32 / Float32 / Float64 */
   readonly pixelType: PixelType;
   /** 每个波段的颜色解释（Red / Green / Blue / Gray / Undefined…） */
   readonly colorInterpretation: readonly string[];
@@ -57,13 +58,17 @@ export interface RasterPixels {
 /**
  * ENVI 头里 `data type` 的编号 → 本引擎的像素类型。
  *
- * 只认得两种：1 = Byte、12 = UInt16。
- * 认不出来的必须报错：Int16 / Float32 这类带如果被默默当成 8 位或 16 位处理，
+ * 认不出来的必须报错：Complex / Int64 这类带如果被默默当成 8 位或 16 位处理，
  * 结果就是数据被改错了却看不出来 —— 那正是 `-ot Byte` 静默饱和的老毛病。
  */
 const ENVI_DATA_TYPES: Readonly<Record<number, PixelType>> = Object.freeze({
   1: 'Byte',
+  2: 'Int16',
+  3: 'Int32',
+  4: 'Float32',
+  5: 'Float64',
   12: 'UInt16',
+  13: 'UInt32',
 });
 
 /** ENVI `data type` 编号 → 类型名。报错时要说明白到底是哪种类型不支持。 */
@@ -87,8 +92,8 @@ function enviPixelType(dataType: number): PixelType {
   if (type) return type;
   const name = ENVI_DATA_TYPE_NAMES[dataType] ?? `未知类型（data type = ${dataType}）`;
   throw new Error(
-    `不支持的 ENVI 数据类型「${name}」：本引擎只支持 8 位无符号（Byte，data type = 1）` +
-    `与 16 位无符号（UInt16，data type = 12）影像`,
+    `不支持的 ENVI 数据类型「${name}」：本引擎只支持 Byte（data type = 1）、` +
+      'UInt16（12）、Int16（2）、Int32（3）、Float32（4）、Float64（5）、UInt32（13）影像',
   );
 }
 
@@ -168,10 +173,43 @@ function enviSampleOffset(
 }
 
 /**
+ * 把一段连续的样点字节按类型搬成一条带。
+ *
+ * 为什么要先搬进自己分配的对齐内存：Buffer 的 byteOffset 未必按 2/4/8 字节对齐
+ * （Node 的内存池会切碎大块分配），未对齐的地址建 typed array 视图会直接抛错。
+ */
+function typedBandOf(type: PixelType, bytes: Uint8Array, count: number): PixelBand {
+  const buf = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(buf).set(bytes);
+  switch (type) {
+    case 'UInt16':
+      return new Uint16Array(buf, 0, count);
+    case 'Int16':
+      return new Int16Array(buf, 0, count);
+    case 'UInt32':
+      return new Uint32Array(buf, 0, count);
+    case 'Int32':
+      return new Int32Array(buf, 0, count);
+    case 'Float32':
+      return new Float32Array(buf, 0, count);
+    case 'Float64':
+      return new Float64Array(buf, 0, count);
+    default:
+      return new Uint8Array(buf, 0, count);
+  }
+}
+
+/**
  * 读一份 ENVI 中转文件，返回拆好的波段。ENVI 头的命名有两种约定。
  *
- * 波段的宽度与类型由 ENVI 头的 `data type` 决定（1 = Byte、12 = UInt16），
+ * 波段的宽度与类型由 ENVI 头的 `data type` 决定
+ * （1 = Byte、2 = Int16、3 = Int32、4 = Float32、5 = Float64、12 = UInt16、13 = UInt32），
  * 样点按头的 `byte order` 解释字节。类型不支持时直接报错，不当成 8 位凑合。
+ *
+ * 两条读取路径：
+ *  - **快路径**（bsq + 小端）：一个波段就是一整段连续的样点，整段按类型搬过来。
+ *    SRTM 那种 6000×6000 的影像有 3600 万个样点，逐样点解码慢到不可用。
+ *  - **通用路径**：其余交错方式或大端，按字节序逐样点拼装。
  */
 export function readEnviBands(bin: string, width: number, height: number, bandCount: number): PixelBand[] {
   const headerCandidates = [`${bin}.hdr`, bin.replace(/\.bin$/i, '.hdr')];
@@ -184,20 +222,33 @@ export function readEnviBands(bin: string, width: number, height: number, bandCo
   const pixelType = enviPixelType(meta.dataType);
   const bytesPerSample = BYTES_PER_SAMPLE[pixelType];
   const raw = new Uint8Array(readFileSync(bin));
-  const expected = width * height * bandCount * bytesPerSample;
+  const count = width * height;
+  const expected = count * bandCount * bytesPerSample;
   if (raw.length < expected) {
     throw new Error(`原始像素长度异常：期望 ${expected}，实际 ${raw.length}`);
   }
+
+  // 快路径：bsq（波段顺序）+ 小端 —— 每个波段是一整段连续的样点。
+  if (meta.interleave === 'bsq' && meta.byteOrder === 0) {
+    const bands: PixelBand[] = [];
+    for (let b = 0; b < bandCount; b++) {
+      const start = b * count * bytesPerSample;
+      bands.push(typedBandOf(pixelType, raw.subarray(start, start + count * bytesPerSample), count));
+    }
+    return bands;
+  }
+
+  const view = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
   const bands: PixelBand[] = [];
   for (let b = 0; b < bandCount; b++) {
-    const band = newBand(pixelType, width * height);
+    const band = newBand(pixelType, count);
     for (let y = 0; y < height; y++) {
       for (let x = 0; x < width; x++) {
         const i = y * width + x;
         const offset = enviSampleOffset(
           meta.interleave, x, y, b, width, height, bandCount, bytesPerSample,
         );
-        writeSample(band, i, decodeSample(raw, offset, bytesPerSample, meta.byteOrder), pixelType);
+        writeSample(band, i, decodeSample(view, offset, pixelType, meta.byteOrder), pixelType);
       }
     }
     bands.push(band);
@@ -229,23 +280,19 @@ export async function readRasterPixels(
     throw new Error(`栅格尺寸异常：${absPath}`);
   }
 
-  // 按源的类型读：`-ot Byte` 对 16 位源是**静默饱和**（65535 被压成 255，
+  // 按源的类型读：`-ot Byte` 对 16 位以上的源是**静默饱和**（65535 被压成 255，
   // 退出码仍是 0、stderr 也是空的，实测 GDAL 3.13.3）——值被改坏了却没有任何提示。
   // 要保真就得让 GDAL 按源类型导出，导完再按 ENVI 头的类型与字节序读回来。
-  // 源类型不认识（Int16 / Float32 …）在这里就报错，不带着坏数据往下走。
+  // 源类型不认识（Complex / Int64 …）在这里就报错，不带着坏数据往下走。
   //
-  // ⚠️ 这里**不再**按「非 Byte 一律拒绝」处理：16 位读写的内核已经上线
-  // （见 pixels.ts），16 位影像要能读能改。把好好的 16 位影像劝去转成 8 位，
-  // 等于亲手制造我们要消灭的那种数据损坏。
-  // 真正不支持的类型（Int16 / Int32 / Float32 …）由 pixelTypeFromGdal 报错，
-  // 「不静默把高位丢掉」这条底线不变。
+  // `-ot` 的取值与本引擎的类型名一一对应（Byte / UInt16 / Int16 / UInt32 / Int32 /
+  // Float32 / Float64），所以这里直接用源类型，不做任何"降位兜底"。
   const pixelType = pixelTypeFromGdal(info.bands?.[0]?.type);
   const colorInterpretation = (info.bands ?? []).map((b) => b.colorInterpretation ?? 'Undefined');
 
   const tmp = mkdtempSync(join(tmpdir(), 'cartouche-raw-'));
   const bin = join(tmp, 'raw.bin');
-  const ot = pixelType === 'UInt16' ? 'UInt16' : 'Byte';
-  const tr = await gdal.translate(['-of', 'ENVI', '-ot', ot, absPath, bin]);
+  const tr = await gdal.translate(['-of', 'ENVI', '-ot', pixelType, absPath, bin]);
   if (!tr.ok) {
     throw new Error(`导出原始像素失败：${absPath}\n${tr.stderr}`);
   }
@@ -269,12 +316,17 @@ export async function readRasterPixels(
 /**
  * ENVI 头的 `data type` 编号 → 本引擎的像素类型（写侧用）。
  *
- * 1 = Byte、12 = UInt16。**2 是 Int16，不是 UInt16** ——
- * 写错的话 GDAL 会按有符号 16 位解释，值 >= 32768 的像元全变成负数。
+ * 1 = Byte、2 = Int16、3 = Int32、4 = Float32、5 = Float64、12 = UInt16、13 = UInt32。
+ * **2 是 Int16，不是 UInt16** —— 写错的话 GDAL 会按有符号 16 位解释，值 >= 32768 的像元全变成负数。
  */
 const ENVI_WRITE_DATA_TYPE: Readonly<Record<PixelType, number>> = Object.freeze({
   Byte: 1,
+  Int16: 2,
+  Int32: 3,
+  Float32: 4,
+  Float64: 5,
   UInt16: 12,
+  UInt32: 13,
 });
 
 /**
@@ -352,7 +404,7 @@ export async function writeRasterPixels(
     readonly width: number;
     readonly height: number;
     readonly bands: readonly PixelBand[];
-    /** 像素类型：8 位还是 16 位。必须与 bands 的实际类型一致 */
+    /** 像素类型：Byte / UInt16 / Int16 / UInt32 / Int32 / Float32 / Float64。必须与 bands 的实际类型一致 */
     readonly pixelType: PixelType;
     /** 每个波段的颜色解释；缺省按波段数猜（1 → gray，3 → rgb） */
     readonly colorInterpretation?: readonly string[];
@@ -378,7 +430,7 @@ export async function writeRasterPixels(
   const hdr = join(tmp, 'out.hdr');
 
   // 写成 BIP（像元交错），并附 ENVI 头。
-  // 裸数据按**类型对应的字节宽度**写：16 位就是 16 位交错。
+  // 裸数据按**类型对应的字节宽度**写：16 位就是 16 位交错，32 位就是 32 位交错。
   // 字节序用小端（byte order = 0），与 GDAL 自己写出来的 ENVI 一致。
   const bytesPerSample = BYTES_PER_SAMPLE[pixels.pixelType];
   const raw = new Uint8Array(pixels.width * pixels.height * bandCount * bytesPerSample);
@@ -387,8 +439,30 @@ export async function writeRasterPixels(
     for (let b = 0; b < bandCount; b++) {
       const v = clampSample(readSample(pixels.bands[b]!, i), pixels.pixelType);
       const off = (i * bandCount + b) * bytesPerSample;
-      if (bytesPerSample === 2) view.setUint16(off, v, true);
-      else raw[off] = v;
+      // 按类型写：浮点必须走 setFloat（写成整数会抹掉小数位），
+      // 有符号必须走 setInt（写成无符号会把负高程变成四十多万）。
+      switch (pixels.pixelType) {
+        case 'Byte':
+          raw[off] = v;
+          break;
+        case 'UInt16':
+          view.setUint16(off, v, true);
+          break;
+        case 'Int16':
+          view.setInt16(off, v, true);
+          break;
+        case 'UInt32':
+          view.setUint32(off, v, true);
+          break;
+        case 'Int32':
+          view.setInt32(off, v, true);
+          break;
+        case 'Float32':
+          view.setFloat32(off, v, true);
+          break;
+        default:
+          view.setFloat64(off, v, true);
+      }
     }
   }
   writeFileSync(bin, raw);
@@ -412,7 +486,8 @@ export async function writeRasterPixels(
   // -ot 必须按类型给：这一步是整条链路最关键的一处 ——
   // ENVI 头就算写了 data type = 12，最后这一步 `-ot Byte` 也会把值压成 255
   // （退出码 0、stderr 空，实测 GDAL 3.13.3）。
-  const args = ['-of', 'GTiff', '-ot', pixels.pixelType === 'UInt16' ? 'UInt16' : 'Byte'];
+  // 引擎的类型名与 GDAL 的 `-ot` 取值一一对应，所以直接用源类型。
+  const args = ['-of', 'GTiff', '-ot', pixels.pixelType];
   // ENVI 中转不带颜色解释，窗口读回来会是 Undefined，
   // 与原图的 Red/Green/Blue 异构 -> gdalbuildvrt 直接跳过窗口。
   // -colorinterp 只能给一次，值用逗号分隔。
@@ -448,7 +523,7 @@ export interface RasterWindowPixels {
   readonly height: number;     // = window.h
   readonly bandCount: number;
   readonly bands: readonly PixelBand[];
-  /** 像素类型：8 位还是 16 位 */
+  /** 像素类型：Byte / UInt16 / Int16 / UInt32 / Int32 / Float32 / Float64 */
   readonly pixelType: PixelType;
   /** 窗口自身的仿射参数 */
   readonly geotransform: number[] | null;
@@ -460,7 +535,7 @@ export interface RasterWindowPixels {
 export interface RasterFrameInfo extends RasterFrame {
   readonly bandCount: number;
   readonly crs: string | null;
-  /** 像素类型：8 位还是 16 位 */
+  /** 像素类型：Byte / UInt16 / Int16 / UInt32 / Int32 / Float32 / Float64 */
   readonly pixelType: PixelType;
   /** 每个波段的颜色解释（Red / Green / Blue / Gray / Undefined…） */
   readonly colorInterpretation: readonly string[];
@@ -525,7 +600,8 @@ export async function readRasterWindow(
 
   const tmp = mkdtempSync(join(tmpdir(), 'cartouche-win-'));
   const bin = join(tmp, 'win.bin');
-  const ot = frame.pixelType === 'UInt16' ? 'UInt16' : 'Byte';
+  // 窗口也按源类型导出：-ot Byte 会把高程静默压成 255。
+  const ot = frame.pixelType;
   const tr = await gdal.translate([
     '-of', 'ENVI', '-ot', ot,
     '-srcwin', String(win.x), String(win.y), String(win.w), String(win.h),

@@ -474,17 +474,38 @@ test('渲染栅格：不认识的像素类型直接报错，错误信息带原�
       width: 16, height: 16, dataType: 1, pixel: 0.0001, cornerX: 120, cornerY: 30.64,
       valueAt: () => 10,
     });
-    // 转成 Float32：引擎只认 Byte / UInt16，别悄悄按 8 位处理
-    const r = await gdal.translate(['-of', 'GTiff', '-ot', 'Float32', tif, join(dir, 'f32_out.tif')]);
-    assert.ok(r.ok, `造 Float32 夹具失败：${r.stderr}`);
+    // 转成复数：引擎算不了复数带，别悄悄按 8 位处理
+    // （Int16 / Int32 / Float32 这些已经支持了，拿它们当例子会让这条用例变成假警报）
+    const r = await gdal.translate(['-of', 'GTiff', '-ot', 'CInt16', tif, join(dir, 'cint16_out.tif')]);
+    assert.ok(r.ok, `造复数夹具失败：${r.stderr}`);
     await assert.rejects(
-      () => renderRasterPng(loc, { path: join(dir, 'f32_out.tif'), width: 16, height: 16 }),
+      () => renderRasterPng(loc, { path: join(dir, 'cint16_out.tif'), width: 16, height: 16 }),
       (err) => {
         assert.match(err.message, /不支持的像素类型/, '要说明是不支持的类型');
-        assert.match(err.message, /Float32/, '错误信息要带上原始类型名');
+        assert.match(err.message, /CInt16/, '错误信息要带上原始类型名');
         return true;
       },
     );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('渲染栅格：32 位与浮点源按实际值域拉伸成 8 位显示（降位必须带 -scale）', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'cartouche-i32-'));
+  try {
+    // Int32 源（高程那类数据）：必须能出图，且降位是带 -scale 的显式换算
+    const tif = join(dir, 'i32.tif');
+    await makeEnvifile(tif, {
+      width: 32, height: 32, dataType: 1, pixel: 0.0001, cornerX: 120, cornerY: 30.64,
+      valueAt: () => 10,
+    });
+    const r = await gdal.translate(['-of', 'GTiff', '-ot', 'Int32', tif, join(dir, 'i32_out.tif')]);
+    assert.ok(r.ok, `造 Int32 夹具失败：${r.stderr}`);
+
+    const res = await renderRasterPng(loc, { path: join(dir, 'i32_out.tif'), width: 32, height: 32 });
+    assert.equal(await pngBandType(res.png), 'Byte', '显示导出必须是 8 位');
+    assert.ok(res.command.includes('-scale'), `降位必须带 -scale：${res.command.join(' ')}`);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
