@@ -41,10 +41,16 @@ const onlyIdx = args.indexOf('--only');
 const only = onlyIdx >= 0 ? args[onlyIdx + 1] : null;
 
 /** 扩展样本目录：Windows 默认落 D 盘，避免大文件把系统盘撑爆；其它平台用用户目录。 */
+/**
+ * 扩展样本目录的默认位置。
+ *
+ * 放在**用户主目录**下，而不是某个盘符的固定路径 ——
+ * 固定盘符在这台机器上成立，clone 到别人机器上就不存在了；
+ * 而公开仓库里出现作者本机的绝对路径是要拦的内容。
+ * 要放到别的盘，设环境变量 CARTOUCHE_EXT_SAMPLES。
+ */
 function defaultExtRoot() {
-  return process.platform === 'win32'
-    ? 'D:\\Projects\\cartouche-samples'
-    : join(homedir(), 'cartouche-samples');
+  return join(homedir(), 'cartouche-samples');
 }
 
 const EXT_ROOT = (process.env.CARTOUCHE_EXT_SAMPLES ?? '').trim() || defaultExtRoot();

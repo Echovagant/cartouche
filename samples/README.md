@@ -23,10 +23,10 @@ manifest 里每个样本都带一个 `baseDir`，只有两个取值：
 判据是**解压后的实际占用**：30 MB 以内放 `samples/`，超过就放扩展样本目录。
 只看压缩包大小会低估——一个 3 MB 的 zip 解开有 50 MB，系统盘照样被撑爆。
 
-扩展样本目录默认落在另一块盘上（Windows 默认 `D:\Projects\cartouche-samples`），换位置只要改环境变量：
+扩展样本目录默认落在**用户主目录**下的 `cartouche-samples`（换盘只要改环境变量，不设也行）：
 
 ```powershell
-$env:CARTOUCHE_EXT_SAMPLES = 'E:\map-samples'
+$env:CARTOUCHE_EXT_SAMPLES = '<另一块盘上的目录>/map-samples'
 ```
 
 manifest 里只写逻辑名，**不写任何本机绝对路径**——换机器、换用户只改这个环境变量。
