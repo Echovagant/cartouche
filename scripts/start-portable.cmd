@@ -7,7 +7,8 @@ REM 不用跑 npm install。运行时全在包里（runtime\ 目录）。
 REM
 REM 前提：没有。这个文件就是"前提"的终结者。
 REM
-REM 说明：这一步不碰用户的数据。图件、项目清单、留痕都在你自己登记的工作区里。
+REM 说明：这一步不碰用户的数据。图件、项目清单、留痕都在你自己的工作区里，
+REM       而工作区不在这个包里（在 %LOCALAPPDATA%\cartouche\workspace）。
 REM
 REM 编码：本文件是 UTF-8（无 BOM）。第一行把控制台切到 UTF-8，
 REM 否则中文提示在默认代码页（GBK）下是乱码 —— 而乱码的报错等于没有报错。
@@ -46,7 +47,21 @@ if not errorlevel 1 goto :engine_busy
 call :port_busy 8080
 if not errorlevel 1 goto :web_busy
 
-REM ── 3. 起引擎与画布 ───────────────────────────────────────────────────
+REM ── 3. 工作区：数据落用户配置目录，不落包目录 ───────────────────────────
+REM 便携包是「程序」，用户的图件是「另一件事」。删掉整个包不该丢数据，
+REM 所以工作区固定在 %LOCALAPPDATA%\cartouche\workspace —— 与包放在哪个盘无关。
+if not defined LOCALAPPDATA set "LOCALAPPDATA=%USERPROFILE%\AppData\Local"
+set "ENGINE_WORKSPACE_ROOT=%LOCALAPPDATA%\cartouche\workspace"
+if not exist "%ENGINE_WORKSPACE_ROOT%" mkdir "%ENGINE_WORKSPACE_ROOT%"
+if errorlevel 1 goto :workspace_fail
+
+REM ── 4. 播种示例数据 ───────────────────────────────────────────────────
+REM 空画布和"软件坏了"长得一模一样。第一次打开没东西，新用户只会认定软件废了。
+REM 这里把包里自带的公开教学数据复制进工作区（只补不覆盖，你改过的不会被回滚）。
+"%NODE%" "%CD%\scripts\seed-portable-samples.mjs"
+if errorlevel 1 echo   [提示] 示例数据这次没能播种，画布可能是空的。
+
+REM ── 5. 起引擎与画布 ───────────────────────────────────────────────────
 REM 引擎走 scripts\run-engine.ps1：它负责把本机存的密钥（DPAPI 加密）读进内存，
 REM 再用包里的 node 起服务 —— 包里没有 npm，也不需要。
 REM --root 必须是**相对路径**：serve-static.mjs 把它拼在它自己算出来的包根目录下，
@@ -54,7 +69,7 @@ REM 传绝对路径会被拼成 "包根\D:\...\web\out"，静态站直接 404。
 start "Cartouche 引擎" /D "%CD%" cmd /k "powershell -NoProfile -ExecutionPolicy Bypass -File "%CD%\scripts\run-engine.ps1" -Port 8787"
 start "Cartouche 画布" /D "%CD%" cmd /k ""%NODE%" "%CD%\scripts\serve-static.mjs" --port 8080 --root web\out"
 
-REM ── 4. 等引擎真正就绪，再开浏览器 ─────────────────────────────────────
+REM ── 6. 等引擎真正就绪，再开浏览器 ─────────────────────────────────────
 REM 立刻开浏览器的话，第一次打开会看到"连不上引擎" —— 那是"还没起来"，
 REM 不是"坏了"。所以先等健康检查通过。
 "%NODE%" -e "const u='http://127.0.0.1:8787/api/health';const t=Date.now();(async()=>{for(;;){try{const r=await fetch(u);if(r.ok)return 0}catch(e){}if(Date.now()-t>30000)return 1;await new Promise(r=>setTimeout(r,300))}})().then(c=>process.exit(c))"
@@ -62,8 +77,15 @@ if errorlevel 1 goto :engine_timeout
 
 echo.
 echo   ------------------------------------------------------------
-echo   画布   : http://127.0.0.1:8080/canvas.html
-echo   引擎   : http://127.0.0.1:8787
+echo   画布     : http://127.0.0.1:8080/canvas.html
+echo   引擎     : http://127.0.0.1:8787
+echo.
+echo   工作区   : %ENGINE_WORKSPACE_ROOT%
+echo              你的图件、项目、留痕都在这里，不在这个便携包里。
+echo   示例数据 : %ENGINE_WORKSPACE_ROOT%\示例数据
+echo              先看里面的 README.txt，照着试一遍就知道能干什么。
+echo   备份     : 把「工作区」这个文件夹整个复制走就是备份。
+echo              删掉便携包不会丢数据 —— 程序和数据是分开的。
 echo.
 echo   关掉：在弹出的两个命令行窗口里按 Ctrl+C，或直接关掉那两个窗口。
 echo   ------------------------------------------------------------
@@ -104,6 +126,16 @@ echo.
 echo   [无法启动] 这个包里缺少构建产物（server\dist 或 web\out）。
 echo.
 echo   请把整个 zip 重新解压一次，不要只复制其中几个文件夹。
+echo.
+pause
+exit /b 1
+
+:workspace_fail
+echo.
+echo   [无法启动] 建不出工作区目录：%ENGINE_WORKSPACE_ROOT%
+echo.
+echo   这个目录建不出来，引擎就没有地方放你的图件。
+echo   请检查磁盘是否已满，或该目录是否被别的程序占用。
 echo.
 pause
 exit /b 1
