@@ -32,16 +32,29 @@ jobs:
         # GDAL 是系统级预编译二进制，不走 npm；CI 必须真的装上，
         # 否则样本生成与引擎冒烟测试会变成"永远绿"的假验证。
         #
-        # 两个平台差异坑（2026-10-22 修，之前 CI 就是死在这里）：
+        # 三个平台差异坑（2026-10-22 修，2026-10-24 再修一个）：
         #   1. `conda create` 只建环境、不激活，$CONDA_PREFIX 在这一步里是空的；
         #      环境实际落在 <base>/envs/gdal，前缀要用 `conda info --base` 取。
         #   2. conda 的目录布局分平台：Windows 是 <prefix>\Library\bin，
         #      Linux 是 <prefix>/bin。这里跑在 ubuntu-latest 上，只能用后者。
+        #   3. **runner 镜像不再预装 conda**（2026-10-24 实测：某次运行在这一步
+        #      直接以 `conda: command not found`（exit 127）收场，后面 13 步全被
+        #      skipped —— CI 对"代码对不对"就不再给信号了）。所以这里自己装一份
+        #      Miniconda，不依赖镜像自带，也不引入第三方 GitHub Action。
         run: |
+          set -eo pipefail
           # gdal 钉在小版本上（3.13.x）：门禁断言的是 GDAL 的**已知行为**
           # （比如"同名 .prj 对栅格无效"）。不钉版本的话，conda-forge 哪天
           # 出了 3.14 且行为变了，CI 就会因为一件跟代码无关的事变红——
           # 那种红是噪声，不是信号。升版本时请显式改这里，并同步复核那几条检查。
+          MINICONDA_HOME="$HOME/miniconda3"
+          if [ ! -x "$MINICONDA_HOME/bin/conda" ]; then
+            curl -fsSL -o /tmp/miniconda.sh \
+              https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
+            bash /tmp/miniconda.sh -b -p "$MINICONDA_HOME"
+            echo "$MINICONDA_HOME/bin" >> "$GITHUB_PATH"
+          fi
+          export PATH="$MINICONDA_HOME/bin:$PATH"
           conda create -y -n gdal -c conda-forge gdal=3.13 proj geos
           CONDA_BASE="$(conda info --base)"
           GDAL_ROOT="$CONDA_BASE/envs/gdal"
