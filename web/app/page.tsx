@@ -587,6 +587,10 @@ export default function Home() {
             <p className="mt-8 max-w-[68ch] text-body-sm leading-relaxed text-ink-3">
               换掉模型不影响这套流程——引擎和运算表不变，只是坐在前面的操作员换了人。
             </p>
+            <p className="mt-4 max-w-[68ch] text-body-sm leading-relaxed text-ink-3">
+              图件本体一个字节都不出你的电脑。用 AI 时发走的只有上面那几行元数据，
+              和你视窗内最多 200 个要素的坐标与少量属性——发出去之前，你能逐字看。
+            </p>
           </div>
         </section>
 

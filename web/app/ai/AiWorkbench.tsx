@@ -436,6 +436,32 @@ export default function AiWorkbench() {
           真实模型那条路我们还没跑过一次——配一枚密钥就能自己试，密钥留在你本机。
         </p>
 
+        {/*
+          「会不会泄露我的数据」是外行用户第一個会问的问题，所以答案放在最显眼处，
+          而且给的是**具体清单**而不是一句「很安全」。
+
+          这份清单对着 server/src/llm-plan.ts 的白名单逐条写的：
+          允许发送 —— 项目名、图层名与字段名、要素数量、坐标系、
+          视窗内最多 200 个要素的简化坐标与关键属性值、视窗范围、用户原话；
+          禁止发送 —— 文件本体、绝对路径、用户名、机器信息。
+          改动白名单时，这里的文案必须跟着改（两边不许各说各话）。
+        */}
+        <div className="mt-4 max-w-2xl rounded-lg border border-studio-line bg-studio-2/70 px-4 py-3">
+          <div className="text-[12.5px] font-medium text-studio-ink">
+            用 AI 时，什么会离开这台机器？
+          </div>
+          <ul className="mt-2 space-y-1 text-[12px] leading-relaxed text-studio-ink-2">
+            <li>· 项目名、图层名与字段名、要素数量、坐标系标识</li>
+            <li>· 你视窗内最多 200 个要素的简化坐标与关键属性值</li>
+            <li>· 你写的这句话</li>
+          </ul>
+          <p className="mt-2 text-[12px] leading-relaxed text-studio-ink-3">
+            不会离开的：图件本体一个字节都不上传（引擎只读你自己电脑上的文件夹），
+            绝对路径、用户名、机器信息也都不发。发出去的原文，发之前能逐字看——
+            下面「看看会发送什么」就是那段原文。
+          </p>
+        </div>
+
         {/* 从画布跳过来时，把带过来的上下文说清楚：用户得知道模型看的是哪张图 */}
         {entry.fromCanvas ? (
           <div className="mt-5 rounded-lg border border-studio-line bg-studio-2/70 px-4 py-3 text-[12.5px] leading-relaxed text-studio-ink-2">
