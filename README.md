@@ -21,8 +21,28 @@
 | **占用检测** | ArcGIS 打开数据时会持有句柄；占用时直接拒绝写入，不硬来 |
 | **坐标系与伴随文件** | 写回的是原图件，坐标系原样保留；坐标系是内嵌还是来自伴随文件，自检报告会写明 |
 | **图件与像元不出本机** | 服务只监听回环地址，图件读写都在你自己的文件夹里；模型密钥用 DPAPI 加密存在仓库之外，从不明文落盘。接上模型服务时只发图层清单（名称、字段、要素数、坐标系），发送前可预览 |
-| **AI 只提议，绝不执行** | 模型的唯一产物是一份操作计划；执行永远由确定性引擎完成，且要过四道闸门 |
+| **AI 只提议，绝不执行** | 模型的唯一产物是一份操作计划；执行永远由确定性引擎完成，且要过四道闸门。接 10 家模型服务（MiniMax 国内/国际、智谱 GLM、百炼、火山方舟、DeepSeek、Kimi、硅基流动、本机 Ollama、自定义端点） |
+| **数据体检查得动脏数据** | 面自己跟自己交叠、两个图层坐标系不一致、坐标跑出该投影的范围——都查得出。**查不了的那几项会写明「没查」**，不会说成「未发现问题」 |
+| **像元数值全程保真** | Int16 / Int32 / UInt32 / Float32 / Float64 读进来是什么数位，写回去就是什么数位。GDAL 老毛病里「`-ot Byte` 把 3000 米高程饱和成 255」被专门挡着 |
+| **GeoPackage 也能写回** | 写回只动你指定的那一层，同一文件里其它图层要素数与列名一字不差，图层顺序也不变 |
+| **空间连接跑得动大数据** | 两级网格索引（要素级 + 线段级）。4,133 个真实海岸线要素从 327 秒降到 1.4 秒；25 万点对 25 万点 33 秒出结果。与暴力扫描逐行比对，差异 0 行 |
 | **不依赖商业 GIS 授权** | 引擎是纯 TypeScript + GDAL 命令行，浏览器打开即用 |
+
+## 能改哪些格式
+
+按「能不能写回」分开列，不含糊。写回的都是**原图件**，格式与坐标系原样保留。
+
+| 格式 | 写回 | 说明 |
+|---|---|---|
+| `.tff` `.tif` | ✅ | GeoTIFF；栅格类型 Byte / UInt16 / Int16 / UInt32 / Int32 / Float32 / Float64 全保真 |
+| `.shp` | ✅ | Shapefile，整套文件（.shp/.shx/.dbf/.prj/.cpg）一起写回 |
+| `.geojson` | ✅ | |
+| `.gpkg` | ✅ | GeoPackage；**只动指定的那一层**，其它图层与图层顺序不变 |
+| `.img` `.vrt` `.asc` `.bil` `.png` | 只读 | 能打开、出图、查属性、导出；写回统一产出 GeoTIFF，所以工具会明确拒绝而不是把文件改坏 |
+| `.gdb` `.kml` `.gml` | 只读 | 同上；矢量编辑请先另存成 `.shp` / `.geojson` / `.gpkg` |
+
+矢量编辑已实现的操作：重投影、改字段名、值重编码（字符编码）、加字段、
+按位置连接、改属性、删要素、按条件汇总。
 
 ## 界面
 
@@ -42,6 +62,23 @@
 
 ## 快速开始
 
+### 不想装环境？用绿色便携包
+
+包里带齐了 Node 与 GDAL，**解压双击就能用**，什么都不用装：
+
+```bash
+npm run pack:release        # 产出 release/cartouche-portable-0.1.0.zip（约 99 MB）
+# 解压 → 双击 START.cmd
+# 浏览器自动打开画布；首次启动会播一份示例数据（40 个文件，
+# Natural Earth 公共领域数据，中文文件夹名）
+```
+
+- 工作区固定在 `%LOCALAPPDATA%\cartouche\workspace`，**删掉便携包不丢图件**
+- 启动器会打印工作区位置、示例数据位置与备份方法
+- 便携包里也有 `scripts\set-key.ps1`：DPAPI 密文存密钥，与源码跑法同一套
+
+### 从源码跑
+
 **前置**：Node.js ≥ 22、GDAL 命令行（Windows 上推荐 conda-forge 发行版）。
 
 ```bash
@@ -55,7 +92,7 @@ npm run doctor
 拉公开样本、起引擎、出图：
 
 ```bash
-npm run samples        # 拉公开样本
+npm run samples        # 拉公开样本（21 个，含多格式/多坐标系/大体量）
 npm run samples:seed   # 播种进工作区
 npm run dev:server     # 起引擎（另开一个终端）
 
@@ -112,17 +149,41 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run-engine.ps1
 | 服务 | Node HTTP，只监听回环地址 |
 | 前端 | Next.js 静态导出 + React + MapLibre GL JS + Tailwind CSS |
 | 出图 | 栅格底图 PNG + Canvas 合成图面要素 → PDF |
-| 测试 | `node:test`，868 个用例；CI 跑在 ubuntu-latest |
+| 测试 | `node:test`，955 个用例；CI 跑在 ubuntu-latest（十二道门禁） |
 
 ## 开发
 
 ```bash
 npm run test:ci          # 单元测试（串行）
 npm run check:schema     # 操作计划契约自检
+npm run check:bench      # 基准集自检（AI 用例）
 npm run check:licenses   # 依赖许可门禁
 npm run check:secrets    # 密钥扫描门禁
+npm run scan:encoding    # 编码污染扫描
 npm run smoke:engine     # 引擎服务冒烟测试
 ```
+
+### 真实数据评测
+
+`scripts/eval-samples.mjs` 把 22 个 op 在**公开真实数据**与**合成刁难数据**上真跑一遍，
+结论分三档：`PASS`（成功且可验证）、`REJECT`（引擎明确拒绝 —— **正确行为**）、
+`CRASH`（崩了 / 静默失败 / 改坏源数据 —— 这才是要修的）。
+
+```bash
+npm run samples            # 21 个公开样本（多格式 / 多坐标系 / 多体量）
+npm run samples:eval       # 跑评测，产出 samples/report.json 与 samples/op-eval.json
+node scripts/eval-samples.mjs --only <样本 id>   # 只跑一个
+```
+
+「刁难」数据集（中文与空格路径、缺 .prj、脏拓扑、空图层、混合坐标系、
+25 万要素、退化几何、极端坐标值、多部件、大栅格、怪坐标系栅格）由
+`make-hard-cases.mjs` 生成，**每次跑完核对源文件校验和**——
+写坏源数据是最严重的一种失败，评测必须能发现。
+
+> 测试与评测的临时目录：设 `CARTOUCHE_TEST_TMP` / `CARTOUCHE_EXT_SAMPLES` /
+> `CARTOUCHE_HARDCASES` 可以把它们挪到别的盘（默认在系统临时目录）。
+> **指向的目录要先存在** —— 目录不存在时，测试会以 `ENOENT: mkdtemp` 收场，
+> 看起来像代码坏了，其实是目录没建。
 
 ## 许可
 
