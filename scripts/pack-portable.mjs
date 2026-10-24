@@ -26,6 +26,7 @@ import { existsSync, statSync } from 'node:fs';
 import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { zip } from './lib/zip.mjs';
+import { preparePortableSamples, SAMPLE_DIR_NAME } from './prepare-portable-samples.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const outDir = join(root, 'release', 'portable');
@@ -73,90 +74,19 @@ const PREBUILT = [
 /**
  * 进包的脚本：只收运行期真正用得到的。
  *
- * `scripts/run-engine.ps1` 单独处理（见 {@link PORTABLE_RUN_ENGINE_PS1}）。
+ * `scripts/run-engine.ps1` **不再单独替换**：那一份已经写成「开发态与便携包两用」
+ * （有自带 node + 预构建产物就走便携路径，否则走 npm）。同一份文件既进包，
+ * 又留在仓库里继续服务开发态 —— 两处逻辑分叉过一次就会各自腐烂。
  */
 const SCRIPTS = [
   'scripts/serve-static.mjs',
   'scripts/set-key.ps1',
   'scripts/doctor.mjs',
   'scripts/start-portable.cmd',
+  'scripts/run-engine.ps1',
+  'scripts/seed-portable-samples.mjs',
   'scripts/lib/env.mjs',
 ];
-
-/**
- * 包里的 scripts/run-engine.ps1（替换仓库里那份）。
- *
- * 为什么替换：仓库那一份最后一行是 `npm -w server run dev` ——
- * 便携包里既没有 npm，也没有 TS 源码，那一行必然失败。
- * 留着它只会让用户点一下就看到一条红字，所以换成"用包里的 node 起
- * 已经构建好的 server/dist"，密钥的读法（DPAPI）保持一致。
- *
- * 纯 ASCII：Windows PowerShell 5.1 读无 BOM 的 .ps1 时按系统代码页解，
- * 文件里有中文就会变乱码（仓库那份同样遵守这条）。
- */
-const PORTABLE_RUN_ENGINE_PS1 = `# Start the portable engine: bundled Node + prebuilt server/dist.
-#
-# The key is decrypted into this process environment and handed to the child
-# process. It is never written to disk in plaintext and never echoed.
-#
-# Pure ASCII on purpose (Windows PowerShell 5.1 .ps1 encoding rule).
-
-param(
-  [int]$Port = 0,
-  [switch]$NoKey
-)
-
-$ErrorActionPreference = 'Stop'
-$pkgRoot = Split-Path -Parent $PSScriptRoot
-$nodeExe = Join-Path $pkgRoot 'runtime\\node\\node.exe'
-$serverEntry = Join-Path $pkgRoot 'server\\dist\\index.js'
-$keyFile = Join-Path $env:LOCALAPPDATA 'cartouche\\llm-key.txt'
-
-# 端口优先取环境变量：启动器（start-portable.cmd）已经把 ENGINE_PORT 设好了，
-# 这里再写死一个默认值会把启动器的设置覆盖掉 —— 实测踩到过：
-# 启动器让引擎跑在 18787，引擎却去抢 8787，直接 EADDRINUSE 起不来。
-if ($Port -le 0) {
-  if ($env:ENGINE_PORT) { $Port = [int]$env:ENGINE_PORT } else { $Port = 8787 }
-}
-
-if (-not (Test-Path $nodeExe)) {
-  Write-Output "[engine] bundled node.exe is missing: $nodeExe"
-  exit 1
-}
-if (-not (Test-Path $serverEntry)) {
-  Write-Output "[engine] server build is missing: $serverEntry"
-  exit 1
-}
-
-if (-not $NoKey -and (Test-Path $keyFile)) {
-  $enc = [IO.File]::ReadAllText($keyFile).Trim()
-  try {
-    $sec = ConvertTo-SecureString $enc
-  } catch {
-    Write-Output "[key] cannot decrypt (was it saved by a different Windows user?) -> $keyFile"
-    $sec = $null
-  }
-  if ($sec) {
-    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec)
-    try {
-      $env:MINIMAX_API_KEY = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
-      # report only presence, never the value
-      Write-Output ("[key] loaded from DPAPI store, length={0}" -f $env:MINIMAX_API_KEY.Length)
-    } finally {
-      [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
-    }
-  }
-} elseif (-not $NoKey) {
-  Write-Output "[key] not configured. Run: scripts\\set-key.ps1"
-}
-
-$env:ENGINE_PORT = "$Port"
-$env:ENGINE_HOST = '127.0.0.1'
-
-Write-Output "[engine] starting on http://127.0.0.1:$Port (workspace root: $pkgRoot\\workspace)"
-Set-Location $pkgRoot
-& $nodeExe $serverEntry
-`;
 
 /**
  * 说明文件。
@@ -435,7 +365,10 @@ const PORTABLE_DOC_HEADER = `> **这是便携包**：不用装 Node、不用装 
 > - 画布：<http://127.0.0.1:8080/canvas.html>
 > - 引擎：<http://127.0.0.1:8787>
 > - 关掉：在弹出的两个命令行窗口里按 Ctrl+C（或直接关掉窗口）
-> - 数据放哪：引擎只在自己登记过的目录里读写，源数据不用搬家
+> - 你的数据放哪：\`%LOCALAPPDATA%\\cartouche\\workspace\` —— **不在包里**，
+>   删掉便携包不会丢图件；备份就是把这个文件夹整个复制走
+> - 示例数据：\`%LOCALAPPDATA%\\cartouche\\workspace\\示例数据\`，
+>   第一次启动会自动放好，里面有 README.txt 教你拿它试什么
 > - 想用 AI 功能：在包内跑 \`scripts\\set-key.ps1\` 填一次密钥（DPAPI 加密，只存在你自己的电脑上）
 `;
 
@@ -576,12 +509,7 @@ async function main() {
     entries.push({ name: `${TOP}/${rel}`, data });
     bump('脚本', data.length);
   }
-  // run-engine.ps1 在包里换成便携版（仓库那版最后一行要 npm）
-  {
-    const data = Buffer.from(toCrlf(PORTABLE_RUN_ENGINE_PS1), 'utf8');
-    entries.push({ name: `${TOP}/scripts/run-engine.ps1`, data });
-    bump('脚本', data.length);
-  }
+  // run-engine.ps1 已经写成一稿两用（见 SCRIPTS 的说明），不用再替换一份
   // 引擎的 package.json 也要在包里：dist/*.js 是 .js，
   // Node 靠最近的 package.json 里的 "type" 判定它是 ESM 还是 CJS
   {
@@ -590,7 +518,27 @@ async function main() {
     bump('脚本', data.length);
   }
 
-  // 2.6 说明
+  // 2.6 示例数据：给新用户一份能立刻点开的公开教学数据。
+  //     放在包根的「示例数据」下，启动时由 scripts/seed-portable-samples.mjs
+  //     复制进工作区 —— 数据不进包的工作区，也不会跟着包被删掉。
+  {
+    const samples = await preparePortableSamples({ gdalBinDir: gdal.binDir });
+    for (const f of samples.files) {
+      const abs = join(samples.sampleRoot, ...f.rel.split('/'));
+      const data = await readFile(abs);
+      entries.push({ name: `${TOP}/${SAMPLE_DIR_NAME}/${f.rel}`, data });
+      bump('示例数据', data.length);
+    }
+    // README.txt 不在上面那份清单里（它是写完才生成的），单独补一次
+    const readmeAbs = join(samples.sampleRoot, 'README.txt');
+    if (existsSync(readmeAbs)) {
+      const data = await readFile(readmeAbs);
+      entries.push({ name: `${TOP}/${SAMPLE_DIR_NAME}/README.txt`, data });
+      bump('示例数据', data.length);
+    }
+  }
+
+  // 2.7 说明
   for (const rel of DOCS) {
     const abs = join(root, rel);
     if (!existsSync(abs)) {
