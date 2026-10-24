@@ -112,7 +112,9 @@ function describeGeometry(dataset: DatasetInfo, health: HealthReport): { lines: 
   if (dataset.kind === 'vector') {
     const geo = health.findings.filter((f) => f.ruleId.startsWith('V-GEOM'));
     if (geo.length === 0) {
-      lines.push('- ✅ 未发现自相交、空几何、零面积等几何问题');
+      // 只说了查过的，不说没查的 —— 「未发现自相交」会被读成「查过自相交、没问题」，
+      // 而引擎根本没有自相交这一条规则（契约里那几条是「未实现」）。
+      lines.push('- ✅ 未发现空几何、零面积面（自相交、重叠、未闭合环**尚未检查**）');
     } else {
       for (const f of geo) {
         lines.push(`- ⚠️ \`${f.ruleId}\` ${f.title}${f.affectedCount !== undefined ? `（${f.affectedCount} 个要素）` : ''}`);
@@ -124,7 +126,7 @@ function describeGeometry(dataset: DatasetInfo, health: HealthReport): { lines: 
   } else {
     const geo = health.findings.filter((f) => f.ruleId.startsWith('R-GEO'));
     if (geo.length === 0) {
-      lines.push('- ✅ 未发现栅格几何问题');
+      lines.push('- ✅ 地理定位正常（仿射变换在内，且不是只靠世界文件定位）');
     } else {
       for (const f of geo) lines.push(`- ⚠️ \`${f.ruleId}\` ${f.title}`);
     }

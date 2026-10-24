@@ -25,7 +25,16 @@ export interface LayerField {
 
 /** 读一个图层时探到的信息。 */
 export interface LayerInfo {
+  /** 实际要用的图层名（多图层容器里取第一个） */
   readonly layerName: string;
+  /**
+   * 这个文件里的全部图层名（按出现顺序）。
+   *
+   * 为什么单列一个字段：多图层容器（GeoPackage 是最常见的一个）里
+   * `ogrinfo -al` 会把所有图层都列出来。不记下来，就没法告诉用户
+   * 「你打开的这个文件其实有 3 个图层，我读的是第一个」。
+   */
+  readonly layerNames: readonly string[];
   /** 图层里的要素总数（未筛选） */
   readonly featureCount: number;
   readonly fields: readonly LayerField[];
@@ -70,6 +79,15 @@ export interface ReadFeaturesResult {
   readonly truncated: boolean;
   /** 图层的列名（按图层里的顺序） */
   readonly fields: readonly string[];
+  /** 这次读的是哪个图层 */
+  readonly layerName: string;
+  /**
+   * 这个文件里还有哪些图层（这次没读）。
+   *
+   * 空数组 = 只有一层。**非空就必须让用户看见** ——
+   * 静默只读第一层、让人以为整个文件都处理过了，是最坏的一种做法。
+   */
+  readonly otherLayerNames: readonly string[];
 }
 
 /** 写回支持的两种格式。 */

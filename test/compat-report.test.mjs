@@ -169,7 +169,9 @@ test('无几何问题时明确说"未发现"', () => {
     dataset: vectorDataset(),
     health: health(),
   });
-  assert.ok(markdown.includes('未发现自相交'));
+  // 文案要分清「查了没问题」与「没查」：自相交我们查不了，就得写明没查
+  assert.ok(markdown.includes('未发现空几何、零面积面'));
+  assert.ok(markdown.includes('尚未检查'), '没查的项必须写出来：' + markdown);
 });
 
 test('量化摘要：像元数、占比、备份、校验和都在', () => {
