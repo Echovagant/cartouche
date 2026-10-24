@@ -733,22 +733,26 @@ const OP_LABELS: Readonly<Record<string, string>> = {
  * `vector.*` 的六个 op 早就实现并登记进执行器了，提示词却只放行 `raster.*`，
  * 模型**根本看不到**它们，于是所有矢量需求都落到「该操作尚未支持」。
  * 这种缺口不报错，只是功能凭空少了一半 —— 比报错更难发现。
- *
- * `feature.*` 暂时不在列：这三个 op（按条件改属性 / 删要素 / 分组汇总）
- * 已经实现并登记了，但**故意不放给 AI**：
- *   - `feature.delete` 会删数据，让模型从一句模糊的话里推出"删掉符合条件的要素"，
- *     风险和收益不成比例；
- *   - 按执行顺序，SP-2/4（改得动）与 SP-5（汇总）本来就排在后面。
- * 要不要放行、什么时候放行，见「等你裁定」。
- * 等它们该放行时，把前缀加进来即可 —— 前缀过滤意味着"进注册表就能进清单"。
  */
 const AI_OP_PREFIXES: readonly string[] = ['raster.', 'vector.'];
+
+/**
+ * 逐个放行的 op（不属于任何前缀的）。
+ *
+ * 为什么要有这么一小撮：`feature.*` 里混着**会删数据**的操作
+ * （feature.delete），让模型从一句模糊的话里推出删除动作，风险和收益不成比例。
+ * 但 `feature.summarize`（按字段分组汇总）是**纯读操作** ——
+ * 它只出一张表，一个字节都不写。放行它，用户问「按类别汇总面积」时 AI 能直接答。
+ * 删与改留到 SP-2/4 那一轮，和符号化面板一起做，那时闸门能做得更细。
+ */
+const AI_OP_ALLOW: readonly string[] = ['feature.summarize'];
 
 export function opCatalog(schema: SchemaNode, implemented: readonly string[]): OpCatalogEntry[] {
   const allowed = schema.$defs?.['operation']?.properties?.['op']?.enum ?? [];
   const out: OpCatalogEntry[] = [];
   for (const op of implemented) {
-    if (!AI_OP_PREFIXES.some((prefix) => op.startsWith(prefix))) continue;
+    const allowedByPrefix = AI_OP_PREFIXES.some((prefix) => op.startsWith(prefix));
+    if (!allowedByPrefix && !AI_OP_ALLOW.includes(op)) continue;
     if (!allowed.includes(op)) continue;
     const params = schema.$defs?.[`params.${op}`];
     if (!params) continue;
