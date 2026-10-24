@@ -6,6 +6,9 @@
 export { spatialJoin, toOpData, JOIN_COUNT_FIELD } from './join.ts';
 export type { SpatialJoinOpData } from './join.ts';
 
+export { buildFeatureGrid, buildSegmentGrid } from './grid-index.ts';
+export type { FeatureGrid, SegmentGrid } from './grid-index.ts';
+
 export { SpatialJoinError } from './types.ts';
 
 export type {

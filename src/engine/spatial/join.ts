@@ -37,6 +37,7 @@ import {
   normalizeGeometry,
 } from '../geometry/index.ts';
 import type { BBox, NormalizedGeometry } from '../geometry/index.ts';
+import { buildFeatureGrid, buildSegmentGrid } from './grid-index.ts';
 import { SpatialJoinError } from './types.ts';
 import type {
   FeatureLike,
@@ -128,6 +129,12 @@ export function spatialJoin(
     sourceBoxes.push(bboxOfNormalized(geom));
   }
 
+  /* ── 建索引 ──
+     网格只是加速器：它决定「哪些源要素值得问」，问到之后仍然由几何层判定。
+     网格算出来的候选是**必要条件的超集**，所以判定结果与逐对扫描逐行相同。 */
+  const featureGrid = buildFeatureGrid(sourceBoxes);
+  const segmentGrid = buildSegmentGrid(sourceGeoms);
+
   /* ── 汇总字段的选取 ──
      「数值字段」的判定：所有源要素里该字段的非空值都是有限数字。
      之所以要求「所有」而不是「至少一个」：字段类型必须对整层是确定的，
@@ -212,21 +219,41 @@ export function spatialJoin(
     const target = normalizeForJoin(feature.geometry, `目标图层第 ${i} 个要素的几何`);
     const targetBox = bboxOfNormalized(target);
 
+    /* 候选源要素：网格只回答「哪些源要素可能跟这个目标要素有关系」。
+       网格不可用或退化时它返回全量，退化成逐对扫描 —— 慢，但不会漏。 */
+    const candidates = featureGrid.query(targetBox);
+
+    /* 线-线相交走线段级索引。
+       几何层对「线 ∩ 线」的判定就是「有没有一对线段相交」，线段级索引做的
+       是同一件事（用的是同一个线段相交判定），只是不用把两条线的每一段
+       都互相比一遍 —— 那是「几千条线就超时」的真正原因。 */
+    const segmentHits =
+      relation === 'intersects' && target.kind === 'line' ? segmentGrid.query(target) : null;
+
     const matched: number[] = [];
-    for (let j = 0; j < sourceGeoms.length; j++) {
+    for (const j of candidates) {
       const sourceBox = sourceBoxes[j];
       const source = sourceGeoms[j];
       if (!sourceBox || !source) continue;
       // 包围盒是必要条件，先用它剪掉绝大多数不可能的候选
       if (!bboxPreFilter(relation, targetBox, sourceBox)) continue;
-      const hit =
-        relation === 'within'
-          ? containsNormalized(source, target)
-          : relation === 'contains'
-            ? containsNormalized(target, source)
-            : intersectsNormalized(target, source);
+      let hit: boolean;
+      if (segmentHits && source.kind === 'line') {
+        // 线段级索引没命中 = 没有任何一对线段挨在一起 = 不相交。
+        hit = segmentHits.has(j);
+      } else {
+        hit =
+          relation === 'within'
+            ? containsNormalized(source, target)
+            : relation === 'contains'
+              ? containsNormalized(target, source)
+              : intersectsNormalized(target, source);
+      }
       if (hit) matched.push(j);
     }
+    // 候选来自格子，顺序不定；结果必须与源要素顺序一致
+    // （`first` 汇总取的是第一个匹配的源要素）。
+    matched.sort((a, b) => a - b);
 
     rows.push({ targetIndex: i, sourceIndexes: matched, aggregates: aggregateFor(matched) });
     if (matched.length === 0) unmatched.push(i);
