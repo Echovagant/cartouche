@@ -59,6 +59,22 @@ import { findProvider } from '@cartouche/engine';
 import { buildContextPreview, checkPlanAgainstContract, createPlan } from './llm-plan.ts';
 import { loadRegisteredRoots, registerRoot } from './roots.ts';
 
+/**
+ * 引擎自报的版本号。
+ *
+ * 为什么读文件而不是写死：写死的版本号在发版时**必然**会忘 ——
+ * 2026-10-24 发 v0.2.0 时它还报 0.1.0，用户看到「引擎 0.1.0 / 发行版 0.2.0」
+ * 会以为装错了。读一次就永远对。
+ */
+const ENGINE_VERSION: string = (() => {
+  try {
+    const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version?: string };
+    return pkg.version ?? '0.0.0';
+  } catch {
+    return '0.0.0';
+  }
+})();
+
 const here = dirname(fileURLToPath(import.meta.url));
 // dist/app.js → 仓库根目录
 const repoRoot = join(here, '..', '..');
@@ -481,7 +497,7 @@ export function createEngineServer(): Server {
     if (url.pathname === '/api/health') {
       const info: EngineInfo = {
         name: 'cartouche-engine',
-        version: '0.1.0',
+        version: ENGINE_VERSION,
         ops: opCount(),
         workspaceRoot: WORKSPACE_ROOT,
       };
@@ -819,7 +835,7 @@ export function createEngineServer(): Server {
             dataset,
             health,
             ...(req0.operations ? { operations: req0.operations } : {}),
-            engineVersion: '0.1.0',
+            engineVersion: ENGINE_VERSION,
           });
           json(200, {
             markdown: report.markdown,
