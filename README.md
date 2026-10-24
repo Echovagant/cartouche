@@ -190,5 +190,4 @@ node scripts/eval-samples.mjs --only <样本 id>   # 只跑一个
 
 ## 许可
 
-[Apache-2.0](LICENSE)。本项目不包含、不分发任何 Esri 专有软件或数据；ArcGIS 是 Esri 的注册商标。
-第三方组件许可见 [NOTICE](NOTICE)。
+[Apache-2.0](LICENSE)。本项目不含、不分发任何专有 GIS 软件或数据；第三方组件清单与商标声明见 [NOTICE](NOTICE)。

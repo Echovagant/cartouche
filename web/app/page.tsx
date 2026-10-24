@@ -877,7 +877,7 @@ export default function Home() {
                         不含什么
                       </dt>
                       <dd className="mt-1.5 text-body leading-relaxed text-paper/85">
-                        不含、不分发任何 Esri 专有软件或数据。ArcGIS 是 Esri 的注册商标。
+                        不含、不分发任何专有 GIS 软件或数据；第三方组件清单与商标声明见仓库里的 NOTICE。
                       </dd>
                     </div>
                     <div>
