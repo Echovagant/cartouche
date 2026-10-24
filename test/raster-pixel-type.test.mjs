@@ -13,6 +13,7 @@ const srcEng = (p) => pathToFileURL(join(root, 'src', 'engine', p)).href;
 const {
   BYTES_PER_SAMPLE,
   MAX_SAMPLE,
+  MIN_SAMPLE,
   newBand,
   readSample,
   writeSample,
@@ -20,27 +21,56 @@ const {
   pixelTypeFromGdal,
   pixelTypeOf,
   decodeSample,
+  copyBand,
+  isFloatingPoint,
 } = await import(eng('pixels.ts'));
+
+/**
+ * 造一个 DataView（解码用的字节视图）。
+ *
+ * 必须带上 byteOffset：Buffer 的 byteOffset 未必为 0，
+ * 用 `new DataView(buf.buffer)` 会从池头开始读，读到别人的数据。
+ */
+function viewOf(bytes) {
+  return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+}
 
 test('像素常量：字节宽与取值上限', () => {
   assert.equal(BYTES_PER_SAMPLE.Byte, 1, 'Byte 每个样点 1 字节');
   assert.equal(BYTES_PER_SAMPLE.UInt16, 2, 'UInt16 每个样点 2 字节');
+  assert.equal(BYTES_PER_SAMPLE.Int16, 2, 'Int16 每个样点 2 字节');
+  assert.equal(BYTES_PER_SAMPLE.UInt32, 4, 'UInt32 每个样点 4 字节');
+  assert.equal(BYTES_PER_SAMPLE.Int32, 4, 'Int32 每个样点 4 字节');
+  assert.equal(BYTES_PER_SAMPLE.Float32, 4, 'Float32 每个样点 4 字节');
+  assert.equal(BYTES_PER_SAMPLE.Float64, 8, 'Float64 每个样点 8 字节');
   assert.equal(MAX_SAMPLE.Byte, 255, 'Byte 上限 255');
   assert.equal(MAX_SAMPLE.UInt16, 65535, 'UInt16 上限 65535');
+  assert.equal(MAX_SAMPLE.Int16, 32767, 'Int16 上限 32767');
+  assert.equal(MAX_SAMPLE.UInt32, 4294967295, 'UInt32 上限 4294967295');
+  assert.equal(MAX_SAMPLE.Int32, 2147483647, 'Int32 上限 2147483647');
+  // 有符号类型必须留出负数区间：负高程是合法数据
+  assert.equal(MIN_SAMPLE.Int16, -32768, 'Int16 下限 -32768');
+  assert.equal(MIN_SAMPLE.Int32, -2147483648, 'Int32 下限 -2147483648');
+  assert.equal(MIN_SAMPLE.UInt32, 0, 'UInt32 无负数');
 });
 
-test('建带：Byte 出 Uint8Array，UInt16 出 Uint16Array，长度正确', () => {
-  const b8 = newBand('Byte', 10);
-  assert.ok(b8 instanceof Uint8Array, 'Byte 带必须是 Uint8Array');
-  assert.equal(b8.length, 10);
-
-  const b16 = newBand('UInt16', 10);
-  assert.ok(b16 instanceof Uint16Array, 'UInt16 带必须是 Uint16Array');
-  assert.equal(b16.length, 10);
-
-  // 类型必须一眼能认出来，否则后面写回时不知道该按几字节存
-  assert.equal(pixelTypeOf(b8), 'Byte');
-  assert.equal(pixelTypeOf(b16), 'UInt16');
+test('建带：每种类型出对应的 typed array，长度正确', () => {
+  const cases = [
+    ['Byte', Uint8Array],
+    ['UInt16', Uint16Array],
+    ['Int16', Int16Array],
+    ['UInt32', Uint32Array],
+    ['Int32', Int32Array],
+    ['Float32', Float32Array],
+    ['Float64', Float64Array],
+  ];
+  for (const [type, Ctor] of cases) {
+    const band = newBand(type, 10);
+    assert.ok(band instanceof Ctor, `${type} 带必须是 ${Ctor.name}`);
+    assert.equal(band.length, 10);
+    // 类型必须一眼能认出来，否则后面写回时不知道该按几字节存
+    assert.equal(pixelTypeOf(band), type);
+  }
 });
 
 test('写样点：8 位越界钳到 255，负值钳到 0', () => {
@@ -57,6 +87,50 @@ test('写样点：16 位越界钳到 65535，小数四舍五入', () => {
   assert.equal(readSample(band, 0), 65535, '70000 应被钳到 65535');
   writeSample(band, 1, 12.6, 'UInt16');
   assert.equal(readSample(band, 1), 13, '12.6 应四舍五入成 13');
+});
+
+test('写样点：有符号类型保留负高程，32 位不丢高位', () => {
+  const i16 = newBand('Int16', 2);
+  writeSample(i16, 0, -400, 'Int16');
+  assert.equal(readSample(i16, 0), -400, '负高程必须留下，不能被裁成 0');
+  writeSample(i16, 1, -99999, 'Int16');
+  assert.equal(readSample(i16, 1), -32768, '越界应钳到该类型的下限');
+
+  const i32 = newBand('Int32', 2);
+  writeSample(i32, 0, 8848, 'Int32');
+  assert.equal(readSample(i32, 0), 8848);
+  writeSample(i32, 1, -2147483648, 'Int32');
+  assert.equal(readSample(i32, 1), -2147483648, 'Int32 的下限必须放得下');
+
+  const u32 = newBand('UInt32', 2);
+  writeSample(u32, 0, 4294967295, 'UInt32');
+  assert.equal(readSample(u32, 0), 4294967295, 'UInt32 的上限必须放得下');
+});
+
+test('写样点：浮点不取整，小数位是数据', () => {
+  const f32 = newBand('Float32', 2);
+  writeSample(f32, 0, 1234.5678, 'Float32');
+  assert.equal(readSample(f32, 0), Math.fround(1234.5678), '浮点不能被四舍五入成整数');
+  writeSample(f32, 1, -9999.25, 'Float32');
+  assert.equal(readSample(f32, 1), -9999.25);
+
+  const f64 = newBand('Float64', 1);
+  writeSample(f64, 0, 1234.5678901234567, 'Float64');
+  assert.equal(readSample(f64, 0), 1234.5678901234567, 'Float64 不能丢精度');
+});
+
+test('写样点：带的类型与声明的类型对不上时报错，不悄悄截断', () => {
+  const band = newBand('Byte', 2);
+  assert.throws(
+    () => writeSample(band, 0, 3000, 'Int32'),
+    (err) => {
+      assert.match(err.message, /Int32/, '错误信息要带上声明的类型');
+      assert.match(err.message, /Uint8Array|Byte/, '错误信息要带上实际带的类型');
+      return true;
+    },
+  );
+  // 拒绝之后带里的值一个都没动
+  assert.equal(readSample(band, 0), 0, '报错时不能已经写进去一个被截断的值');
 });
 
 test('读样点：两种类型都读得出数值', () => {
@@ -77,11 +151,38 @@ test('钳位：非有限数归零，其余按类型取整并夹在区间内', ()
   assert.equal(clampSample(-0.4, 'Byte'), 0);
 });
 
-test('GDAL 类型：Byte / UInt16 认得，其它类型报错且带上原始类型名', () => {
-  assert.equal(pixelTypeFromGdal('Byte'), 'Byte');
-  assert.equal(pixelTypeFromGdal('UInt16'), 'UInt16');
+test('钳位：负高程不被裁成 0，浮点不被取整', () => {
+  assert.equal(clampSample(-400, 'Int16'), -400, '负高程是合法数据');
+  assert.equal(clampSample(-400, 'Int32'), -400);
+  assert.equal(clampSample(-400, 'Float32'), -400);
+  assert.equal(clampSample(1234.5678, 'Float32'), 1234.5678, '浮点不能取整');
+  assert.equal(clampSample(1234.5678901234567, 'Float64'), 1234.5678901234567);
+});
 
-  for (const bad of ['Int16', 'Float32']) {
+test('浮点判定：只有 Float32 / Float64 是浮点', () => {
+  assert.equal(isFloatingPoint('Float32'), true);
+  assert.equal(isFloatingPoint('Float64'), true);
+  for (const t of ['Byte', 'UInt16', 'Int16', 'UInt32', 'Int32']) {
+    assert.equal(isFloatingPoint(t), false, `${t} 不是浮点`);
+  }
+});
+
+test('GDAL 类型：支持的类型都认得，不支持的报错且带上原始类型名', () => {
+  const supported = {
+    Byte: 'Byte',
+    UInt16: 'UInt16',
+    Int16: 'Int16',
+    UInt32: 'UInt32',
+    Int32: 'Int32',
+    Float32: 'Float32',
+    Float64: 'Float64',
+  };
+  for (const [gdal, expected] of Object.entries(supported)) {
+    assert.equal(pixelTypeFromGdal(gdal), expected, `${gdal} 应当被认出来`);
+  }
+
+  // 复数这类带引擎算不了：必须明确报错，不许默默当 Byte 处理
+  for (const bad of ['CInt16', 'CFloat32', 'Int8']) {
     assert.throws(
       () => pixelTypeFromGdal(bad),
       (err) => {
@@ -102,34 +203,64 @@ test('GDAL 类型：Byte / UInt16 认得，其它类型报错且带上原始类�
 });
 
 test('解码：1 字节直接取值', () => {
-  assert.equal(decodeSample(new Uint8Array([7]), 0, 1, 0), 7);
-  assert.equal(decodeSample(new Uint8Array([0, 0, 200]), 2, 1, 0), 200);
+  assert.equal(decodeSample(viewOf(new Uint8Array([7])), 0, 'Byte', 0), 7);
+  assert.equal(decodeSample(viewOf(new Uint8Array([0, 0, 200])), 2, 'Byte', 0), 200);
 });
 
 test('解码：小端低字节在前', () => {
   // 60000 = 0xEA60
-  assert.equal(decodeSample(new Uint8Array([0x60, 0xea]), 0, 2, 0), 60000);
+  assert.equal(decodeSample(viewOf(new Uint8Array([0x60, 0xea])), 0, 'UInt16', 0), 60000);
 });
 
 test('解码：大端高位在前', () => {
   // 60000 = 0xEA60
-  assert.equal(decodeSample(new Uint8Array([0xea, 0x60]), 0, 2, 1), 60000);
+  assert.equal(decodeSample(viewOf(new Uint8Array([0xea, 0x60])), 0, 'UInt16', 1), 60000);
 });
 
 test('解码：offset 真的生效', () => {
   const bytes = new Uint8Array([0x00, 0x00, 0x60, 0xea]);
-  assert.equal(decodeSample(bytes, 2, 2, 0), 60000, '应从第 3 个字节开始读');
-  assert.equal(decodeSample(bytes, 0, 2, 0), 0, 'offset 必须是起点而不是偏移到别处');
+  assert.equal(decodeSample(viewOf(bytes), 2, 'UInt16', 0), 60000, '应从第 3 个字节开始读');
+  assert.equal(decodeSample(viewOf(bytes), 0, 'UInt16', 0), 0, 'offset 必须是起点而不是偏移到别处');
+});
+
+test('解码：有符号与浮点按各自的解释读，负数不能变成四万多', () => {
+  // -400 的 16 位补码
+  const i16 = new Uint8Array([0x70, 0xfe]);
+  assert.equal(decodeSample(viewOf(i16), 0, 'Int16', 0), -400);
+  // 1234.5 的 float32 小端
+  const f32 = new Uint8Array(4);
+  new DataView(f32.buffer).setFloat32(0, 1234.5, true);
+  assert.equal(decodeSample(viewOf(f32), 0, 'Float32', 0), 1234.5);
+  const f64 = new Uint8Array(8);
+  new DataView(f64.buffer).setFloat64(0, 1234.5678901234567, true);
+  assert.equal(decodeSample(viewOf(f64), 0, 'Float64', 0), 1234.5678901234567);
+});
+
+test('拷贝：按带自己的类型逐元素拷，不截断', () => {
+  const src = Int32Array.from([-400, 8848]);
+  const copy = copyBand(src, 'Int32');
+  assert.ok(copy instanceof Int32Array);
+  assert.deepEqual([...copy], [-400, 8848], '负高程不能在拷贝时被截断');
+
+  const f = Float32Array.from([1.5, -2.25]);
+  const fcopy = copyBand(f, 'Float32');
+  assert.ok(fcopy instanceof Float32Array);
+  assert.deepEqual([...fcopy], [1.5, -2.25], '小数位不能在拷贝时丢掉');
 });
 
 /* ────────── 读侧保真：16 位不被静默压成 255 ────────── */
 
 /**
  * ENVI 头 `data type` 编号 → 样点字节的写法。
- * 1 = Byte、4 = Float32、12 = UInt16。
+ * 1 = Byte、2 = Int16、4 = Float32、12 = UInt16。
  */
 const ENVI_SAMPLE_ENCODERS = {
   1: (v) => [v & 0xff],
+  2: (v) => {
+    const b = Buffer.alloc(2);
+    b.writeInt16LE(v);
+    return [...b];
+  },
   4: (v) => {
     const b = Buffer.alloc(4);
     b.writeFloatLE(v);
@@ -358,39 +489,92 @@ test('不支持的类型：报错并带上类型名，不静默当 Byte 处理',
   const { loc, readRasterPixels, readEnviBands } = await loadRaw();
   const dir = mkdtempSync(join(tmpdir(), 'cartouche-pxbad-'));
   try {
-    // gdalinfo 侧：Float32 源在读之前就该被拦下
-    const tif = join(dir, 'f32.tif');
-    const values = [1.5, 2.5, 3.5, 4.5, 5.5, 6.5];
-    await makeRaster(loc, tif, {
+    // gdalinfo 侧：复数源在读之前就该被拦下
+    // （Int16 / Int32 / Float32 这类已经支持了，所以这里拿真正算不了的复数当例子）
+    const base = join(dir, 'base.tif');
+    await makeRaster(loc, base, {
       width: 3, height: 2, bandCount: 1,
-      bandValues: [values], dataType: 4, interleave: 'bsq',
+      bandValues: [[10, 20, 30, 40, 50, 60]], dataType: 1, interleave: 'bsq',
     });
+    const { tools } = await import(srcEng('gdal/runner.ts'));
+    const tif = join(dir, 'cint16.tif');
+    const tr = await tools(loc).translate(['-of', 'GTiff', '-ot', 'CInt16', base, tif]);
+    assert.ok(tr.ok, `造复数夹具失败：${tr.stderr}`);
     await assert.rejects(
       () => readRasterPixels(loc, tif),
       (err) => {
-        assert.match(err.message, /Float32/, '错误信息要带上原始类型名');
+        assert.match(err.message, /CInt16/, '错误信息要带上原始类型名');
         return true;
       },
     );
 
-    // ENVI 头侧：data type = 4 同样不能被默默当 Byte
+    // ENVI 头侧：data type = 6（Complex）同样不能被默默当 Byte
     const img = join(dir, 'raw.bin');
-    writeFileSync(img, enviBytes({
-      width: 3, height: 2, bandCount: 1,
-      bandValues: [values], dataType: 4, interleave: 'bsq',
-    }));
+    writeFileSync(img, Buffer.alloc(48));
     writeFileSync(
       join(dir, 'raw.hdr'),
-      enviHeaderText({ width: 3, height: 2, bandCount: 1, dataType: 4, interleave: 'bsq' }),
+      enviHeaderText({ width: 3, height: 2, bandCount: 1, dataType: 6, interleave: 'bsq' }),
       'latin1',
     );
     assert.throws(
       () => readEnviBands(img, 3, 2, 1),
       (err) => {
-        assert.match(err.message, /Float32/, '错误信息要带上原始类型名');
+        assert.match(err.message, /Complex/, '错误信息要带上原始类型名');
         return true;
       },
     );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('新支持的类型：读出来保值，写回去类型与数值都不丢', async () => {
+  const { loc, readRasterPixels, writeRasterPixels } = await loadRaw();
+  const dir = mkdtempSync(join(tmpdir(), 'cartouche-pxnew-'));
+  try {
+    // Int16：负高程 + 高位
+    const tif = join(dir, 'i16.tif');
+    const i16 = [-32768, -400, 0, 3000];
+    await makeRaster(loc, tif, {
+      width: 2, height: 2, bandCount: 1,
+      bandValues: [i16], dataType: 2, interleave: 'bsq',
+    });
+    const px = await readRasterPixels(loc, tif);
+    assert.equal(px.pixelType, 'Int16', '读侧必须报出源的类型');
+    assert.ok(px.bands[0] instanceof Int16Array, 'Int16 源必须读成 Int16Array');
+    assert.deepEqual([...px.bands[0]], i16, '负高程不能被裁成 0');
+
+    const out = join(dir, 'i16-out.tif');
+    await writeRasterPixels(loc, out, {
+      width: px.width, height: px.height, bands: px.bands,
+      pixelType: px.pixelType, geotransform: px.geotransform, crs: px.crs,
+    });
+    const bands = await bandInfo(loc, out);
+    assert.equal(bands[0].type, 'Int16', '写出去的 16 位有符号必须还是 Int16');
+    const again = await readRasterPixels(loc, out);
+    assert.deepEqual([...again.bands[0]], i16, '往返后逐个像元都必须相等');
+
+    // Float32：小数位是数据
+    const f32tif = join(dir, 'f32.tif');
+    const f32 = [-9999, 0.5, 1234.5, 3.25];
+    await makeRaster(loc, f32tif, {
+      width: 2, height: 2, bandCount: 1,
+      bandValues: [f32], dataType: 4, interleave: 'bsq',
+    });
+    const fpx = await readRasterPixels(loc, f32tif);
+    assert.equal(fpx.pixelType, 'Float32');
+    assert.ok(fpx.bands[0] instanceof Float32Array, 'Float32 源必须读成 Float32Array');
+    assert.deepEqual([...fpx.bands[0]], f32, '小数位不能丢');
+
+    const fout = join(dir, 'f32-out.tif');
+    await writeRasterPixels(loc, fout, {
+      width: fpx.width, height: fpx.height, bands: fpx.bands,
+      pixelType: fpx.pixelType, geotransform: fpx.geotransform, crs: fpx.crs,
+    });
+    const fbands = await bandInfo(loc, fout);
+    assert.equal(fbands[0].type, 'Float32', '写出去的浮点必须还是 Float32');
+    const fagain = await readRasterPixels(loc, fout);
+    assert.deepEqual([...fagain.bands[0]], f32, '浮点往返后逐个像元都必须相等');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

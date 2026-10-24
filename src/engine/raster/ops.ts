@@ -42,6 +42,7 @@ import {
 import {
   MAX_SAMPLE,
   BYTES_PER_SAMPLE,
+  copyBand,
   pixelTypeFromGdal,
   readSample,
   writeSample,
@@ -1088,10 +1089,11 @@ export class RasterEditor {
         ];
       }
       return px.bands.map((band, b) => {
-        // 复制原值：`Uint8Array.from` 对 16 位带是逐元素截断，65535 会变成 255
-        const out = type === 'UInt16'
-          ? Uint16Array.from(band as Uint16Array)
-          : Uint8Array.from(band as Uint8Array);
+        // 复制原值：必须按**带自己的类型**拷。
+        // `Uint8Array.from` 对 16 位带是逐元素截断（65535 → 255），
+        // 对 32 位与浮点带更糟（负数直接变成天文数字）——
+        // 那正是要消灭的静默数据损坏。
+        const out = copyBand(band, type);
         const value = rgb[Math.min(b, 2)]!;
         for (let y = 0; y < px.height; y++) {
           for (let x = 0; x < px.width; x++) {

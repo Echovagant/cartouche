@@ -7,10 +7,12 @@
  * 这种场景应改用 raster.replaceRegion 从干净底图取像素。
  *
  * 按像素类型算：16 位影像的拷贝与填补都按 0..65535 走，
- * 不会被 `Uint8Array.from` 逐元素截断成 255。
+ * 不会被 `Uint8Array.from` 逐元素截断成 255；
+ * 32 位与浮点带同理（负高程、小数位都不会在拷贝时丢掉）。
  */
 import { isInside, type PixelRegion } from './mask.ts';
 import {
+  copyBand,
   pixelTypeOf,
   writeSample,
   type PixelBand,
@@ -34,9 +36,8 @@ export function inpaintRegion(
     }
     // 同类型逐元素拷贝：`Uint8Array.from(b)` 对 16 位带是**逐元素截断**，
     // 65535 会被写成 255 —— 值被改坏了却看不出来。
-    return type === 'UInt16'
-      ? Uint16Array.from(b as Uint16Array)
-      : Uint8Array.from(b as Uint8Array);
+    // 32 位与浮点带同理（负高程会被写成天文数字），所以按带自己的类型拷。
+    return copyBand(b, type);
   });
   const total = width * height;
 

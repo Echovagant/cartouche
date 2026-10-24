@@ -2,9 +2,11 @@
  * 区域混合：把覆盖图按 alpha 混合到底图上。
  *
  * 按像素类型算：目标带的类型由 `pixelType` 决定（不给就从底图第一条带反推），
- * 取值范围随之变化 —— 16 位影像按 0..65535 混，不会被压成 255。
+ * 取值范围随之变化 —— 16 位影像按 0..65535 混，不会被压成 255；
+ * 32 位与浮点带按各自的类型混（浮点保留小数位，有符号类型保留负高程）。
  */
 import {
+  copyBand,
   newBand,
   pixelTypeOf,
   readSample,
@@ -69,11 +71,4 @@ function assertBandType(band: PixelBand, type: PixelType, role: string): void {
   if (actual !== type) {
     throw new Error(`像素带类型不一致：期望 ${type}，实际 ${actual}（${role}）。`);
   }
-}
-
-/** 同类型逐元素拷贝。`Uint8Array.from` 对 16 位带是逐元素截断，这里必须按带自己的类型拷。 */
-function copyBand(band: PixelBand, type: PixelType): PixelBand {
-  return type === 'UInt16'
-    ? Uint16Array.from(band as Uint16Array)
-    : Uint8Array.from(band as Uint8Array);
 }

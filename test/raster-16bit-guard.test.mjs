@@ -1,14 +1,14 @@
 /**
- * 16 位影像的**两条底线**。
+ * 影像读写的**两条底线**（不止 16 位：32 位与浮点走的是同一套内核）。
  *
- * 16 位读写的内核已经上线（`src/engine/raster/pixels.ts`），
+ * 读写的内核已经上线（`src/engine/raster/pixels.ts`），
  * 所以这个文件锁住两件事：
  *
- *   1. **16 位保值**：UInt16 影像读出来逐个像元与写入时相等，写回去也逐个相等。
+ *   1. **保值**：UInt16 / Int32 / Float32 影像读出来逐个像元与写入时相等，写回去也逐个相等。
  *      曾经的缺陷是 `gdal_translate -ot Byte` 把 0–65535 **饱和**到 0–255 ——
  *      高位数据整段丢失，而文件照样"改成功"，用户拿到的是一张被毁掉的图。
  *      饱和是静默的（退出码 0、stderr 空，实测 GDAL 3.13.3），只能靠断言钉住。
- *   2. **不支持的类型明确拒绝**：Int16 / Int32 / Float32 这类源必须报错，
+ *   2. **不支持的类型明确拒绝**：复数（Complex / CInt16）这类源必须报错，
  *      而且不能给出"请先转成 8 位"这种指引 ——
  *      16 位已经能用了，再劝用户把 16 位降成 8 位，
  *      等于亲手制造我们要消灭的那种数据损坏。
@@ -89,6 +89,29 @@ async function filesOf(dir) {
   return (await readdir(dir)).sort();
 }
 
+/** Int32 样点的裸字节（小端） */
+function int32Bytes(values) {
+  const buf = Buffer.alloc(values.length * 4);
+  for (let i = 0; i < values.length; i++) buf.writeInt32LE(values[i], i * 4);
+  return buf;
+}
+
+/** 一行 n 个样点的 ENVI 头（Int32，小端，bsq） */
+function enviHeader(samples, dataType) {
+  return [
+    'ENVI',
+    `samples = ${samples}`,
+    'lines   = 1',
+    'bands   = 1',
+    'header offset = 0',
+    'file type = ENVI Standard',
+    `data type = ${dataType}`,
+    'interleave = bsq',
+    'byte order = 0',
+    '',
+  ].join('\n');
+}
+
 /* ── 1. 16 位读：逐个保值 ──────────────────────────────── */
 
 test('16 位影像：读出来逐个保值，高位没丢，源文件一个字节都没动', async () => {
@@ -163,17 +186,22 @@ test('16 位影像：写回去再读，逐个像元仍然相等（类型也没�
 
 /* ── 3. 真正不支持的类型：明确报错 ─────────────────────── */
 
-test('不支持的类型（Float32）：明确报错、带上类型名，且不再劝人转成 8 位', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'cartouche-f32-'));
+test('不支持的类型（复数）：明确报错、带上类型名，且不再劝人转成 8 位', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'cartouche-cint16-'));
   try {
-    const tif = await makeRaster(dir, 'f32', 4);
-    const before = await readFile(tif);
+    // 复数带（Complex / CInt16）引擎算不了：必须当场拒绝，不许默默按 8 位处理。
+    // 曾经这里用的是 Float32 —— Float32 现在已经能读能写，
+    // 拿它当"不支持的例子"会让这条用例变成假警报。
+    const tif = await makeRaster(dir, 'u8', 1);
+    const tr = await gdal.translate(['-of', 'GTiff', '-ot', 'CInt16', tif, join(dir, 'cint16.tif')]);
+    assert.ok(tr.ok, `造复数夹具失败：${tr.stderr}`);
+    const before = await readFile(join(dir, 'cint16.tif'));
     const filesBefore = await filesOf(dir);
 
     await assert.rejects(
-      () => readRasterPixels(loc, tif),
+      () => readRasterPixels(loc, join(dir, 'cint16.tif')),
       (err) => {
-        assert.match(err.message, /Float32/, '报错要说清源的类型');
+        assert.match(err.message, /CInt16/, '报错要说清源的类型');
         assert.match(err.message, /只支持/, '报错要点明支持范围');
         // 16 位已经能用了，再劝人转成 8 位就是在制造数据损坏
         assert.doesNotMatch(
@@ -191,8 +219,45 @@ test('不支持的类型（Float32）：明确报错、带上类型名，且不�
     );
 
     // 失败路径不许动源文件，也不许留下产出
-    assert.deepEqual(await readFile(tif), before, '源文件必须一个字节都不动');
+    assert.deepEqual(await readFile(join(dir, 'cint16.tif')), before, '源文件必须一个字节都不动');
     assert.deepEqual(await filesOf(dir), filesBefore, '不该留下任何产出');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+/* ── 4. 32 位与浮点：同样保值（同一套内核） ───────────────── */
+
+test('32 位与浮点影像：读出来逐个保值，写回去类型与数值都不丢', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'cartouche-i32-'));
+  try {
+    // Int32：SRTM 那类高程数据的真实类型（负高程 + 四位数高程）
+    const tif = join(dir, 'i32.tif');
+    await writeFile(join(dir, 'i32.bin'), int32Bytes([-9999, -400, 0, 8848]));
+    await writeFile(
+      join(dir, 'i32.hdr'),
+      enviHeader(4, 3),
+      'utf8',
+    );    await gdal.translate(['-of', 'GTiff', '-ot', 'Int32', join(dir, 'i32.bin'), tif]);
+
+    const px = await readRasterPixels(loc, tif);
+    assert.equal(px.pixelType, 'Int32', '读侧必须报出源的类型');
+    assert.ok(px.bands[0] instanceof Int32Array, 'Int32 源必须读成 Int32Array');
+    assert.deepEqual([...px.bands[0]], [-9999, -400, 0, 8848], '负高程不能被裁成 0');
+
+    const out = join(dir, 'i32-out.tif');
+    await writeRasterPixels(loc, out, {
+      width: px.width,
+      height: px.height,
+      bands: px.bands,
+      pixelType: px.pixelType,
+      colorInterpretation: px.colorInterpretation,
+      geotransform: px.geotransform,
+      crs: px.crs,
+    });
+    const again = await readRasterPixels(loc, out);
+    assert.equal(again.pixelType, 'Int32', '写出去的 32 位必须还是 32 位');
+    assert.deepEqual([...again.bands[0]], [-9999, -400, 0, 8848], '往返后逐个像元都必须相等');
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

@@ -17,7 +17,12 @@
 import { join } from 'node:path';
 import { tools, type GdalTools, type ToolResult } from '../gdal/runner.ts';
 import type { GdalLocation } from '../gdal/env.ts';
-import { MAX_SAMPLE, pixelTypeFromGdal, type PixelType } from '../raster/pixels.ts';
+import {
+  MAX_SAMPLE,
+  MIN_SAMPLE,
+  pixelTypeFromGdal,
+  type PixelType,
+} from '../raster/pixels.ts';
 
 /** [minX, minY, maxX, maxY]，EPSG:4326（经纬度）。
  *  ⚠️ 用的是**通用 bbox 约定**（min/max 序），不是 GDAL 的 ulx/uly/lrx/lry 序。
@@ -226,13 +231,29 @@ const FORMAT_EXTENSION: Readonly<Record<RasterOutputFormat, string>> = {
   GTiff: 'tif',
 };
 
-/** 16 位 → 8 位的**固定全量程**换算：屏幕亮度严格等于文件数值（代价是很暗）。 */
-const FULL_RANGE = Object.freeze(['-scale', '0', String(MAX_SAMPLE.UInt16), '0', '255']);
+/**
+ * 16 位 → 8 位的**固定全量程**换算：屏幕亮度严格等于文件数值（代价是很暗）。
+ *
+ * ⚠️ 降位必须跟 `-scale` 一起给：只给 `-ot Byte` 是**静默饱和**
+ * （65535 被压成 255，退出码 0、stderr 空，实测 GDAL 3.13.3）。
+ */
+const FULL_RANGE_16 = Object.freeze(['-scale', '0', String(MAX_SAMPLE.UInt16), '0', '255']);
+
+/**
+ * 任意类型 → 8 位的固定全量程换算。
+ *
+ * 按该类型的**完整值域**换算（有符号类型的下限是负数，浮点的上下限是类型本身的极限）。
+ * 32 位与浮点这样换出来几乎是全黑 —— 那正是"固定全量程"该有的样子：
+ * 它表示"屏幕亮度严格等于文件数值"，代价就是看不见。
+ */
+function fullRangeOf(type: PixelType): readonly string[] {
+  return ['-scale', String(MIN_SAMPLE[type]), String(MAX_SAMPLE[type]), '0', '255'];
+}
 
 /**
  * 决定用哪一档拉伸。
  *
- * 默认：8 位维持现状（不拉伸），16 位按实际值域拉伸（ArcGIS Pro 的默认行为）。
+ * 默认：8 位维持现状（不拉伸），其余按实际值域拉伸（ArcGIS Pro 的默认行为）。
  * 源类型拿不到时按 8 位处理 —— 那时渲染命令自己会失败，错误消息才是真正有用的那条。
  */
 function resolveStretch(
@@ -247,7 +268,9 @@ function resolveStretch(
     }
     return requested;
   }
-  return pixelType === 'UInt16' ? 'auto' : 'none';
+  // 8 位原样输出就是它的满量程；其余类型（16 位及以上、含 32 位与浮点）
+  // 的满量程远大于人眼能分辨的范围，按实际值域拉伸才对得上画面。
+  return pixelType === null || pixelType === 'Byte' ? 'none' : 'auto';
 }
 
 /**
@@ -372,10 +395,10 @@ export async function renderRasterBytes(
   // 南向的源只有 translate 路会翻转 —— 只拦这一条（warp 路方向是对的）。
   if (!needReproject) assertNorthUpForRender(src.geotransform, options.path);
 
-  // 源类型决定默认档位，也决定 16 位要不要显式降位。
+  // 源类型决定默认档位，也决定要不要显式降位。
   // ⚠️ gdalinfo 本身失败（比如文件不存在）时**不报错**：让渲染命令自己去失败，
   //    错误消息仍是既有的「栅格渲染失败：…」，既有用例依赖这一句。
-  //    但类型**认识**而**不支持**（Int16 / Float32）必须报错 —— 口径与 pixelTypeFromGdal 一致，
+  //    但类型**根本不认识**（Complex / Int64 …）必须报错 —— 口径与 pixelTypeFromGdal 一致，
   //    否则渲染层单独放行会让整个引擎的类型口径分裂。
   const pixelType: PixelType | null = src.bandType === null ? null : pixelTypeFromGdal(src.bandType);
   const keepSourceType = format === 'GTiff';
@@ -390,7 +413,7 @@ export async function renderRasterBytes(
   try {
     /* ── 单条命令：8 位（或类型未知）+ 'none'，以及 GTiff 数据导出 ──
        绝大多数情况走这里：一个字节都不多写。 */
-    if (stretch === 'none' && (pixelType !== 'UInt16' || keepSourceType)) {
+    if (stretch === 'none' && (pixelType === null || pixelType === 'Byte' || keepSourceType)) {
       const args = renderArgs(options, width, height, needReproject, format, out);
       const res = needReproject ? await gdal.warp(args) : await gdal.translate(args);
       const bytes = await readRenderedBytes(res, out, options.path, format);
@@ -403,14 +426,15 @@ export async function renderRasterBytes(
       };
     }
 
-    /* ── 16 位 + 'none'：固定全量程 0~65535 → 0~255（只可能是 PNG/JPEG） ── */
+    /* ── 非 8 位 + 'none'：固定全量程 → 0~255（只可能是 PNG/JPEG） ── */
     if (stretch === 'none') {
       // 不重投影：单条命令即可。-ot Byte 后面**必须**跟 -scale，
-      // 只给 -ot Byte 会把 16 位静默饱和成 255（实测 GDAL 3.13.3）。
+      // 只给 -ot Byte 会把高位静默饱和成 255（实测 GDAL 3.13.3）。
+      const fullRange = pixelType ? fullRangeOf(pixelType) : FULL_RANGE_16;
       if (!needReproject) {
         const args = renderArgs(options, width, height, false, format, out, [
           ...BYTE_OUTPUT,
-          ...FULL_RANGE,
+          ...fullRange,
         ]);
         const res = await gdal.translate(args);
         const bytes = await readRenderedBytes(res, out, options.path, format);
@@ -419,7 +443,7 @@ export async function renderRasterBytes(
       // 重投影：gdalwarp 没有 -scale，只能先落中间瓦片再 translate 出去。
       const tile = join(outDir, 'tile.tif');
       await makeTile(gdal, options, width, height, true, tile);
-      const args = ['-of', format, ...BYTE_OUTPUT, ...FULL_RANGE, tile, out];
+      const args = ['-of', format, ...BYTE_OUTPUT, ...fullRange, tile, out];
       const res = await gdal.translate(args);
       const bytes = await readRenderedBytes(res, out, options.path, format);
       return { bytes, format, width, height, command: ['gdal_translate', ...args] };
@@ -430,12 +454,12 @@ export async function renderRasterBytes(
     await makeTile(gdal, options, width, height, needReproject, tile);
     const { min, max } = await bandStats(gdal, tile);
     // 瓦片是常量图时拉伸没有意义（GDAL 会除以 0），退回「固定全量程」那条规则：
-    // 8 位原样输出、16 位按 0~65535 → 0~255 —— 宁可暗，也不要一张全黑的图。
+    // 8 位原样输出、其余按各自类型的全量程换算 —— 宁可暗，也不要一张全黑的图。
     const scale =
       min === max
-        ? pixelType === 'Byte'
+        ? pixelType === null || pixelType === 'Byte'
           ? []
-          : [...FULL_RANGE]
+          : [...(pixelType ? fullRangeOf(pixelType) : FULL_RANGE_16)]
         : ['-scale', String(min), String(max), '0', '255'];
     const args = ['-of', format, ...BYTE_OUTPUT, ...scale, tile, out];
     const res = await gdal.translate(args);
