@@ -104,11 +104,21 @@ export function parseLayerInfo(stdout: string): LayerInfo {
           if (block.length === 0) continue;
           break;
         }
+        // 字段定义行（"名称: String (80.0)"）也是块尾。
+        //
+        // ⚠️ 这里**不能**只认 ASCII 键名：中文列名不匹配那个规则，
+        // 会被整行吞进 WKT 块 —— 于是这一层变成「零列」，
+        // 而 srsWkt 又非空，引擎还以为这一层有坐标系。
+        // （2026-10-24 实测：无坐标系 + 中文列名的 Shapefile 中招，
+        //   两个探针自相矛盾：probeDataset 说有 2 个字段、crs 不在，
+        //   而 readFeatures 说零列、还有坐标系。）
+        if (/^(.+?):\s+([A-Za-z0-9]+)\s*\(/.test(next)) break;
         if (/^[A-Za-z][A-Za-z ]*:\s/.test(next)) break;
         block.push(next.trim());
       }
       const wkt = block.join(' ').trim();
-      srsWkt = wkt === '' ? null : wkt;
+      // "(unknown)" 是 ogrinfo 对「这一层没有坐标系」的写法，不是真的 WKT
+      srsWkt = wkt === '' || wkt === '(unknown)' ? null : wkt;
       i = j - 1;
       continue;
     }

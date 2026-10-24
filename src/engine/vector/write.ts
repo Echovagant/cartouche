@@ -192,6 +192,29 @@ export async function writeFeatures(
     const producedRel = produced.map((n) => (dirRel ? `${dirRel}/${n}` : n));
     const oldFiles = await existingDataFiles(store, targetRel, format);
 
+    // ── 1.5) 字段数不能比源文件少（**必须在替换之前**查）────────────
+    //
+    // 为什么放在这里：写回后的核对（要素数、坐标系）过了之后，
+    // 字段名对不上只能由调用方发现 —— 那时文件已经被换掉了，
+    // 而调用方只能说「原数据没被改坏」，其实已经改了。
+    //
+    // 实测（2026-10-24，空图层）：0 个要素写回时，中间 GeoJSON 里没有字段定义，
+    // ogr2ogr 造出**零字段、几何类型退化成 Line String** 的空图层，
+    // 要素数核对 0===0 通过、坐标系也没变 —— 于是坏文件被替换掉了。
+    //
+    // 比源文件少列 = 字段定义丢了 = 数据损坏，必须在这里挡住。
+    if (sourceInfo && sourceInfo.fields.length > 0) {
+      const producedInfo = await probeLayer(loc, tempOut);
+      if (producedInfo.fields.length < sourceInfo.fields.length) {
+        throw new VectorError(
+          `写回中止：写出来的文件只有 ${producedInfo.fields.length} 列，原文件有 ${sourceInfo.fields.length} 列 —— 字段定义丢了。` +
+            `原数据一个字节都没动。` +
+            `（这一层没有要素时最容易撞上：写回时没有要素可参照，字段定义会跟着丢。` +
+            `先给它加一条要素再改，或者把这一层单独导出来处理。）`,
+        );
+      }
+    }
+
     // ── 1) 整组备份 ───────────────────────────────────────────────
     const backupRel = `${targetRel}.bak.${options.label ?? timestamp()}`;
     let backupDone = false;
