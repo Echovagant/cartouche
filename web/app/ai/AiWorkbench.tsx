@@ -191,9 +191,19 @@ export default function AiWorkbench() {
     );
   }, [llm.models]);
 
-  const effortLevels = llm.status?.effortLevels ?? ['low', 'medium', 'high', 'xhigh', 'max'];
+  // 思考深度档位由**接入线**给：认这个参数的才有（MiniMax）。
+  // 别家给一份兜底档位等于发一个它不认的参数 —— 整次请求会失败。
+  const effortLevels = llm.status?.effortLevels ?? [];
   const status = llm.status;
   const configured = status?.configured ?? false;
+  const activeProvider = useMemo(
+    () => status?.providers.find((p) => p.id === status.provider) ?? null,
+    [status],
+  );
+  const [endpoint, setEndpoint] = useState('');
+  useEffect(() => {
+    setEndpoint(activeProvider?.baseUrl ?? '');
+  }, [activeProvider?.baseUrl]);
 
   const modelsPayload = llm.models;
   const modelOptions = useMemo(
@@ -204,7 +214,8 @@ export default function AiWorkbench() {
   const submitKey = async (): Promise<void> => {
     const key = apiKey.trim();
     if (!key) return;
-    const res = await llm.setKey(key);
+    // 带上当前接入线：密钥是**按厂商分开存**的，别家的不能被覆盖。
+    const res = await llm.setKey(key, status?.provider);
     // 无论成败，输入框里的内容都不能留着
     setApiKey('');
     if (res.ok) void llm.pullModels();
@@ -506,6 +517,55 @@ export default function AiWorkbench() {
             {status ? SOURCE_TEXT[status.source] : '正在读取引擎状态…'}
           </p>
 
+          {/* 接入线（模型厂商）选择：密钥是用户自带的，不同的人手里是不同的厂商。
+              不给选的话，别人贴自己的 key 只会看到一句「还没配置密钥」。 */}
+          <div className="mt-4 flex flex-col gap-1.5">
+            <label className="text-[12px] text-studio-ink-3" htmlFor="ai-provider">
+              接入线（模型厂商）
+            </label>
+            <select
+              id="ai-provider"
+              value={status?.provider ?? ''}
+              onChange={(e) => void llm.selectProvider(e.target.value)}
+              className="rounded-lg border border-studio-line bg-studio/70 px-2.5 py-1.5 text-[12.5px] text-studio-ink focus:border-accent focus:outline-none"
+            >
+              {(status?.providers ?? []).map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.displayName}
+                  {p.configured ? '（已配置密钥）' : ''}
+                </option>
+              ))}
+            </select>
+            {activeProvider?.note ? (
+              <p className="text-[12px] leading-relaxed text-studio-ink-3">{activeProvider.note}</p>
+            ) : null}
+          </div>
+
+          {activeProvider?.customEndpoint ? (
+            <div className="mt-3 flex flex-col gap-1.5">
+              <label className="text-[12px] text-studio-ink-3" htmlFor="ai-endpoint">
+                端点地址（OpenAI 兼容）
+              </label>
+              <div className="flex flex-wrap items-center gap-2">
+                <TextField
+                  id="ai-endpoint"
+                  value={endpoint}
+                  onChange={(e) => setEndpoint(e.target.value)}
+                  placeholder="https://example.com/v1"
+                  className="min-w-[260px] flex-1"
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+                <ActionButton
+                  onClick={() => void llm.setCustomEndpoint(activeProvider.id, endpoint.trim())}
+                  disabled={!endpoint.trim()}
+                >
+                  保存端点
+                </ActionButton>
+              </div>
+            </div>
+          ) : null}
+
           <div className="mt-4 flex flex-wrap items-center gap-2">
             <TextField
               type="password"
@@ -528,11 +588,21 @@ export default function AiWorkbench() {
               仅本次会话使用
             </ActionButton>
             {configured && status?.source === 'session' ? (
-              <ActionButton onClick={() => void llm.clearKey()} disabled={llm.isBusy('key')}>
+              <ActionButton
+                onClick={() => void llm.clearKey(status?.provider)}
+                disabled={llm.isBusy('key')}
+              >
                 清除
               </ActionButton>
             ) : null}
           </div>
+
+          {status?.hint ? (
+            <div className="mt-3 flex items-start gap-2 rounded-lg border border-amber/40 bg-amber/10 px-3 py-2.5 text-[12px] leading-relaxed text-amber">
+              <WarningCircleIcon size={14} weight="fill" className="mt-px shrink-0" />
+              <span>{status.hint}</span>
+            </div>
+          ) : null}
 
           <ul className="mt-4 space-y-1.5 text-[12px] leading-relaxed text-studio-ink-3">
             <li>· 粘贴的密钥只存在于引擎进程内存里，引擎一关就没了</li>
@@ -574,20 +644,30 @@ export default function AiWorkbench() {
           </p>
 
           <div className="mt-4 flex flex-wrap items-center gap-2">
-            <ActionButton
-              onClick={() => void llm.pullModels()}
-              disabled={!configured || llm.isBusy('models')}
-            >
-              {llm.isBusy('models') ? (
-                <SpinnerGapIcon size={13} className="animate-spin" />
-              ) : (
-                <DownloadSimpleIcon size={13} />
-              )}
-              拉取模型列表
-            </ActionButton>
-            <span className="text-[12px] text-studio-ink-3">
-              {configured ? '' : '先在上一步配置密钥'}
-            </span>
+            {/* 端点明说没有清单接口的，就不给这个按钮 ——
+                发一个必然失败的请求比没有这个按钮更糟。 */}
+            {activeProvider?.modelsSupported === false ? (
+              <span className="text-[12px] text-studio-ink-3">
+                这条接入线没有模型清单接口，请手填模型名。
+              </span>
+            ) : (
+              <>
+                <ActionButton
+                  onClick={() => void llm.pullModels(status?.provider)}
+                  disabled={!configured || llm.isBusy('models')}
+                >
+                  {llm.isBusy('models') ? (
+                    <SpinnerGapIcon size={13} className="animate-spin" />
+                  ) : (
+                    <DownloadSimpleIcon size={13} />
+                  )}
+                  拉取模型列表
+                </ActionButton>
+                <span className="text-[12px] text-studio-ink-3">
+                  {configured ? '' : '先在上一步配置密钥'}
+                </span>
+              </>
+            )}
           </div>
 
           {modelsPayload?.warning ? (
@@ -622,25 +702,30 @@ export default function AiWorkbench() {
               </select>
             </label>
 
-            <label className="flex flex-col gap-1.5 text-[12px] text-studio-ink-3">
-              <span>思考深度</span>
-              <select
-                value={effort}
-                onChange={(e) => setEffort(e.target.value)}
-                className="rounded-lg border border-studio-line bg-studio/70 px-2.5 py-1.5 text-[12.5px] text-studio-ink focus:border-accent focus:outline-none"
-              >
-                {effortLevels.map((lv) => (
-                  <option key={lv} value={lv}>
-                    {lv}
-                  </option>
-                ))}
-              </select>
-            </label>
+            {/* 只有认这个参数的接入线才有这一栏 */}
+            {effortLevels.length > 0 ? (
+              <label className="flex flex-col gap-1.5 text-[12px] text-studio-ink-3">
+                <span>思考深度</span>
+                <select
+                  value={effort}
+                  onChange={(e) => setEffort(e.target.value)}
+                  className="rounded-lg border border-studio-line bg-studio/70 px-2.5 py-1.5 text-[12.5px] text-studio-ink focus:border-accent focus:outline-none"
+                >
+                  {effortLevels.map((lv) => (
+                    <option key={lv} value={lv}>
+                      {lv}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
           </div>
 
-          <p className="mt-3 text-[12px] leading-relaxed text-studio-ink-3">
-            深度思考官方默认开着且关不掉，想省 token 只能调低档位。
-          </p>
+          {effortLevels.length > 0 ? (
+            <p className="mt-3 text-[12px] leading-relaxed text-studio-ink-3">
+              深度思考官方默认开着且关不掉，想省 token 只能调低档位。
+            </p>
+          ) : null}
         </section>
 
         {/* ── 3. 连通性测试 ── */}

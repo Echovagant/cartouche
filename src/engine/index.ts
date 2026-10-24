@@ -137,6 +137,17 @@ export type {
   ModelsOutcome,
 } from './llm/minimax-api.ts';
 
+/* ── 多厂商接入线目录（OpenAI 兼容协议） ── */
+
+export {
+  LLM_PROVIDERS,
+  LLM_FAMILY_LABELS,
+  OpenAiCompatibleProvider,
+  findProvider,
+  detectProviderByKey,
+} from './llm/providers.ts';
+export type { LlmProviderEntry, KeyDetection } from './llm/providers.ts';
+
 /* ── S5：样式转换 / 兼容性报告 / 出图 ── */
 
 export {

@@ -22,7 +22,25 @@ export const ENGINE_BASE = process.env.NEXT_PUBLIC_ENGINE_BASE_URL ?? 'http://12
 /** 密钥来源：none = 还没配；env = 启动脚本注入；session = 这次会话里粘贴的 */
 export type LlmSource = 'none' | 'env' | 'session';
 
-export interface LlmStatus {
+/** 一条接入线（厂商 × 端点）的状态 */
+export interface LlmProviderStatus {
+  readonly id: string;
+  readonly displayName: string;
+  readonly baseUrl: string;
+  /** 这个端点提供不提供模型清单接口 */
+  readonly modelsSupported: boolean;
+  /** 认不认思考深度参数 */
+  readonly effortSupported: boolean;
+  readonly note?: string;
+  /** 这条线当前有没有可用密钥 */
+  readonly configured: boolean;
+  /** 是不是当前选中的那条 */
+  readonly active: boolean;
+  /** 要不要给用户一个"端点地址"输入框 */
+  readonly customEndpoint: boolean;
+}
+
+interface LlmStatus {
   readonly provider: string;
   readonly displayName: string;
   readonly model: string;
@@ -31,6 +49,10 @@ export interface LlmStatus {
   readonly source: LlmSource;
   readonly models: readonly string[];
   readonly effortLevels: readonly string[];
+  /** 全部可选接入线 */
+  readonly providers: readonly LlmProviderStatus[];
+  /** 贴的密钥像是别家的：一句人话提示（不拦） */
+  readonly hint?: string | null;
 }
 
 /**
@@ -194,12 +216,19 @@ export interface LlmApi {
   readonly error: string | null;
   readonly isBusy: (key: string) => boolean;
   readonly refreshStatus: () => Promise<void>;
-  /** 粘贴密钥：只发给本机引擎，引擎留在内存里 */
-  readonly setKey: (apiKey: string) => Promise<LlmResult<LlmStatus>>;
-  /** 清除内存态密钥 */
-  readonly clearKey: () => Promise<LlmResult<LlmStatus>>;
-  /** 实时拉模型清单 */
-  readonly pullModels: () => Promise<LlmResult<LlmModelsPayload>>;
+  /** 粘贴密钥：只发给本机引擎，引擎留在内存里（按接入线分开存） */
+  readonly setKey: (apiKey: string, providerId?: string) => Promise<LlmResult<LlmStatus>>;
+  /** 清除内存态密钥（只清这一条接入线的） */
+  readonly clearKey: (providerId?: string) => Promise<LlmResult<LlmStatus>>;
+  /** 实时拉模型清单（按接入线） */
+  readonly pullModels: (providerId?: string) => Promise<LlmResult<LlmModelsPayload>>;
+  /** 切换接入线（换厂商）：只切不删密钥，每家各存一把 */
+  readonly selectProvider: (providerId: string) => Promise<LlmResult<LlmStatus>>;
+  /** 自定义端点地址（只有「自定义」那条接入线用得上） */
+  readonly setCustomEndpoint: (
+    providerId: string,
+    baseUrl: string,
+  ) => Promise<LlmResult<LlmStatus>>;
   /** 发一句话测连通性 */
   readonly testConnection: (options: {
     readonly prompt: string;
@@ -269,12 +298,12 @@ export function useLlm(): LlmApi {
   }, [run]);
 
   const setKey = useCallback(
-    async (apiKey: string) => {
+    async (apiKey: string, providerId?: string) => {
       const res = await run('key', () =>
         requestJson<LlmStatus>(`${ENGINE_BASE}/api/llm/session-key`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ apiKey }),
+          body: JSON.stringify({ apiKey, ...(providerId ? { providerId } : {}) }),
         }),
       );
       if (res.ok) {
@@ -288,12 +317,12 @@ export function useLlm(): LlmApi {
     [run],
   );
 
-  const clearKey = useCallback(async () => {
+  const clearKey = useCallback(async (providerId?: string) => {
     const res = await run('key', () =>
       requestJson<LlmStatus>(`${ENGINE_BASE}/api/llm/session-key`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ clear: true }),
+        body: JSON.stringify({ clear: true, ...(providerId ? { providerId } : {}) }),
       }),
     );
     if (res.ok) {
@@ -304,11 +333,47 @@ export function useLlm(): LlmApi {
     return res;
   }, [run]);
 
-  const pullModels = useCallback(async () => {
+  const pullModels = useCallback(async (providerId?: string) => {
+    const query = providerId ? `?provider=${encodeURIComponent(providerId)}` : '';
     const res = await run('models', () =>
-      requestJson<LlmModelsPayload>(`${ENGINE_BASE}/api/llm/models`),
+      requestJson<LlmModelsPayload>(`${ENGINE_BASE}/api/llm/models${query}`),
     );
     if (res.ok) setModels(res.data);
+    return res;
+  }, [run]);
+
+  /**
+   * 切换接入线（换厂商）。
+   *
+   * 只切不删密钥：每家各存一把，换回来还能用。
+   * 服务端收到"只有 providerId、没有 apiKey"的请求时，只切当前选中，不动任何密钥。
+   */
+  const selectProvider = useCallback(async (providerId: string) => {
+    const res = await run('key', () =>
+      requestJson<LlmStatus>(`${ENGINE_BASE}/api/llm/session-key`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ providerId }),
+      }),
+    );
+    if (res.ok) {
+      setStatus(res.data);
+      setModels(null);
+      setTestResult(null);
+    }
+    return res;
+  }, [run]);
+
+  /** 自定义端点地址（只有"自定义"那条接入线用得上） */
+  const setCustomEndpoint = useCallback(async (providerId: string, baseUrl: string) => {
+    const res = await run('key', () =>
+      requestJson<LlmStatus>(`${ENGINE_BASE}/api/llm/session-key`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ providerId, baseUrl }),
+      }),
+    );
+    if (res.ok) setStatus(res.data);
     return res;
   }, [run]);
 
@@ -407,6 +472,8 @@ export function useLlm(): LlmApi {
     setKey,
     clearKey,
     pullModels,
+    selectProvider,
+    setCustomEndpoint,
     testConnection,
     plan,
     planFailure,

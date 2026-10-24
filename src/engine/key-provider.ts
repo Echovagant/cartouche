@@ -23,14 +23,24 @@ export type CredentialReader = () => string | null | undefined;
 
 export type LlmProviderId =
   | 'minimax'
+  | 'minimax-cn'
+  | 'minimax-intl'
   | 'deepseek'
   | 'qwen'
   | 'glm'
+  | 'dashscope'
+  | 'dashscope-coding'
+  | 'ark'
+  | 'ark-coding'
+  | 'moonshot'
+  | 'siliconflow'
+  | 'ollama'
   | 'openai'
   | 'anthropic'
   | 'gemini'
   | 'openai-compatible'
-  | 'local';
+  | 'local'
+  | 'custom';
 
 export interface LlmCredentials {
   /** 模型标识，如 MiniMax-M3.1-Flash、gpt-4o-mini、qwen-plus */

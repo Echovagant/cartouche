@@ -43,7 +43,19 @@ import {
   type PlanDocument,
   type PlanExecutionResult,
 } from '@cartouche/engine';
-import { llmStatus, llmModels, llmTest, currentApiKey, scrub, setSessionApiKey } from './llm.ts';
+import {
+  llmStatus,
+  llmModels,
+  llmTest,
+  currentApiKey,
+  currentProviderId,
+  scrub,
+  setActiveProvider,
+  setCustomBaseUrl,
+  setSessionApiKey,
+  detectProviderMismatch,
+} from './llm.ts';
+import { findProvider } from '@cartouche/engine';
 import { buildContextPreview, checkPlanAgainstContract, createPlan } from './llm-plan.ts';
 import { loadRegisteredRoots, registerRoot } from './roots.ts';
 
@@ -494,19 +506,39 @@ export function createEngineServer(): Server {
         try {
           const body = await readBody(req);
           const raw = body.toString('utf8').trim();
-          // 约定：传 JSON {"apiKey":"..."}  设置；传空体或 {"clear":true} 清除
+          // 约定：传 JSON {"providerId":"...","apiKey":"..."} 设置；
+          // 传空体或 {"clear":true} 清除。providerId 省略就是当前选中的那条。
           let key: string | null = null;
+          let providerId = currentProviderId();
           if (raw) {
             try {
-              const parsed = JSON.parse(raw) as { apiKey?: string; clear?: boolean };
+              const parsed = JSON.parse(raw) as {
+                providerId?: string;
+                apiKey?: string;
+                baseUrl?: string;
+                clear?: boolean;
+              };
+              providerId = parsed.providerId?.trim() || providerId;
               key = parsed.clear ? null : (parsed.apiKey?.trim() || null);
+              // 自定义接入线的端点地址跟密钥一起存（换线就换地址）
+              if (parsed.baseUrl !== undefined) setCustomBaseUrl(parsed.baseUrl);
             } catch {
-              json(400, { error: 'bad_request', message: '请求体必须是 JSON：{"apiKey":"..."} 或 {"clear":true}' });
+              json(400, {
+                error: 'bad_request',
+                message: '请求体必须是 JSON：{"providerId":"...","apiKey":"...","baseUrl":"..."} 或 {"clear":true}',
+              });
               return;
             }
           }
-          setSessionApiKey(key);
-          json(200, llmStatus());
+          if (!findProvider(providerId)) {
+            json(400, { error: 'bad_request', message: `未知的接入线：${providerId}` });
+            return;
+          }
+          setActiveProvider(providerId);
+          setSessionApiKey(providerId, key);
+          // 贴的是别家的 key？给一句人话提示（**不拦**——用户可能正打算换厂商）。
+          const hint = key ? detectProviderMismatch(key) : null;
+          json(200, { ...llmStatus(), ...(hint ? { hint } : {}) });
         } catch (err) {
           json(500, { error: 'internal', message: scrub((err as Error).message) });
         }
@@ -518,14 +550,30 @@ export function createEngineServer(): Server {
     if (url.pathname === '/api/llm/models' && req.method === 'GET') {
       void (async () => {
         try {
-          if (!currentApiKey()) {
+          const providerId = url.searchParams.get('provider') ?? currentProviderId();
+          if (!findProvider(providerId)) {
+            json(400, { error: 'bad_request', message: `未知的接入线：${providerId}` });
+            return;
+          }
+          // 端点明说没有清单接口的（如火山方舟 Coding Plan）就别去打扰它：
+          // 返回一句人话，比发一个必然失败的请求强。
+          const entry = findProvider(providerId);
+          if (entry && !entry.modelsSupported) {
+            json(200, {
+              models: entry.fallbackModels ?? [],
+              source: 'fallback',
+              warning: `${entry.displayName} 这条接入线没有模型清单接口，请手填模型名。`,
+            });
+            return;
+          }
+          if (!currentApiKey(providerId)) {
             json(400, {
               error: 'llm_not_configured',
               message: '还没有配置 API Key：先在「密钥来源」里粘贴，或用启动脚本从本机密文注入。',
             });
             return;
           }
-          json(200, await llmModels());
+          json(200, await llmModels(providerId));
         } catch (err) {
           json(502, { error: 'llm_unreachable', message: scrub((err as Error).message) });
         }
@@ -612,6 +660,7 @@ export function createEngineServer(): Server {
             prompt?: string;
             model?: string;
             effort?: string;
+            providerId?: string;
             context?: unknown;
             root?: string;
           };
@@ -621,6 +670,7 @@ export function createEngineServer(): Server {
             prompt: body.prompt ?? '',
             model: body.model,
             effort: body.effort,
+            providerId: body.providerId,
             context,
             root,
             // 闸门②的引擎前置校验：交给引擎自己判（GDAL + 调度器）
