@@ -517,6 +517,16 @@ async function main() {
     entries.push({ name: `${TOP}/src/engine/package.json`, data });
     bump('脚本', data.length);
   }
+  // 服务端的 package.json 同样要带：两件事靠它
+  //   1) 引擎自报版本号就是读它（server/src/app.ts 的 ENGINE_VERSION）——
+  //      不带的话便携包里的引擎会报「0.0.0」，用户以为装错了；
+  //   2) dist/*.js 是 .js，Node 靠最近的 package.json 里的 "type" 判定 ESM——
+  //      不带的话只能靠 Node 的语法自动探测，版本一变就可能失效。
+  {
+    const data = await readFile(join(root, 'server', 'package.json'));
+    entries.push({ name: `${TOP}/server/package.json`, data });
+    bump('脚本', data.length);
+  }
 
   // 2.6 示例数据：给新用户一份能立刻点开的公开教学数据。
   //     放在包根的「示例数据」下，启动时由 scripts/seed-portable-samples.mjs

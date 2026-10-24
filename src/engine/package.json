@@ -1,6 +1,6 @@
 {
   "name": "@cartouche/engine",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "图签 Cartouche 的确定性引擎：数据读写、原子写回、数据体检、规则模板、撤销重做。跨形态复用。",
   "license": "Apache-2.0",
   "type": "module",
