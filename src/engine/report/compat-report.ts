@@ -105,23 +105,53 @@ function describeSidecars(dataset: DatasetInfo): { lines: string[]; arcgisNote: 
   return { lines, arcgisNote };
 }
 
-/** 几何有效性 */
+/** 几何类检查项的名字（写给人看的） */
+const GEOM_CHECK_LABELS: Readonly<Record<string, string>> = {
+  'null-geometry': '空几何',
+  'zero-area': '零面积面',
+  'sharp-angle': '尖角',
+  'geometry-degenerate': '环闭合与方向、零长度线、重复顶点',
+  'geometry-validity': '几何有效性（自相交）',
+  'overlap': '面重叠',
+};
+
+/**
+ * 几何有效性
+ *
+ * **这里最容易骗人**：只列查过的项，读者会把「没列」当成「查过没问题」。
+ * 所以凡是没查成的，必须在这一节里写出来。
+ */
 function describeGeometry(dataset: DatasetInfo, health: HealthReport): { lines: string[]; note: string | null } {
   const lines: string[] = [];
   let note: string | null = null;
   if (dataset.kind === 'vector') {
     const geo = health.findings.filter((f) => f.ruleId.startsWith('V-GEOM'));
+    const coverage = health.coverage ?? [];
+    const geomCov = coverage.filter((c) => c.check in GEOM_CHECK_LABELS);
+    const checked = geomCov.filter((c) => c.status === 'checked').map((c) => GEOM_CHECK_LABELS[c.check]!);
+    const missed = geomCov.filter((c) => c.status === 'skipped' || c.status === 'unsupported');
+
     if (geo.length === 0) {
-      // 只说了查过的，不说没查的 —— 「未发现自相交」会被读成「查过自相交、没问题」，
-      // 而引擎根本没有自相交这一条规则（契约里那几条是「未实现」）。
-      lines.push('- ✅ 未发现空几何、零面积面（自相交、重叠、未闭合环**尚未检查**）');
+      if (checked.length > 0) {
+        lines.push(`- ✅ 已检查且未发现问题：${checked.join('、')}`);
+      } else if (geomCov.length === 0) {
+        // 连覆盖情况都没有（旧数据）——只能说查过的那两项，
+        // 其余明确写"尚未检查"，不能写成"未发现"。
+        lines.push('- ✅ 未发现空几何、零面积面（自相交、重叠、未闭合环**尚未检查**）');
+      }
     } else {
       for (const f of geo) {
         lines.push(`- ⚠️ \`${f.ruleId}\` ${f.title}${f.affectedCount !== undefined ? `（${f.affectedCount} 个要素）` : ''}`);
       }
+      if (checked.length > 0) {
+        lines.push(`- ℹ️ 本次已检查：${checked.join('、')}`);
+      }
       note =
         '几何有问题的要素在 ArcGIS 里**能显示、但做拓扑检查会报错**，做拼接/裁切也可能失败。' +
         '建议在 Pro 里跑一次「检查几何」再交付。';
+    }
+    for (const m of missed) {
+      lines.push(`- ⚠️ **未检查**：${GEOM_CHECK_LABELS[m.check]}${m.reason ? `（${m.reason}）` : ''}`);
     }
   } else {
     const geo = health.findings.filter((f) => f.ruleId.startsWith('R-GEO'));
@@ -132,6 +162,19 @@ function describeGeometry(dataset: DatasetInfo, health: HealthReport): { lines: 
     }
   }
   return { lines, note };
+}
+
+/**
+ * 没执行成功的检查项。
+ *
+ * 这一节是「诚实」的落点：凡是引擎**没查**的项，都在这里点名，
+ * 并写清为什么没查。用户可以据此决定要不要自己再去查一遍。
+ */
+function describeMissedChecks(health: HealthReport): string[] {
+  const coverage = health.coverage ?? [];
+  const missed = coverage.filter((c) => c.status === 'skipped' || c.status === 'unsupported');
+  if (missed.length === 0) return [];
+  return missed.map((c) => `- \`${c.check}\` ${c.reason ?? '未执行（未说明原因）'}`);
 }
 
 /** 本次改动的量化摘要 */
@@ -231,6 +274,7 @@ export function renderCompatReport(input: CompatReportInput): CompatReport {
   }
 
   const blockers = health.blockers;
+  const errors = health.findings.filter((f) => f.severity === 'error');
   const warnings = health.findings.filter((f) => f.severity === 'warn');
   const infos = health.findings.filter((f) => f.severity === 'info');
 
@@ -249,7 +293,16 @@ export function renderCompatReport(input: CompatReportInput): CompatReport {
   md.push(`## 结论`);
   md.push('');
   if (blockers.length === 0) {
-    md.push('- ✅ **未发现阻断问题**。该文件在 ArcGIS Pro 中可以正常打开与使用。');
+    if (errors.length === 0) {
+      md.push('- ✅ **未发现阻断问题**。该文件在 ArcGIS Pro 中可以正常打开与使用。');
+    } else {
+      // 有错误级问题时不能说"可以正常打开与使用" —— 那些错误不影响打开，
+      // 但会让面积、叠加、拓扑操作的结果是错的。
+      md.push(
+        `- ⚠️ **未发现阻断问题，但发现 ${errors.length} 个错误级问题**（见下方明细）。` +
+          '这些问题不影响文件打开，但会让计算结果与拓扑操作出错。',
+      );
+    }
   } else {
     md.push(`- ⛔ **发现 ${blockers.length} 个阻断问题**，建议修复后再交付：`);
     for (const b of blockers) {
@@ -261,6 +314,9 @@ export function renderCompatReport(input: CompatReportInput): CompatReport {
     }
   }
   for (const w of warnings) md.push(`- ⚠️ ${w.title}：${w.detail}`);
+  // error 级也必须出现在结论里 —— 它是"数据是错的但看不出来"那一类，
+  // 只藏在附录里等于没报。
+  for (const e of errors) md.push(`- ❌ ${e.title}：${e.detail}`);
   md.push('');
   // 这一段**始终输出**：没有注意事项时也要明确说"没有"，否则读者会以为漏检了。
   md.push(`**在 ArcGIS 中打开需要注意：**`);
@@ -297,14 +353,26 @@ export function renderCompatReport(input: CompatReportInput): CompatReport {
   for (const l of operations) md.push(l);
   md.push('');
 
-  if (blockers.length > 0 || warnings.length > 0 || infos.length > 0) {
+  const missedChecks = describeMissedChecks(health);
+
+  if (blockers.length > 0 || warnings.length > 0 || infos.length > 0 || errors.length > 0) {
     md.push(`## 附：体检明细`);
     md.push('');
     // blocker 也要进明细：结论里给的是摘要，明细里给的是完整依据与建议。
-    for (const f of [...blockers, ...warnings, ...infos]) {
+    for (const f of [...blockers, ...errors, ...warnings, ...infos]) {
       md.push(`- \`${f.ruleId}\` **[${f.severity}]** ${f.title} —— ${f.detail}`);
       if (f.hint) md.push(`  - 建议：${f.hint}`);
     }
+    md.push('');
+  }
+
+  // 没查成的检查项要点名 —— 这一节是「没查」与「查了没问题」的分界。
+  if (missedChecks.length > 0) {
+    md.push(`## 附：未执行的检查`);
+    md.push('');
+    md.push('以下检查项本次**没有执行**，报告里关于它们的任何沉默都不代表"没问题"：');
+    md.push('');
+    for (const l of missedChecks) md.push(l);
     md.push('');
   }
 

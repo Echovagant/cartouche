@@ -286,7 +286,32 @@ test('dataset.healthCheck：契约外的检查项 → 报错，不静默忽略',
   }
 });
 
-test('dataset.healthCheck：引擎没做的检查项要点名，不能悄悄跳过', async () => {
+test('dataset.healthCheck：没查成的检查项要点名，不能悄悄跳过', async () => {
+  const { dir, store } = await setup();
+  try {
+    // crs-mismatch 已经实现了，但没给参照层 → 只能算「未检查」，
+    // 不能混进 coveredChecks（那等于骗人说"查过、没问题"）。
+    const res = await executePlan({ loc, store }, {
+      op: 'dataset.healthCheck',
+      params: { target: 'dataset://counties.shp', checks: ['crs-present', 'crs-mismatch'] },
+    });
+    assert.equal(res.ok, true, res.results[0]?.error ?? '');
+    const v = res.results[0].value;
+    assert.deepEqual(v.data.coveredChecks, ['crs-present']);
+    assert.deepEqual(v.data.skippedChecks, ['crs-mismatch']);
+    assert.deepEqual(v.data.unsupportedChecks, []);
+    assert.match(v.summary, /crs-mismatch/, '没查的检查项要点名');
+    assert.match(v.summary, /未检查/);
+    // 覆盖情况里必须写清为什么没查
+    const cov = v.data.checkCoverage.find((c) => c.check === 'crs-mismatch');
+    assert.equal(cov.status, 'skipped');
+    assert.match(cov.reason ?? '', /参照层/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('dataset.healthCheck：对栅格不适用的检查项要点名', async () => {
   const { dir, store } = await setup();
   try {
     const res = await executePlan({ loc, store }, {
@@ -296,9 +321,10 @@ test('dataset.healthCheck：引擎没做的检查项要点名，不能悄悄跳�
     assert.equal(res.ok, true, res.results[0]?.error ?? '');
     const v = res.results[0].value;
     assert.deepEqual(v.data.coveredChecks, ['crs-present']);
-    assert.deepEqual(v.data.unsupportedChecks, ['crs-mismatch']);
-    assert.match(v.summary, /crs-mismatch/, '没做的检查项要点名');
-    assert.match(v.summary, /尚未实现/);
+    assert.deepEqual(v.data.notApplicableChecks, ['crs-mismatch']);
+    assert.deepEqual(v.data.unsupportedChecks, []);
+    assert.match(v.summary, /crs-mismatch/, '不适用的检查项要点名');
+    assert.match(v.summary, /不适用/);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
