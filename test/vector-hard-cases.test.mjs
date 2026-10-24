@@ -12,7 +12,9 @@
  */
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile, mkdir } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile, mkdir, readFile, readdir, rename } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -25,6 +27,7 @@ const { tools } = await import(eng('gdal/runner.ts'));
 const { LocalFolderStore } = await import(eng('workspace/index.ts'));
 const { readFeatures, probeLayer } = await import(eng('vector/read.ts'));
 const { runVectorSpatialJoin } = await import(eng('vector/spatial-join.ts'));
+const { runVectorRenameFields } = await import(eng('vector/rename-fields.ts'));
 
 const loc = resolveGdal();
 const gdal = tools(loc);
@@ -165,3 +168,117 @@ test('跨坐标系的两个图层做空间连接：必须明确拒绝，不能�
     '必须说清是坐标系的问题，并给出怎么改',
   );
 });
+
+/* ── 无坐标系 + 中文列名：不能被读成「零列」 ─────────────────────── */
+
+test('无坐标系 + 中文列名的 Shapefile：列名要读得出来，坐标系要认成「没有」', async () => {
+  if (!loc) return;
+  const src = join(dir, 'src3');
+  await mkdir(src, { recursive: true });
+  const srcFile = join(src, '中文列名.geojson');
+  await writeFile(
+    srcFile,
+    JSON.stringify(
+      geojson(
+        [
+          { 名称: '甲', 编号: 1 },
+          { 名称: '乙', 编号: 2 },
+        ],
+        (i) => [116.3 + i * 0.01, 39.95 + i * 0.01],
+      ),
+    ),
+    'utf8',
+  );
+  const shp = join(dir, '中文列名.shp');
+  // 不给 -a_srs：这一层**没有**坐标系
+  const conv = await gdal.ogr2ogr(['-f', 'ESRI Shapefile', '-lco', 'ENCODING=UTF-8', shp, srcFile]);
+  assert.ok(conv.ok, `造图层失败：${conv.stderr}`);
+  // GeoJSON 驱动会按 RFC 7946 自动补 WGS84 —— 要造「没有坐标系」这一层，
+  // 得把 .prj 删掉（这正是甲方数据里常见的那种情况）
+  await rm(join(dir, '中文列名.prj'), { force: true });
+
+  const info = await probeLayer(loc, shp);
+  assert.deepEqual(info.fields.map((f) => f.name), ['名称', '编号'], '中文列名要读得出来');
+  assert.equal(info.srsWkt, null, '没有坐标系要认成 null（不是一串乱码）');
+  assert.equal(info.epsg, null);
+
+  const res = await readFeatures(loc, { path: shp });
+  assert.equal(res.featureCount, 2);
+  assert.deepEqual(res.fields, ['名称', '编号']);
+});
+
+/* ── 空图层写回：不能把字段定义写丢 ─────────────────────────────── */
+
+test('空图层写回：字段定义不能丢，原文件必须一个字节都没动', async () => {
+  if (!loc) return;
+  const src = join(dir, 'src4');
+  await mkdir(src, { recursive: true });
+  const emptyFile = join(src, '空层.geojson');
+  // 有属性表但**一条要素都没有**
+  await writeFile(
+    emptyFile,
+    JSON.stringify({ type: 'FeatureCollection', features: [] }),
+    'utf8',
+  );
+  const shp = join(dir, '空层.shp');
+  // 先造一个带字段的空图层：写一个要素进去，再把要素删掉（字段定义留着）
+  const seeded = join(src, '带要素.geojson');
+  await writeFile(
+    seeded,
+    JSON.stringify(
+      geojson(
+        [
+          { 名称: '甲', 编号: 1, 面积: 10 },
+        ],
+        () => [116.3, 39.95],
+      ),
+    ),
+    'utf8',
+  );
+  const c1 = await gdal.ogr2ogr(['-f', 'ESRI Shapefile', '-lco', 'ENCODING=UTF-8', shp, seeded]);
+  assert.ok(c1.ok, `造带要素图层失败：${c1.stderr}`);
+  // 用 ogr2ogr 造一个「有字段定义、零要素」的图层：
+  // -where 1=0 把要素全滤掉，但列的定义照抄（写到另一个文件再换名）
+  const emptied = join(dir, '空层2.shp');
+  const c2 = await gdal.ogr2ogr([
+    '-f', 'ESRI Shapefile', '-lco', 'ENCODING=UTF-8', '-where', '1=0', emptied, shp,
+  ]);
+  assert.ok(c2.ok, `清空要素失败：${c2.stderr}`);
+  // 换回原名（Shapefile 的伴随文件靠同名被认出来）
+  for (const suffix of ['.shp', '.shx', '.dbf', '.prj', '.cpg']) {
+    const from = join(dir, `空层2${suffix}`);
+    const to = join(dir, `空层${suffix}`);
+    if (existsSync(from)) await rename(from, to);
+  }
+
+  const before = await probeLayer(loc, shp);
+  assert.equal(before.featureCount, 0, '前提：这一层没有要素');
+  assert.equal(before.fields.length, 3, '前提：字段定义还在');
+
+  const hashBefore = await hashDir(dir, '空层');
+
+  await assert.rejects(
+    () =>
+      runVectorRenameFields(
+        { target: 'dataset://空层.shp', mapping: { 名称: '新名称' } },
+        { loc, store },
+        false,
+      ),
+    /字段定义丢了|没有要素/,
+    '必须说清是「写出去的文件会丢字段」，而不是别的',
+  );
+
+  const hashAfter = await hashDir(dir, '空层');
+  assert.equal(hashAfter, hashBefore, '原数据必须一个字节都没动');
+});
+
+/** 把某个文件及同名伴随文件的内容摘要拼起来（用来比对「一个字节都没动」） */
+async function hashDir(base, stem) {
+  const names = (await readdir(base)).filter((n) => n.startsWith(stem)).sort();
+  const h = createHash('sha256');
+  for (const n of names) {
+    h.update(n);
+    h.update(await readFile(join(base, n)));
+  }
+  return h.digest('hex');
+}
