@@ -79,3 +79,23 @@ export function makeTempDir(targetPath: string, prefix = '.cartouche-tmp-'): str
     return mkdtempSync(join(tmpdir(), prefix));
   }
 }
+
+/**
+ * GeoPackage 底层的 SQLite 伴随文件后缀。
+ *
+ * 为什么要单独记：GPKG 看着是"一个文件"，其实旁边还可能跟着
+ * -wal（预写日志）/ -shm（共享内存索引）/ -journal（回滚日志）。
+ *
+ * 命名规则是**紧跟在完整文件名后面**（`数据.gpkg-wal`，不是 `数据-wal`）。
+ *
+ * 这几个文件不是可有可无的附属品：
+ *  - 只备份主库会**丢数据**：-wal 里可能有还没并回主库的事务（实测）；
+ *  - 新主库旁边留着**旧的** -wal，文件会直接读不出来（实测：
+ *    malformed database schema ... table already exists）。
+ */
+export const GPKG_SIDECAR_SUFFIXES: readonly string[] = ['-wal', '-shm', '-journal'];
+
+/** 某个 GeoPackage 文件旁边的伴随文件（工作区相对路径）。 */
+export function gpkgSidecarPaths(targetRel: string): string[] {
+  return GPKG_SIDECAR_SUFFIXES.map((suffix) => `${targetRel}${suffix}`);
+}

@@ -90,15 +90,30 @@ export interface ReadFeaturesResult {
   readonly otherLayerNames: readonly string[];
 }
 
-/** 写回支持的两种格式。 */
-export type VectorWriteFormat = 'shapefile' | 'geojson';
+/**
+ * 写回支持的三种格式。
+ *
+ * - shapefile：一套文件（.shp/.shx/.dbf/.prj/.cpg）
+ * - geojson：单个文件
+ * - gpkg：GeoPackage —— **一个文件里的多个图层**（底层是 SQLite）
+ */
+export type VectorWriteFormat = 'shapefile' | 'geojson' | 'gpkg';
 
 export interface WriteFeaturesOptions {
   /** 目标文件（工作区相对路径）；绝对路径与 .. 会被路径闸门挡掉 */
   readonly target: string;
   readonly features: readonly FeatureRecord[];
-  /** 不给就按扩展名判断（.shp / .geojson） */
+  /** 不给就按扩展名判断（.shp / .geojson / .gpkg） */
   readonly format?: VectorWriteFormat;
+  /**
+   * 写回 GeoPackage 的**哪一层**。
+   *
+   * 不给就写文件里的第一个图层 —— 与读路径（read.ts 的 `readFeatures`）默认读的是同一层，
+   * 这样"读出来改一改再写回去"才落回原处。
+   *
+   * 只对 GeoPackage 有意义：Shapefile/GeoJSON 只有一个图层。
+   */
+  readonly layerName?: string;
   /** 备份目录名里的标签，默认取时间戳 */
   readonly label?: string;
   /**
@@ -131,6 +146,13 @@ export interface WriteFeaturesResult {
   readonly fieldNames: readonly string[];
   /** 写进去的要素数 */
   readonly featureCount: number;
+  /**
+   * 写的是哪个图层。
+   *
+   * Shapefile/GeoJSON 只有一个图层，这里给的是它的名字（一般是文件名去扩展名）；
+   * GeoPackage 一个文件里有多个图层，这里给的是**实际被替换的那一层**。
+   */
+  readonly layerName: string;
 }
 
 /** 矢量读写过程中出的错。带上原始输出，便于定位是 GDAL 哪一步失败。 */
