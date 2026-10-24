@@ -31,6 +31,7 @@ import { ThemeToggle } from '../canvas/ThemeToggle';
 import ConfirmCard from '../canvas/ConfirmCard';
 import type { EditOp, OpPreview } from '../canvas/types';
 import PlanGate, { type PlanGatePreview } from './PlanGate';
+import ValueTable from './ValueTable';
 import { opLabel } from './opLabels';
 import {
   describeExecuteFailure,
@@ -74,6 +75,13 @@ interface ExecResultPayload {
     readonly value?: {
       readonly kind?: string;
       readonly summary?: string;
+      /**
+       * 值型 op 的结构化结果。
+       *
+       * 汇总统计（feature.summarize）的正身就是这里的一张表 ——
+       * 只显示一句话等于什么都没告诉用户，所以要能渲染出来。
+       */
+      readonly data?: unknown;
     };
     readonly error?: string;
   }[];
@@ -957,6 +965,9 @@ export default function AiWorkbench() {
                           ) : null}
                           {result.ok && result.value?.summary ? (
                             <span className="mt-1 block text-studio-ink-2">{result.value.summary}</span>
+                          ) : null}
+                          {result.ok && result.value?.data ? (
+                            <ValueTable data={result.value.data} />
                           ) : null}
                           {failure ? (
                             <span className="mt-1 block text-studio-ink-2">

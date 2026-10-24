@@ -810,6 +810,7 @@ export default function CanvasWorkbench() {
       <ProjectPicker
         recent={projects.recent}
         error={banner ?? projects.error}
+        engineOffline={engine.health.status === 'offline'}
         busy={projectBusy}
         onOpenExisting={(p) => {
           void openProject(p);

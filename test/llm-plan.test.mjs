@@ -219,23 +219,22 @@ test('op 清单：引擎实现了的矢量 op 必须看得见（2026-10-24 补�
   assert.ok(addField?.params, '参数契约要一起给模型');
 });
 
-test('op 清单：故意不放行的 op 不进清单（feature.* 已实现，但删要素风险高）', () => {
+test('op 清单：feature.* 只放行只读的那个（汇总），删与改不给 AI', () => {
   // 用**生产真源**（引擎注册表）来断言，而不是自己编一份名单：
-  // 清单只放行 raster.* 与 vector.* 两个前缀，而注册表里只有真能跑的 op，
-  // 两边一交叉就既不会漏（已实现的看得见），也不会多（没实现的看不见）。
+  // 清单按前缀放行 raster.* 与 vector.*，另有一个逐个放行的只读 op。
   const implemented = implementedOps();
-  assert.ok(implemented.includes('feature.delete'), 'feature.delete 已实现，在注册表里');
-  const catalog = opCatalog(readOpsSchema(), implemented);
+  assert.ok(implemented.includes('feature.summarize'), 'feature.summarize 已实现');
+  assert.ok(implemented.includes('feature.delete'), 'feature.delete 已实现');
+  const names = opCatalog(readOpsSchema(), implemented).map((c) => c.op);
+  assert.ok(names.includes('feature.summarize'), '汇总是纯读操作，要放行给 AI');
+  assert.ok(!names.includes('feature.delete'), '删要素风险高，不给 AI');
+  assert.ok(!names.includes('feature.setAttributes'), '批量改属性暂不给 AI');
   assert.ok(
-    !catalog.some((c) => c.op.startsWith('feature.')),
-    'feature.* 故意不给 AI：让模型从一句模糊的话里推出"删要素"风险太高',
-  );
-  assert.ok(
-    catalog.some((c) => c.op.startsWith('vector.')),
+    names.some((n) => n.startsWith('vector.')),
     '已实现的 vector.* 要进清单',
   );
   assert.ok(
-    catalog.some((c) => c.op.startsWith('raster.')),
+    names.some((n) => n.startsWith('raster.')),
     '已实现的 raster.* 要进清单',
   );
 });

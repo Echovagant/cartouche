@@ -29,6 +29,13 @@ export interface ProjectPickerProps {
   onCreateFromFolder: (path: string) => void;
   /** 出错时的提示（引擎不可达、路径不存在、清单损坏……） */
   error?: string | null;
+  /**
+   * 引擎连不上（画布要连本机 127.0.0.1:8787）。
+   *
+   * 连不上时要说清「这是本机工具、引擎没开」，
+   * 而不是让人对着「无法连接引擎服务」自己猜。
+   */
+  engineOffline?: boolean;
   /** 正在请求中：按钮置灰，避免重复点 */
   busy?: boolean;
 }
@@ -47,6 +54,7 @@ export default function ProjectPicker({
   onOpenExisting,
   onCreateFromFolder,
   error = null,
+  engineOffline = false,
   busy = false,
 }: ProjectPickerProps) {
   const [manual, setManual] = useState('');
@@ -74,6 +82,25 @@ export default function ProjectPicker({
           <code className="rounded bg-paper-deep px-1 font-mono">.cartouche</code>
           存清单、产出物与留痕；<strong className="text-ink">源数据不用搬家</strong>。
         </p>
+
+        {/*
+          这一屏是陌生人打开官网画布页时**第一眼**看到的东西，而画布要连
+          本机引擎（127.0.0.1:8787）。不写清楚的话，他一点「打开」就得到
+          一句「无法连接引擎服务」—— 那是一条死路，而这里本该一眼说清。
+          只在引擎连不上时才出现（engineOffline），连得上就不打扰他。
+        */}
+        {engineOffline ? (
+          <div className="mt-5 rounded-lg border border-warn/35 bg-warn-soft px-3.5 py-3 text-[12.5px] leading-relaxed text-warn">
+            <strong className="font-medium">这是本机工具的在线预览</strong>
+            <div className="mt-1">
+              画布要连你电脑上的引擎服务（
+              <code className="rounded bg-paper-deep px-1 font-mono">127.0.0.1:8787</code>
+              ），现在没连上。启动它再回来：在仓库根目录跑
+              <code className="mx-1 rounded bg-paper-deep px-1 font-mono">npm run dev:server</code>
+              （或 Windows 上双击 <code className="rounded bg-paper-deep px-1 font-mono">scripts\start.cmd</code>）。
+            </div>
+          </div>
+        ) : null}
 
         {error ? (
           <div className="mt-5 rounded-lg border border-warn/35 bg-warn-soft px-3.5 py-2.5 text-[12.5px] leading-relaxed text-warn">
