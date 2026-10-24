@@ -25,6 +25,7 @@ export type PlanFailureKind =
   | 'network'
   | 'bad_plan'
   | 'unsupported'
+  | 'clarification'
   | 'unknown';
 
 export interface PlanFailure {
@@ -97,6 +98,8 @@ export function classifyPlanFailure(payload: PlanFailurePayload): PlanFailure {
       return { kind: 'bad_plan', message, code };
     case 'op_not_supported':
       return { kind: 'unsupported', message, code };
+    case 'plan_needs_clarification':
+      return { kind: 'clarification', message, code };
     default:
       if (code === 1004 || /authorized_error|invalid api key/i.test(message)) {
         return { kind: 'key', message, code };
@@ -142,6 +145,14 @@ export function describePlanFailure(failure: PlanFailure): HumanFailure {
         title: '这个操作引擎还没做',
         detail: reason || '模型提了一件事，但引擎目前实现不了。',
         next: '换一件引擎支持的操作，或等这一项做完再来。',
+      };
+    case 'clarification':
+      // 模型说得清缺什么，就把它的原话摆出来 —— 用户要的是「那我该补什么」，
+      // 不是一句「计划不合规矩」。
+      return {
+        title: '模型需要你补充一句',
+        detail: reason || '模型没能确定你要改的是哪一个，所以没有动手。',
+        next: '把要改的东西点名写出来（例：把 NAME 字段改名叫「名称」、把 districts 图层重投影到 EPSG:32650），再点一次提议。',
       };
     default:
       return {

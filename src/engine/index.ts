@@ -121,6 +121,7 @@ export type {
 export {
   listModelIds,
   chatOnce,
+  MINIMAX_MAX_TOKENS,
   extractErrorMessage,
   parseModelIds,
   parseChatReply,

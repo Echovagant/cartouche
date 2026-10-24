@@ -49,11 +49,11 @@ const model = (process.env.MINIMAX_MODEL ?? '').trim() || undefined;
 /** 跑几遍 —— 推理型模型的输出长度有波动，单次不算数 */
 const RUNS = Number(process.env.VERIFY_RUNS ?? 10);
 
-const { listModelIds, MINIMAX_MODELS } = await import(
+const { listModelIds } = await import(
   pathToFileURL(join(root, 'src', 'engine', 'llm', 'minimax-api.ts')).href
 );
-// 端点常量在 key-provider.ts 里（minimax-api.ts 不导它）——别凭记忆写路径。
-const { MINIMAX_CN_BASE_URL } = await import(
+// MINIMAX_MODELS 在 key-provider.ts（不在 minimax-api.ts）——别凭记忆写路径
+const { MINIMAX_MODELS, MINIMAX_CN_BASE_URL } = await import(
   pathToFileURL(join(root, 'src', 'engine', 'key-provider.ts')).href
 );
 const { createPlan } = await import(
@@ -70,7 +70,11 @@ const PROMPTS = [
   { text: '给要素加一列叫「面积」的字段', want: 'vector.addField' },
   { text: '按类型汇总面积和人口', want: 'feature.summarize' },
   { text: '把图层重投影到 EPSG:32650', want: 'vector.reproject' },
-  { text: '把这一列改名叫「更新编号」', want: 'vector.renameFields' },
+  { text: '把 NAME 字段改名叫「名称」', want: 'vector.renameFields' },
+  // 歧义输入：模型**不该猜**。提示词教它的做法是 ops 写空数组、在 intent 里说明缺什么，
+  // 这一条单独统计成「澄清率」，不能混进意图命中率 —— 混进去会把
+  // 「模型不乱猜」记成「模型没听懂」，两回事。
+  { text: '把这一列改名叫「更新编号」', want: 'clarify' },
 ];
 
 const ok = (s) => `\x1b[32m${s}\x1b[0m`;
@@ -88,7 +92,8 @@ console.log(`\n【1】拉模型清单`);
 let pulled = [];
 try {
   const res = await listModelIds({ apiKey, baseUrl: baseUrl ?? MINIMAX_CN_BASE_URL });
-  pulled = res.models;
+  // listModelIds 返回的是**模型 id 数组**，不是一个带 models 字段的对象
+  pulled = [...res];
   console.log(`  ${ok('✓')} 实时拉到 ${pulled.length} 个：${pulled.join('、')}`);
   const offline = MINIMAX_MODELS;
   const missing = pulled.filter((m) => !offline.includes(m));
@@ -140,6 +145,7 @@ for (const p of PROMPTS) {
   let wantCount = 0;
   let unknownOp = 0;
   let rejected = 0;
+  let clarifyCount = 0;
   const ops = new Set();
   const times = [];
   let firstError = null;
@@ -156,6 +162,7 @@ for (const p of PROMPTS) {
       if (!res.ok) {
         // 闸门拒了：这也算"有结论"，但要记下原因
         if (res.error === 'op_not_supported') rejected += 1;
+        else if (res.error === 'plan_needs_clarification') clarifyCount += 1;
         else if (res.error === 'plan_not_json' || res.error === 'plan_schema_invalid') emptyCount += 1;
         if (!firstError) firstError = `${res.error ?? '?'}: ${res.message ?? ''}`;
         continue;
@@ -178,9 +185,13 @@ for (const p of PROMPTS) {
   const max = times.length ? Math.max(...times) : 0;
   const min = times.length ? Math.min(...times) : 0;
 
+  const expectLabel =
+    p.want === 'clarify'
+      ? `　其中模型拒绝乱猜并说清缺什么 ${clarifyCount}/${RUNS}`
+      : `　其中命中期望 op「${p.want}」 ${wantCount}/${RUNS}`;
   const line =
     `  ${p.text}\n` +
-    `    提议成功 ${okCount}/${RUNS}　其中命中期望 op「${p.want}」 ${wantCount}/${RUNS}` +
+    `    提议成功 ${okCount}/${RUNS}${expectLabel}` +
     `　未实现 op ${unknownOp}　被闸门拒 ${rejected}　解析失败/空 ${emptyCount}\n` +
     `    出现的 op：${ops.size ? [...ops].join('、') : '（无）'}\n` +
     `    耗时 ${min}~${max} ms（均 ${avg}）` +
@@ -195,6 +206,7 @@ for (const p of PROMPTS) {
     wantHits: wantCount,
     unknownOp,
     rejected,
+    clarify: clarifyCount,
     empty: emptyCount,
     ops: [...ops],
     minMs: min,
@@ -264,15 +276,28 @@ let totalRuns = 0;
 let totalOk = 0;
 let totalWant = 0;
 let totalEmpty = 0;
+let clarifyRuns = 0;
+let clarifyHits = 0;
 for (const r of report) {
   totalRuns += r.runs;
   totalOk += r.ok;
-  totalWant += r.wantHits;
   totalEmpty += r.empty;
+  if (r.want === 'clarify') {
+    clarifyRuns += r.runs;
+    clarifyHits += r.clarify;
+  } else {
+    totalWant += r.wantHits;
+  }
 }
+const intentRuns = totalRuns - clarifyRuns;
 console.log(`  总提议 ${totalRuns} 次，成功 ${totalOk} 次，命中期望 op ${totalWant} 次，解析失败/空正文 ${totalEmpty} 次`);
+console.log(
+  `  意图命中率（说清要哪个 op，模型就给了哪个）：${intentRuns > 0 ? ((totalWant / intentRuns) * 100).toFixed(1) : '0'}%（分母 ${intentRuns} 次明确意图的提议）`,
+);
+console.log(
+  `  歧义澄清率（信息不足时模型拒绝乱猜并说清缺什么）：${clarifyRuns > 0 ? ((clarifyHits / clarifyRuns) * 100).toFixed(1) : '0'}%（分母 ${clarifyRuns} 次）`,
+);
 console.log(`  空正文率：${totalRuns > 0 ? ((totalEmpty / totalRuns) * 100).toFixed(1) : '0'}%`);
-console.log(`  意图命中率（说清要哪个 op，模型就给了哪个）：${totalRuns > 0 ? ((totalWant / totalRuns) * 100).toFixed(1) : '0'}%`);
 console.log(`\n  注：空正文率必须是 0 才算稳；单次成功不算数（所以上面每条跑了 ${RUNS} 遍）。`);
 console.log(`  密钥自始至终没有出现在这份输出里。\n`);
 

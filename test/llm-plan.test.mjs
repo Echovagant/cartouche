@@ -480,6 +480,47 @@ test('端到端（假模型）：计划不合法 → 说清是哪一条，不假
   assert.match(res.message ?? '', /不符合操作契约/);
 });
 
+test('端到端（假模型）：模型回空计划 + 说明缺什么 → 判成「请你补充」，不是「计划不合法」', async () => {
+  const res = await createPlan({
+    prompt: '把这一列改名叫「更新编号」',
+    model: 'MiniMax-M3.1-Flash',
+    context: RAW_CONTEXT,
+    // 提示词铁律②教的就是这个形状：ops 写空数组、在 intent 里说明缺什么。
+    // 契约要求 ops 至少一条，不接住它就会变成「计划里一条操作都没有」。
+    fetchImpl: fakeChat(
+      JSON.stringify({
+        version: '1.0',
+        intent: '当前上下文未指明「这一列」对应的旧字段名',
+        ops: [],
+      }),
+    ),
+  });
+
+  assert.equal(res.ok, false);
+  assert.equal(res.error, 'plan_needs_clarification');
+  assert.match(res.message ?? '', /未指明/, '要把模型自己给的原因带回来');
+  assert.deepEqual(res.schemaIssues, [], '这不是契约问题，不该挂一堆 schema 问题');
+});
+
+test('端到端（假模型）：空计划但明说「尚未支持」→ 判成引擎做不了', async () => {
+  const res = await createPlan({
+    prompt: '新建一个要素',
+    model: 'MiniMax-M3.1-Flash',
+    context: RAW_CONTEXT,
+    fetchImpl: fakeChat(
+      JSON.stringify({
+        version: '1.0',
+        intent: '该操作尚未支持',
+        ops: [],
+      }),
+    ),
+  });
+
+  assert.equal(res.ok, false);
+  assert.equal(res.error, 'op_not_supported');
+  assert.match(res.message ?? '', /尚未支持/);
+});
+
 test('端到端（假模型）：请求了还没做的 op → 明确说「该操作尚未支持」', async () => {
   const res = await createPlan({
     prompt: '新建一个要素',

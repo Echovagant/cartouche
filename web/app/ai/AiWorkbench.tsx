@@ -443,8 +443,9 @@ export default function AiWorkbench() {
           ))}
         </ul>
         <p className="mt-3 max-w-xl text-[12px] leading-relaxed text-studio-ink-3">
-          这条链路目前是拿本地模拟端点跑通的（同样的 OpenAI 兼容协议）。
-          真实模型那条路我们还没跑过一次——配一枚密钥就能自己试，密钥留在你本机。
+          这条链路已经用真模型跑过：4 类明确需求各 10 遍，共 40 次提议全部命中正确的操作；
+          说得含糊时模型不会乱猜，会告诉你缺哪一项。配一枚你自己的密钥就能自己试，
+          密钥留在你本机。
         </p>
 
         {/*

@@ -36,13 +36,17 @@ function assertHuman(text, label) {
 
 /* ── 分类 ────────────────────────────────────────────────────── */
 
-test('六类失败各自归到自己的类，不串', () => {
+test('七类失败各自归到自己的类，不串', () => {
   assert.equal(classifyPlanFailure({ error: 'llm_not_configured', message: 'x', code: null }).kind, 'not_configured');
   assert.equal(classifyPlanFailure({ error: 'llm_unauthorized', message: 'x', code: 1004 }).kind, 'key');
   assert.equal(classifyPlanFailure({ error: 'llm_unreachable', message: 'x', code: null }).kind, 'network');
   assert.equal(classifyPlanFailure({ error: 'plan_schema_invalid', message: 'x', code: null }).kind, 'bad_plan');
   assert.equal(classifyPlanFailure({ error: 'plan_not_json', message: 'x', code: null }).kind, 'bad_plan');
   assert.equal(classifyPlanFailure({ error: 'op_not_supported', message: 'x', code: null }).kind, 'unsupported');
+  assert.equal(
+    classifyPlanFailure({ error: 'plan_needs_clarification', message: 'x', code: null }).kind,
+    'clarification',
+  );
 });
 
 test('官方把密钥无效报成 1004 时，即使类别没对上也要认成密钥问题', () => {
@@ -57,7 +61,7 @@ test('官方把密钥无效报成 1004 时，即使类别没对上也要认成�
 /* ── 文案 ────────────────────────────────────────────────────── */
 
 test('提议层每一类失败都给出结论、原因和下一步', () => {
-  const kinds = ['not_configured', 'key', 'network', 'bad_plan', 'unsupported', 'unknown'];
+  const kinds = ['not_configured', 'key', 'network', 'bad_plan', 'unsupported', 'clarification', 'unknown'];
   for (const kind of kinds) {
     const failure = { kind, message: '引擎给的原始原因', code: null };
     const human = describePlanFailure(failure);
@@ -83,6 +87,19 @@ test('「还没配密钥」说清去哪儿配，「连不上」说清查网络 �
   assert.ok(/密钥|Key/.test(notConfigured.next), notConfigured.next);
   assert.ok(/网络|代理|接入点|出网/.test(network.next), network.next);
   assert.notEqual(notConfigured.next, network.next);
+});
+
+test('模型要用户补充信息时，把模型自己的话摆出来，并教用户怎么补', () => {
+  const human = describePlanFailure({
+    kind: 'clarification',
+    message: '当前上下文未指明「这一列」对应的旧字段名',
+    code: null,
+  });
+  assert.ok(/补充/.test(human.title), human.title);
+  assert.ok(human.detail.includes('未指明'), '要把模型给的原因原样摆出来：' + human.detail);
+  assert.ok(/点名|写出来/.test(human.next), human.next);
+  // 不能说成「计划不合规矩」—— 那等于把模型的话丢掉，用户还是不知道该补什么
+  assert.ok(!/不合规矩/.test(human.title), human.title);
 });
 
 test('预演失败说清是哪一条、为什么、怎么办', () => {

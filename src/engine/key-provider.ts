@@ -183,12 +183,24 @@ export const MINIMAX_INTL_BASE_URL = 'https://api.minimax.io/v1';
 export const MINIMAX_INTL_ANTHROPIC_BASE_URL = 'https://api.minimax.io/anthropic';
 
 /**
- * 官方当前可用的语言模型（2026-10-21 核对）。
- * 两个都是原生多模态、1M 上下文的 Frontier Coding 模型。
+ * 官方当前可用的语言模型（**2026-10-24 用真 key 拉 `/models` 核对过**）。
+ *
+ * 这一份是**兜底**：实时拉取才是准的（模型上下线频繁）。
+ * 拉取失败时用这份，别让用户对着空列表发愁。
+ *
+ * 清单以账号实际可用的为准 —— 不同套餐能调的模型可能不同，
+ * 所以这里记的是**2026-10-24 那把订阅 key 拉到的真实清单**。
  */
 export const MINIMAX_MODELS: readonly string[] = [
   'MiniMax-M3.1-Flash', // 最新：思考深度可调，通过 effort 调档
   'MiniMax-M3',
+  'MiniMax-M2.7',
+  'MiniMax-M2.7-highspeed',
+  'MiniMax-M2.5',
+  'MiniMax-M2.5-highspeed',
+  'MiniMax-M2.1',
+  'MiniMax-M2.1-highspeed',
+  'MiniMax-M2',
 ];
 
 /**
