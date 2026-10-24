@@ -36,8 +36,10 @@ import { SiteHeader } from './motion/SiteHeader';
  * 矢量格式根本不能改，6 个栅格格式改完会换成 GeoTIFF。
  * 另一条：**不伪造数据**。页面上出现过的面积、坐标、操作人、日期都是编的，
  * 现在一律换成真实运行的录制值或真实截图。
- * 第三条：**矢量编辑仍未实现**（10 个 op 在并行开发），所以官网继续按
- * 「矢量 · 只读」写——不假装能做。
+ * 第三条（2026-10-24 晚，此条已作废）：当时写的是「矢量编辑仍未实现，
+ * 所以官网按『矢量 · 只读』写」。现在**矢量编辑已经实现**（重投影、改字段名、
+ * 值重编码、加字段、按位置连接、改属性、删要素…），GeoPackage 也能写回了 ——
+ * 官网「格式支持」一屏已按实际能力重写。
  * 第四条（2026-10-24）：「用一句话改图」现在**有界面了**（画布上能发起，
  * AI 工作台里能提议 → 预演 → 确认 → 落盘），矢量 op 也接上了，
  * 所以首页不再挂「开发中」徽标，改成**一屏把三层分工说清楚**：
@@ -175,14 +177,15 @@ const HERO_FACTS = [
 const STEPS = [
   {
     n: '01',
-    title: '装',
-    body: '需要 Node.js 22 或更高，外加 GDAL 命令行。装完先自检一下，缺什么它会直接说。',
+    title: '解压',
+    body: '下载绿色压缩包，解压，双击里面的 START.cmd。不用装 Node，不用装 GDAL，不用改设置——包里已经带全了。',
     code: [
-      '# 装 GDAL（Windows 走国内镜像的 conda-forge 通道）',
-      'powershell -ExecutionPolicy Bypass -File scripts/setup-conda-gdal.ps1',
+      '图签-便携版.zip',
+      '  └─ 解压到任意一个文件夹（路径里有中文、有空格都行）',
+      '  └─ 双击 START.cmd',
       '',
-      'npm install',
-      'npm run doctor      # 自检：Node / GDAL / 驱动 / 就绪度',
+      '# 第一次打开时它会顺手播一份示例数据，',
+      '# 你可以先拿它练手，再换成自己的图件。',
     ],
   },
   {
@@ -190,12 +193,10 @@ const STEPS = [
     title: '登记',
     body: '一个项目 = 一次交差任务。把你放图件的文件夹登记进来，工具在旁边建一个 .cartouche/ 放清单、产出物与留痕，你的图件一个字节都不会被搬动或改写。',
     code: [
-      '# 起引擎（另开一个终端）',
-      'npm run dev:server',
-      '',
-      '# 构建并打开画布',
-      'npm run build:web',
-      'npm run serve:web    # http://127.0.0.1:8080/canvas.html',
+      '# 在画布上：把放图件的文件夹填进去，点「登记并新建」',
+      '# 自带示例数据在',
+      '  %LOCALAPPDATA%\cartouche\workspace\示例数据',
+      '# 你的东西和它放在一起，删掉便携包也不会丢。',
     ],
   },
   {
@@ -212,11 +213,29 @@ const STEPS = [
   },
 ];
 
+/**
+ * 想自己装环境、要读源码的那条路。
+ *
+ * 为什么留在这儿而不是删掉：确实有人不要便携包（要接流水线、要改代码）。
+ * 但它是**给程序员看的**，所以只留一行指路，细节在 GitHub README。
+ */
+const SOURCE_HINT = {
+  title: '想自己装环境、要读源码？',
+  body: '需要 Node.js 22 或更高，外加 GDAL 命令行。装完先自检一下，缺什么它会直接说。',
+  code: [
+    'npm install && npm run doctor',
+    '# 完整步骤、密钥怎么放、数据会不会被发出去：见 GitHub 仓库的 README',
+  ],
+};
+
 /* ── 格式支持：按"能不能改"分三组，不打太极 ── */
 
 const WRITABLE = [
   { ext: '.tff', note: 'GeoTIFF 内容 + .tfw/.prj 伴随文件' },
   { ext: '.tif', note: 'GeoTIFF' },
+  { ext: '.shp', note: 'Shapefile（一整套文件一起写回）' },
+  { ext: '.geojson', note: 'GeoJSON' },
+  { ext: '.gpkg', note: 'GeoPackage（只动你指定的那一层，别的层原样留着）' },
 ];
 
 const READONLY_RASTER = [
@@ -228,10 +247,7 @@ const READONLY_RASTER = [
 ];
 
 const READONLY_VECTOR = [
-  { ext: '.shp', note: 'Shapefile' },
   { ext: '.gdb', note: 'File Geodatabase' },
-  { ext: '.gpkg', note: 'GeoPackage' },
-  { ext: '.geojson', note: 'GeoJSON' },
   { ext: '.kml', note: 'KML' },
   { ext: '.gml', note: 'GML' },
 ];
@@ -592,6 +608,10 @@ export default function Home() {
               图件本体一个字节都不出你的电脑。用 AI 时发走的只有上面那几行元数据，
               和你视窗内最多 200 个要素的坐标与少量属性——发出去之前，你能逐字看。
             </p>
+            <p className="mt-4 max-w-[68ch] text-body-sm leading-relaxed text-ink-3">
+              这条路我们用真模型反复试过：4 类不同的要求各来 10 遍，40 次全部改对了该改的东西；
+              说得含糊的时候它不猜，会反问你缺哪一项。
+            </p>
           </div>
         </section>
 
@@ -625,6 +645,9 @@ export default function Home() {
               <h2 className="font-display mt-6 max-w-3xl text-pretty text-display-2 text-ink">
                 怎么把它跑起来？
               </h2>
+              <p className="mt-6 max-w-[56ch] text-lead text-ink-2">
+                不用装任何东西——解压、双击，就能用。
+              </p>
             </div>
 
             {/* 不等宽三栏（40 / 35 / 25）：等分栅格是 2015 年 SaaS 模板 */}
@@ -654,6 +677,18 @@ export default function Home() {
               画布必须用 http 打开：Chrome 禁止从 file:// 构造 Web Worker，MapLibre
               起不来，地图会一片空白。
             </p>
+
+            {/* 源码跑法：给程序员看的，细节在 GitHub README */}
+            <div className="mt-4 rounded-panel border border-line bg-surface p-6">
+              <h3 className="font-display text-display-3 text-ink">{SOURCE_HINT.title}</h3>
+              <p className="mt-2.5 text-body leading-relaxed text-ink-2">{SOURCE_HINT.body}</p>
+              <pre
+                data-step="code"
+                className="mt-4 overflow-x-auto rounded-lg border border-line bg-paper px-4 py-3 font-mono text-[13px] leading-[1.7] text-ink-2"
+              >
+                {SOURCE_HINT.code.join('\n')}
+              </pre>
+            </div>
           </div>
         </section>
 
@@ -690,6 +725,10 @@ export default function Home() {
                 <p className="mt-2.5 text-body leading-relaxed text-ink-2">
                   写回的是原图件，格式与坐标系原样保留。
                   坐标系是内嵌还是来自伴随文件，自检报告会写明——<strong className="font-semibold text-ink">内嵌的</strong>才能在别的软件里也认出来。
+                </p>
+                <p className="mt-2 text-body-sm leading-relaxed text-ink-3">
+                  高程那类栅格（32 位整数、单精度浮点）也能改：读进来是什么数位，写回去还是什么数位，
+                  <strong className="font-semibold text-ink-2">不会被悄悄压成 8 位</strong>。
                 </p>
                 <ul className="mt-5 space-y-2">
                   {WRITABLE.map((f) => (
@@ -742,7 +781,8 @@ export default function Home() {
                   </h3>
                 </div>
                 <p className="mt-2.5 text-body leading-relaxed text-ink-2">
-                  能出图、能查属性、能导出。矢量编辑还没做——不假装能做，工具会直接说这个操作尚未支持。
+                  这几个格式我们只读不写：能出图、能查属性、能导出。
+                  要改它们，先另存成上面那几种之一。
                 </p>
                 <ul className="mt-5 space-y-2">
                   {READONLY_VECTOR.map((f) => (
