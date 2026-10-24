@@ -88,17 +88,15 @@ export default function ProjectPicker({
           本机引擎（127.0.0.1:8787）。不写清楚的话，他一点「打开」就得到
           一句「无法连接引擎服务」—— 那是一条死路，而这里本该一眼说清。
           只在引擎连不上时才出现（engineOffline），连得上就不打扰他。
+
+          这里**不写怎么启动引擎**：那是 GitHub 仓库页该讲的（README 的
+          「快速开始」里有），官网只负责说清一件事——这是个本机预览，
+          要先把工具拿下来。
         */}
         {engineOffline ? (
           <div className="mt-5 rounded-lg border border-warn/35 bg-warn-soft px-3.5 py-3 text-[12.5px] leading-relaxed text-warn">
-            <strong className="font-medium">这是本机工具的在线预览</strong>
-            <div className="mt-1">
-              画布要连你电脑上的引擎服务（
-              <code className="rounded bg-paper-deep px-1 font-mono">127.0.0.1:8787</code>
-              ），现在没连上。启动它再回来：在仓库根目录跑
-              <code className="mx-1 rounded bg-paper-deep px-1 font-mono">npm run dev:server</code>
-              （或 Windows 上双击 <code className="rounded bg-paper-deep px-1 font-mono">scripts\start.cmd</code>）。
-            </div>
+            <strong className="font-medium">这是本机的在线预览</strong>
+            <div className="mt-1">画布要下载（图签 Cartouche）后使用。</div>
           </div>
         ) : null}
 

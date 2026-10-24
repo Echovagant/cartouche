@@ -86,7 +86,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\set-key.ps1
 | 服务 | Node HTTP，只监听回环地址 |
 | 前端 | Next.js 静态导出 + React + MapLibre GL JS + Tailwind CSS |
 | 出图 | 栅格底图 PNG + Canvas 合成图面要素 → PDF |
-| 测试 | `node:test`，249 个用例；CI 跑在 ubuntu-latest |
+| 测试 | `node:test`，868 个用例；CI 跑在 ubuntu-latest |
 
 ## 开发
 
