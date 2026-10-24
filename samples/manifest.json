@@ -1,12 +1,18 @@
 {
-  "version": "1.0",
+  "version": "1.1",
   "note": "公开、免费、免登录的地理数据源清单。全部用于压测本项目的引擎能力，不是产品数据。下载到 samples/（已在 .gitignore 中），不入库。",
   "selection": "优先选：① 免登录可直连 ② 许可允许商用 ③ 能压到已知薄弱点（非 Byte 类型、缺 CRS、nodata、超大、超多字段、中文字段）",
+  "layout": {
+    "samples": "仓库内的 samples/ 目录（已被 .gitignore 排除，克隆后不会入库）",
+    "ext": "仓库外的扩展样本目录：位置由环境变量 CARTOUCHE_EXT_SAMPLES 决定，默认 D:\\Projects\\cartouche-samples（Windows）；每个样本一个同名子目录",
+    "rule": "按**解压后的实际占用**落位：占用 30 MB 以内放 samples/，超过放 ext/。只看压缩包大小会低估 —— 一个 3 MB 的 zip 解开有 50 MB，仓库外的目录要留出空间"
+  },
   "samples": [
     {
       "id": "naturalearth-admin0",
       "title": "Natural Earth 110m 国界（177 国）",
       "kind": "vector",
+      "baseDir": "samples",
       "url": "https://naciscdn.org/naturalearth/110m/cultural/ne_110m_admin_0_countries.zip",
       "file": "ne_110m_admin_0_countries.zip",
       "unpack": "ne110m",
@@ -29,18 +35,19 @@
       "id": "datav-china-provinces",
       "title": "阿里云 DataV 中国省级行政区边界（GeoJSON）",
       "kind": "vector",
+      "baseDir": "samples",
       "url": "https://geo.datav.aliyun.com/areas_v3/bound/100000_full.json",
       "file": "datav_china_100000_full.json",
       "expect": {
         "driver": "GeoJSON",
-        "crs": "none",
+        "crs": "EPSG:4326",
         "entry": "datav_china_100000_full.json"
       },
       "license": "阿里云 DataV.GeoAtlas 公开接口数据",
       "attribution": "DataV.GeoAtlas (阿里云)",
       "focus": [
         "中文字段名（name/adcode/…）→ 考察中文编码与字段名处理",
-        "GeoJSON **不声明 CRS** → 应触发 CRS 相关规则",
+        "**文件本身没声明 CRS**，但 GDAL 的 GeoJSON 驱动按 RFC 7946 默认当成 WGS 84 → 引擎读到的「有坐标系」是驱动补的，不是文件里的",
         "非 ASCII 属性值 → 考察 DBF/GeoJSON 写出编码"
       ]
     },
@@ -48,6 +55,7 @@
       "id": "sentinel2-l3-b04",
       "title": "Sentinel-2 L3 季度无云镶嵌 单波段 COG（2024 Q2，UTM 31N）",
       "kind": "raster",
+      "baseDir": "samples",
       "remote": true,
       "url": "https://data.source.coop/tge-labs/sentinel-2-quarterly-cloudless-mosaics/2024/Q2/31UFU_0_0/B04.tif",
       "vsicurl": "/vsicurl/https://data.source.coop/tge-labs/sentinel-2-quarterly-cloudless-mosaics/2024/Q2/31UFU_0_0/B04.tif",
@@ -74,6 +82,7 @@
       "id": "ftw-field-2024",
       "title": "Fields of the World 2e 农田边界概率 COG（2024，2.5 m）",
       "kind": "raster",
+      "baseDir": "samples",
       "remote": true,
       "url": "https://data.source.coop/ftw/global-data-2e/raster/2024/zone=31/gzd=31U/31UFU_0_0/31UFU_0_0.tif",
       "vsicurl": "/vsicurl/https://data.source.coop/ftw/global-data-2e/raster/2024/zone=31/gzd=31U/31UFU_0_0/31UFU_0_0.tif",
@@ -96,6 +105,7 @@
       "id": "naturalearth-ne1-raster",
       "title": "Natural Earth 10m  shaded relief 栅格 NE1（Esri 风格 .tif+.prj 组合）",
       "kind": "raster",
+      "baseDir": "samples",
       "url": "https://naciscdn.org/naturalearth/10m/raster/NE1_HR_LC_SR_W.zip",
       "file": "NE1_HR_LC_SR_W.zip",
       "unpack": "ne1",
@@ -122,6 +132,7 @@
       "id": "naturalearth-rivers",
       "title": "Natural Earth 10m 河流与湖泊中心线（线 + 面混合）",
       "kind": "vector",
+      "baseDir": "samples",
       "url": "https://naciscdn.org/naturalearth/10m/physical/ne_10m_rivers_lake_centerlines.zip",
       "file": "ne_10m_rivers_lake_centerlines.zip",
       "unpack": "nerivers",
@@ -142,6 +153,7 @@
       "id": "gadm-china-l1",
       "title": "GADM 4.1 中国一级行政区（GeoJSON）",
       "kind": "vector",
+      "baseDir": "samples",
       "url": "https://geodata.ucdavis.edu/gadm/gadm4.1/json/gadm41_CHN_1.json.zip",
       "file": "gadm41_CHN_1.json.zip",
       "unpack": "gadmchn1",
@@ -194,6 +206,442 @@
       "focus": [
         "**文件名本身是中文** → 路径处理、.prj 侧车关联、备份名生成都不能因此出错",
         "UTF-8 + .cpg → 应当**不**触发 V-ENC-001"
+      ]
+    },
+    {
+      "id": "naturalearth-lakes",
+      "title": "Natural Earth 10m 湖泊（面，含带洞多边形）",
+      "kind": "vector",
+      "baseDir": "samples",
+      "url": "https://naciscdn.org/naturalearth/10m/physical/ne_10m_lakes.zip",
+      "file": "ne_10m_lakes.zip",
+      "unpack": "ne10mlakes",
+      "expect": {
+        "driver": "ESRI Shapefile",
+        "entry": "ne10mlakes/ne_10m_lakes.shp",
+        "features": 1355,
+        "fields": 41,
+        "geometryType": "Polygon",
+        "crs": "EPSG:4326"
+      },
+      "license": "Public Domain（Natural Earth）",
+      "attribution": "Natural Earth — naturalearthdata.com",
+      "focus": [
+        "**同一图层里混着 Polygon（1346）与 MultiPolygon（9）** —— 层类型只报 Polygon，要按单要素判；写回时不做类型归一就会失败",
+        "**231 个内环、80 个要素带洞**（湖中岛），最多的一个面有 22 个环 → 多环拓扑是真实数据，不是人造的",
+        ".prj 是 **ESRI 风味旧式 WKT**（`GCS_WGS_1984` + `D_WGS_1984`，没有 AUTHORITY 节点）→ 认不认得这种写法是基本功",
+        ".cpg 声明 UTF-8 → 应当**不**触发编码告警",
+        "41 个字段，含多语种别名列（name_ar/name_zh/…）"
+      ]
+    },
+    {
+      "id": "naturalearth-coastline",
+      "title": "Natural Earth 10m 海岸线（线要素，属性极少）",
+      "kind": "vector",
+      "baseDir": "samples",
+      "url": "https://naciscdn.org/naturalearth/10m/physical/ne_10m_coastline.zip",
+      "file": "ne_10m_coastline.zip",
+      "unpack": "ne10mcoastline",
+      "expect": {
+        "driver": "ESRI Shapefile",
+        "entry": "ne10mcoastline/ne_10m_coastline.shp",
+        "features": 4133,
+        "fields": 3,
+        "geometryType": "LineString",
+        "crs": "EPSG:4326"
+      },
+      "license": "Public Domain（Natural Earth）",
+      "attribution": "Natural Earth — naturalearthdata.com",
+      "focus": [
+        "**重几何轻属性**：4000 多条海岸线只有 3 个字段，属性表几乎是空壳",
+        "碎线段密集（.shp 就有 6.8 MB）→ 退化几何、零长度段、重复点的天然素材",
+        "全球分布 → 任何按经纬度裁切/抽稀的处理都要面对跨洲要素"
+      ]
+    },
+    {
+      "id": "gadm-china-gpkg",
+      "title": "GADM 4.1 中国一级行政区（GeoPackage 容器）",
+      "kind": "vector",
+      "baseDir": "samples",
+      "derivedFrom": "gadm-china-l1",
+      "derive": [
+        {
+          "tool": "ogr2ogr",
+          "args": [
+            "-f",
+            "GPKG",
+            "{out}",
+            "{src}",
+            "-nln",
+            "gadm41_CHN_1"
+          ],
+          "out": "gadm41_CHN_1.gpkg"
+        }
+      ],
+      "expect": {
+        "driver": "GPKG",
+        "entry": "gadm41_CHN_1.gpkg",
+        "features": 37,
+        "fields": 11,
+        "geometryType": "MultiPolygon",
+        "crs": "EPSG:4326"
+      },
+      "license": "GADM 4.1 —— 自由使用（非商业），需署名",
+      "attribution": "GADM (gadm.org)",
+      "focus": [
+        "**GeoPackage = SQLite**：gpkg_contents / gpkg_geometry_columns / 空间索引都在同一个文件里，不是单文件格式那么简单",
+        "几何列存的是 **WKB**，不是 GeoJSON 文本 —— 解析器走错分支就当普通列读",
+        "数据取自 GADM 同一份公开边界（原生 .gpkg 在本机实测只有 12 KB/s，79 MB 要跑一个多小时，不适合放进日常拉取流程）"
+      ]
+    },
+    {
+      "id": "gadm-china-kmz",
+      "title": "GADM 4.1 中国一级行政区（KMZ 压缩 KML）",
+      "kind": "vector",
+      "baseDir": "samples",
+      "url": "https://geodata.ucdavis.edu/gadm/gadm4.1/kmz/gadm41_CHN_1.kmz",
+      "file": "gadm41_CHN_1.kmz",
+      "expect": {
+        "driver": "LIBKML",
+        "entry": "gadm41_CHN_1.kmz",
+        "features": 37,
+        "fields": 12,
+        "geometryType": "Geometry",
+        "crs": "EPSG:4326"
+      },
+      "license": "GADM 4.1 —— 自由使用（非商业），需署名",
+      "attribution": "GADM (gadm.org)",
+      "focus": [
+        "**`.kmz` 是 zip 包了 KML**：GDAL 的 LIBKML 驱动能直接开，gdalinfo 却打不开（它要 /vsizip/ 前缀）—— 同一个文件两种驱动两种结果",
+        "KML 自带字段是 id/Name/description/timestamp/altitudeMode…，**不是** GADM 原始字段名",
+        "KML 没有 .prj 侧车，CRS 只能从 KML 自身解析",
+        "ogrinfo 对这层报几何类型 **Geometry（未归一）** —— 实际每个要素都是 MultiPolygon",
+        "**37 个要素里有 2143 个面**（海岛碎到离谱），3 个要素带内环 → 多部件不是边界情况，是常态"
+      ]
+    },
+    {
+      "id": "srtm-ascii",
+      "title": "SRTM 90m 高程（AAIGrid .asc 文本网格）",
+      "kind": "raster",
+      "baseDir": "ext",
+      "url": "https://srtm.csi.cgiar.org/wp-content/uploads/files/srtm_5x5/ASCII/srtm_39_04.zip",
+      "file": "srtm-ascii/srtm39_04_ascii.zip",
+      "unpack": "srtm-ascii/srtm_ascii",
+      "expect": {
+        "driver": "AAIGrid",
+        "entry": "srtm-ascii/srtm_ascii/srtm_39_04.asc",
+        "width": 6000,
+        "height": 6000,
+        "bands": 1,
+        "dataType": "Int32",
+        "nodata": -9999,
+        "crs": "EPSG:4326"
+      },
+      "license": "Public Domain（NASA SRTM，CGIAR-CSI 免费分发）",
+      "attribution": "SRTM / NASA — via CGIAR-CSI",
+      "focus": [
+        "**AAIGrid 是纯文本**：文件头 6 行（ncols/nrows/xllcorner/yllcorner/cellsize/NODATA_value）之后才是数值",
+        "**6000×6000**（> 5000×5000）→ 大栅格读入路径",
+        "**Int32 高程 + NODATA_value = -9999**（不是 -32768，也不是空）—— 同一套样本里 Sentinel-2 用的是 -32768，nodata 取值不能写死",
+        "**`.prj` 是考古级 ESRI WKT**（`Projection GEOGRAPHIC / Datum WGS84 / Zunits NO / Units DD / Spheroid / Xshift / Yshift`）—— 比常见的那种还老一代",
+        "文本网格读进来比同尺寸的 GeoTIFF 慢一个量级 → 引擎侧不能假设「打开即到位图」"
+      ]
+    },
+    {
+      "id": "srtm-img-hfa",
+      "title": "SRTM 90m 高程（Erdas Imagine .img / HFA）",
+      "kind": "raster",
+      "baseDir": "ext",
+      "derivedFrom": "srtm-ascii",
+      "derive": [
+        {
+          "tool": "gdal_translate",
+          "args": [
+            "-of",
+            "HFA",
+            "{src}",
+            "{out}"
+          ],
+          "out": "srtm-img-hfa/srtm_39_04.img"
+        }
+      ],
+      "expect": {
+        "driver": "HFA",
+        "entry": "srtm-img-hfa/srtm_39_04.img",
+        "width": 6000,
+        "height": 6000,
+        "bands": 1,
+        "dataType": "Int32",
+        "nodata": -9999,
+        "crs": "EPSG:4326"
+      },
+      "license": "Public Domain（NASA SRTM，CGIAR-CSI 免费分发）",
+      "attribution": "SRTM / NASA — via CGIAR-CSI",
+      "focus": [
+        "**Erdas Imagine .img**（HFA 驱动）：文件头带 `EHFA_HEADER_TAG` 魔数，是另一套二进制布局",
+        "**这份 .img 把投影写进了自己的数据字典**（gdalinfo 只列出 .img 一个文件）—— 不能因为「没看到 .prj」就判定缺坐标系",
+        "甲方常连着 .hdr 侧车一起发，**文件成对到达**才是常态：引擎要认得 .img 也要认得 .hdr",
+        "国内甲方很爱发这一套（.img + .hdr + .prj），引擎只认 GTiff 就会直接拒收"
+      ]
+    },
+    {
+      "id": "flatgeobuf-lakes",
+      "title": "Natural Earth 10m 湖泊（FlatGeobuf 容器）",
+      "kind": "vector",
+      "baseDir": "samples",
+      "derivedFrom": "naturalearth-lakes",
+      "derive": [
+        {
+          "tool": "ogr2ogr",
+          "args": [
+            "-f",
+            "FlatGeobuf",
+            "{out}",
+            "{src}",
+            "-nln",
+            "ne_10m_lakes",
+            "-nlt",
+            "PROMOTE_TO_MULTI"
+          ],
+          "out": "ne_10m_lakes.fgb"
+        }
+      ],
+      "expect": {
+        "driver": "FlatGeobuf",
+        "entry": "ne_10m_lakes.fgb",
+        "features": 1355,
+        "fields": 41,
+        "geometryType": "MultiPolygon",
+        "crs": "EPSG:4326"
+      },
+      "license": "Public Domain（Natural Earth）",
+      "attribution": "Natural Earth — naturalearthdata.com",
+      "focus": [
+        "**FlatGeobuf**：单文件、HTTP 范围读友好，几何列是 WKB",
+        "**一个图层只能一种几何类型** —— 直接转 Poly+MultiPoly 混层会报 `Mismatched geometry type`，必须先提升为 MultiPolygon",
+        "没有 .prj 侧车，CRS 存在文件头的元数据里"
+      ]
+    },
+    {
+      "id": "srtm-points-csv",
+      "title": "SRTM 高程采样点（CSV，几何写在 WKT 列里，带 Z 值）",
+      "kind": "vector",
+      "baseDir": "samples",
+      "derivedFrom": "srtm-ascii",
+      "derive": [
+        {
+          "tool": "gdal_translate",
+          "args": [
+            "-of",
+            "XYZ",
+            "-outsize",
+            "400",
+            "400",
+            "{src}",
+            "{out}"
+          ],
+          "out": "srtm_39_04_xyz.csv"
+        },
+        {
+          "tool": "ogr2ogr",
+          "args": [
+            "-f",
+            "CSV",
+            "-lco",
+            "GEOMETRY=AS_WKT",
+            "{out}",
+            "{src}",
+            "-oo",
+            "X_POSSIBLE_NAMES=field_1",
+            "-oo",
+            "Y_POSSIBLE_NAMES=field_2",
+            "-oo",
+            "Z_POSSIBLE_NAMES=field_3"
+          ],
+          "out": "srtm_points.csv"
+        }
+      ],
+      "expect": {
+        "driver": "CSV",
+        "entry": "srtm_points.csv",
+        "features": 160000,
+        "fields": 4,
+        "geometryType": "Geometry",
+        "crs": "none"
+      },
+      "license": "Public Domain（NASA SRTM，CGIAR-CSI 免费分发）",
+      "attribution": "SRTM / NASA — via CGIAR-CSI",
+      "focus": [
+        "**带 Z 值的点几何**（`POINT Z (x y z)`）→ 大多数引擎只处理 XY，Z 会被悄悄丢掉",
+        "**几何在 WKT 列里**（不是 x/y 两列）→ 读 CSV 的分支判断不能只看列名",
+        "**CSV 不带坐标系** → 只有原始网格的行列号能反推位置，导出时必须补 CRS",
+        "**16 万行**（10 万级矢量）→ 属性表走内存还是流式，差别在这里",
+        "ogrinfo 对这层报几何类型 **Geometry（未归一）**：CSV 驱动认 WKT 列，但层类型仍然是未归一状态"
+      ]
+    },
+    {
+      "id": "srtm-webmercator-float32",
+      "title": "SRTM 高程重投影到 Web Mercator（EPSG:3857，32 位浮点）",
+      "kind": "raster",
+      "baseDir": "ext",
+      "derivedFrom": "srtm-ascii",
+      "derive": [
+        {
+          "tool": "gdalwarp",
+          "args": [
+            "-t_srs",
+            "EPSG:3857",
+            "-ot",
+            "Float32",
+            "-r",
+            "near",
+            "-of",
+            "GTiff",
+            "{src}",
+            "{out}"
+          ],
+          "out": "srtm-webmercator-float32/srtm_39_04_3857.tif"
+        }
+      ],
+      "expect": {
+        "driver": "GTiff/GeoTIFF",
+        "entry": "srtm-webmercator-float32/srtm_39_04_3857.tif",
+        "width": 5033,
+        "height": 6832,
+        "bands": 1,
+        "dataType": "Float32",
+        "nodata": -9999,
+        "crs": "EPSG:3857"
+      },
+      "license": "Public Domain（NASA SRTM，CGIAR-CSI 免费分发）",
+      "attribution": "SRTM / NASA — via CGIAR-CSI",
+      "focus": [
+        "**Web Mercator（EPSG:3857）**：所有互联网底图都在这个坐标系里，甲方给的图往往是它",
+        "**Float32 源**：按 Byte 读会把高程压成 0~255 的整数，物理量纲直接丢掉",
+        "重投影后 nodata 仍是 **-9999**（沿用源文件的约定），**不是 0 也不是空**",
+        "纬向拉伸：同一块地面在 3857 下变成 5033×6832 —— 用等像元方形去比面积必错"
+      ]
+    },
+    {
+      "id": "webmercator-png-worldfile",
+      "title": "Web Mercator 影像导出 PNG（带世界文件 .wld）",
+      "kind": "raster",
+      "baseDir": "samples",
+      "derivedFrom": "srtm-webmercator-float32",
+      "derive": [
+        {
+          "tool": "gdal_translate",
+          "args": [
+            "-of",
+            "PNG",
+            "-co",
+            "WORLDFILE=YES",
+            "-ot",
+            "Byte",
+            "-outsize",
+            "2000",
+            "2000",
+            "{src}",
+            "{out}"
+          ],
+          "env": {
+            "GDAL_PAM_ENABLED": "NO"
+          },
+          "out": "srtm_39_04_3857.png"
+        }
+      ],
+      "expect": {
+        "driver": "PNG",
+        "entry": "srtm_39_04_3857.png",
+        "width": 2000,
+        "height": 2000,
+        "bands": 1,
+        "dataType": "Byte",
+        "crs": "none",
+        "worldFile": "srtm_39_04_3857.wld"
+      },
+      "license": "Public Domain（NASA SRTM，CGIAR-CSI 免费分发）",
+      "attribution": "SRTM / NASA — via CGIAR-CSI",
+      "focus": [
+        "**PNG + 世界文件**：地理信息不在图片里，全在旁边的 .wld 六行数字里，丢了就只是一张图",
+        "世界文件里是**像元尺寸 + 左上角原点**，顺序和 GeoTransform 相反，写错一个数整张图就偏",
+        "**世界文件只有仿射参数，没有坐标系**：这张图在 GDAL 眼里是「有位置、没基准」，CRS 规则应当触发",
+        "**32 位浮点 → 8 位 PNG 是有损降位**：高程被压成 0~255，这是真实出图流程里最常见的静默失真"
+      ]
+    },
+    {
+      "id": "webmercator-vrt",
+      "title": "Web Mercator 影像索引 VRT",
+      "kind": "raster",
+      "baseDir": "ext",
+      "derivedFrom": "srtm-webmercator-float32",
+      "derive": [
+        {
+          "tool": "gdalbuildvrt",
+          "args": [
+            "-overwrite",
+            "{outRel}",
+            "{srcRel}"
+          ],
+          "cwd": "webmercator-vrt",
+          "out": "webmercator-vrt/srtm_39_04_3857.vrt"
+        }
+      ],
+      "expect": {
+        "driver": "VRT",
+        "entry": "webmercator-vrt/srtm_39_04_3857.vrt",
+        "width": 5033,
+        "height": 6832,
+        "bands": 1,
+        "dataType": "Float32",
+        "nodata": -9999,
+        "crs": "EPSG:3857"
+      },
+      "license": "Public Domain（NASA SRTM，CGIAR-CSI 免费分发）",
+      "attribution": "SRTM / NASA — via CGIAR-CSI",
+      "focus": [
+        "**VRT 是 XML 文本**，真正的数据在它指向的那个文件里 —— 源文件不在，VRT 就是空壳",
+        "VRT 里存的是**相对路径**，整个目录一起搬走仍然能用；写成绝对路径就废了",
+        "VRT 自带 geotransform 与 SRS，不依赖源文件的 .prj"
+      ]
+    },
+    {
+      "id": "gadm-china-gauss-kruger",
+      "title": "GADM 中国一级行政区（CGCS2000 高斯-吕格 EPSG:4547）",
+      "kind": "vector",
+      "baseDir": "ext",
+      "derivedFrom": "gadm-china-l1",
+      "derive": [
+        {
+          "tool": "ogr2ogr",
+          "args": [
+            "-f",
+            "ESRI Shapefile",
+            "-t_srs",
+            "EPSG:4547",
+            "-nln",
+            "gadm41_CHN_1_gk",
+            "{out}",
+            "{src}"
+          ],
+          "out": "gadm-china-gauss-kruger/gadm41_CHN_1_gk.shp"
+        }
+      ],
+      "expect": {
+        "driver": "ESRI Shapefile",
+        "entry": "gadm-china-gauss-kruger/gadm41_CHN_1_gk.shp",
+        "features": 37,
+        "fields": 11,
+        "geometryType": "Polygon",
+        "crs": "EPSG:4547"
+      },
+      "license": "GADM 4.1 —— 自由使用（非商业），需署名",
+      "attribution": "GADM (gadm.org)",
+      "focus": [
+        "**CGCS2000 / 3 度带高斯-吕格（中央经线 114°E）** —— 国内甲方成果最常见的投影",
+        ".prj 是**国产软件写出来的旧式 WKT**（`D_China_2000` + `CGCS2000` 椭球，`Gauss_Kruger` 投影名），不是标准 EPSG WKT",
+        "**同一份数据投影不同，面积能差几个百分点**：报面积前必须确认基准与投影",
+        "写 DBF 时 GDAL 会把中文按 ISO-8859-1 落盘并告警 —— **属性值掉码的典型现场**"
       ]
     }
   ]
