@@ -747,6 +747,30 @@ const AI_OP_PREFIXES: readonly string[] = ['raster.', 'vector.'];
  */
 const AI_OP_ALLOW: readonly string[] = ['feature.summarize'];
 
+/**
+ * 故意**不**放行给 AI 的已实现 op，连同原因。
+ *
+ * 为什么要有这份名单：清单是**硬编码**的，而引擎注册表是活的 ——
+ * 2026-10-24 实测踩过这个坑：`vector.*` 的六个 op 早就登记进执行器了，
+ * 提示词却只放行 `raster.*`，模型**根本看不到**它们，
+ * 于是所有矢量需求都落到「该操作尚未支持」。那种缺口不报错，只是功能凭空少了一半。
+ *
+ * 这份名单加上「每个已实现的 op 必须在清单里或在这份名单里」那条测试，
+ * 就是那道防线：以后再登记 op，要么进清单，要么在这里点名，
+ * 不会再有人「实现了但用户看不到」。
+ *
+ * 名单里只放**真的已实现**的 op —— 没实现的写进来会让那条测试误以为它有归属。
+ */
+export const AI_OP_DENY: Readonly<Record<string, string>> = {
+  'dataset.open': '只是打开数据集，不改东西；AI 的场景是「一句话改图」，打开与查看交给画布和属性表',
+  'dataset.healthCheck': '同上：体检与快照属于「查看」，不属于「改」',
+  'dataset.snapshot': '同上',
+  'export.image': '导出是出片环节，与「一句话改图」是两件事；先把改图那一段做扎实',
+  'export.report': '同上',
+  'feature.setAttributes': '批量改属性会写数据，与 feature.delete 同类；按执行顺序排在 SP-2/4 那一轮',
+  'feature.delete': '会删数据：让模型从一句模糊的话里推出删除动作，风险和收益不成比例',
+};
+
 export function opCatalog(schema: SchemaNode, implemented: readonly string[]): OpCatalogEntry[] {
   const allowed = schema.$defs?.['operation']?.properties?.['op']?.enum ?? [];
   const out: OpCatalogEntry[] = [];
