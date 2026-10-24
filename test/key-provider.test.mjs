@@ -30,15 +30,30 @@ test('MiniMaxProvider：配置后返回凭据，默认走国内版接入点', as
   assert.equal(await p.hasCredentials('local'), true);
 });
 
-test('MiniMaxProvider：模型清单包含官方当前可用的 M 系列（2026-10-21 核对官网）', async () => {
+test('MiniMaxProvider：离线兜底清单 = 2026-10-24 真 key 拉到的那 9 个模型', async () => {
   const p = new MiniMaxProvider({ readApiKey: () => null });
   const models = await p.listModels();
   assert.ok(models.includes('MiniMax-M3.1-Flash'), '应包含 MiniMax-M3.1-Flash');
   assert.ok(models.includes('MiniMax-M3'), '应包含 MiniMax-M3');
-  // M2.x 系列官方已全部下线，不应再出现在清单里
-  for (const m of models) {
-    assert.ok(!/^MiniMax-M2/.test(m), `${m} 属于已下线系列，不应出现在清单里`);
-  }
+  // 这一份清单的来源是**实测**：2026-10-24 用真 key 调 GET /models 的真实返回。
+  //
+  // 旧断言「M2.x 系列官方已下线」是 2026-10-21 照官网页面得出的结论 ——
+  // 照页面猜上下线靠不住：账号能调的模型才算数，而 M2.x 现在明明还在清单里。
+  // 所以这里钉死那份实测清单，免得下次又照着页面把它改回去。
+  assert.deepEqual(
+    [...models].sort(),
+    [
+      'MiniMax-M2',
+      'MiniMax-M2.1',
+      'MiniMax-M2.1-highspeed',
+      'MiniMax-M2.5',
+      'MiniMax-M2.5-highspeed',
+      'MiniMax-M2.7',
+      'MiniMax-M2.7-highspeed',
+      'MiniMax-M3',
+      'MiniMax-M3.1-Flash',
+    ].sort(),
+  );
 });
 
 test('MiniMaxProvider：默认接入点是官网公布的国内版 base_url', async () => {

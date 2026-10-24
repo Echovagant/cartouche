@@ -24,6 +24,7 @@ import { fileURLToPath } from 'node:url';
 import {
   findProvider,
   listImplementedOps,
+  MINIMAX_MAX_TOKENS,
   parseChatReply,
   probeDataset,
   redactSecrets,
@@ -809,6 +810,8 @@ export function buildPlanPrompt(input: {
     '1. 只输出一个 JSON 对象，不要解释文字，不要 Markdown 代码块。',
     '2. 只能从下面的「可用操作清单」里选 op。清单里没有的操作不要硬凑：',
     '   把 ops 写成空数组，并在 intent 里写明「该操作尚未支持」。',
+    '   用户的要求里缺少必要信息时也一样（没说清是哪一列、哪个图层、哪个文件）：',
+    '   把 ops 写成空数组，并在 intent 里写明缺什么 —— 不要猜。',
     '3. 计划格式固定为：{"version":"1.0","intent":"一句话说明要做什么","ops":[{"op":"...","params":{...}}]}',
     '4. params 必须严格符合该 op 的参数契约：字段名照抄契约，多余字段一律不给，',
     '   必填字段不能少。',
@@ -896,7 +899,7 @@ export async function chatJson(options: ChatJsonOptions): Promise<ChatJsonResult
   const payload: Record<string, unknown> = {
     model: options.model,
     messages: [{ role: 'user', content: options.prompt }],
-    max_tokens: options.maxTokens ?? 2048,
+    max_tokens: options.maxTokens ?? MINIMAX_MAX_TOKENS,
   };
   if (options.effort) payload['reasoning_effort'] = options.effort;
 
@@ -1001,6 +1004,30 @@ export function parsePlanReply(reply: string): { ok: true; value: unknown } | { 
     }
   }
   return { ok: false, message: '模型返回的内容不是可解析的 JSON 操作计划' };
+}
+
+/**
+ * 提示词铁律②约定的「做不了」说法。
+ *
+ * 匹配的是**协议里写死的那个短语**（提示词让模型照着写），
+ * 不是在猜模型的意思 —— 模型换了说法就会漏判，那时退回「请你补充一句」，
+ * 不会把它误报成「引擎做不了」。
+ */
+const UNSUPPORTED_HINT = /尚未支持|不支持|没有实现|无法支持/;
+
+/**
+ * 计划里 ops 为空、intent 有话 —— 模型在**回话**，不是在给计划。
+ *
+ * 返回那句 intent（模型自己的话）；不是这种形状就返回 null。
+ */
+export function readEmptyPlanIntent(value: unknown): string | null {
+  if (!isPlainObject(value)) return null;
+  const ops = value['ops'];
+  if (!Array.isArray(ops) || ops.length !== 0) return null;
+  const intent = value['intent'];
+  if (typeof intent !== 'string') return null;
+  const trimmed = intent.trim();
+  return trimmed.length > 0 ? trimmed : null;
 }
 
 /* ────────────────────────────────────────────────────────────
@@ -1173,6 +1200,25 @@ export async function createPlan(input: PlanRequestInput): Promise<PlanResponseB
       model: reply.model,
       elapsedMs: reply.elapsedMs,
       message: parsed.message,
+    };
+  }
+
+  // 空计划不是「计划不合法」，是模型在回话。
+  //
+  // 提示词铁律②教模型把「做不了」写成 ops: [] + intent 说明，
+  // 但契约要求 ops 至少一条 —— 模型照做反而会被判「不合规矩」。
+  // 实测（2026-10-24，真 key）：用户说「把这一列改名叫…」，
+  // 模型拒绝对不指明的列乱猜（这是对的），回话却被闸门①判成
+  // 「计划里一条操作都没有」，界面上只剩一句用户看不懂的话。
+  const emptyIntent = readEmptyPlanIntent(parsed.value);
+  if (emptyIntent !== null) {
+    return {
+      ...base,
+      // 「做不了」与「你没说清」给不同的下场：前者换个操作，后者补一句信息
+      error: UNSUPPORTED_HINT.test(emptyIntent) ? 'op_not_supported' : 'plan_needs_clarification',
+      model: reply.model,
+      elapsedMs: reply.elapsedMs,
+      message: emptyIntent,
     };
   }
 

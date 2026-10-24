@@ -58,8 +58,14 @@ const DEFAULT_PROVIDER_ID = 'minimax-cn';
 /** 各接入线的会话状态；没有条目的按"什么都没配"处理 */
 const sessions = new Map<string, ProviderSession>();
 
-/** 当前选中的接入线 */
-let activeProviderId = DEFAULT_PROVIDER_ID;
+/**
+ * 当前选中的接入线。
+ *
+ * 初始值**跟着环境变量走**：开发者用 MINIMAX_BASE_URL 指了国际版，
+ * 那把环境变量里的 key 就属于国际版 —— 当前选中必须跟着它，
+ * 否则会出现「key 在手，引擎却说没配置密钥」（2026-10-24 真机验证时踩到）。
+ */
+let activeProviderId = envProviderId();
 
 /** 自定义端点的地址（providerId === 'custom' 时用） */
 let customBaseUrl = '';

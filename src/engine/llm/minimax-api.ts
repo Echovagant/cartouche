@@ -44,6 +44,17 @@ const defaultFetch: MinimaxFetch = async (url, init) => {
   return { ok: res.ok, status: res.status, text: () => res.text() };
 };
 
+/**
+ * 单次回话的 token 上限。
+ *
+ * ⚠️ **这个数不能太小**：MiniMax 的推理型模型把**思考 token 也算在 max_tokens 里**，
+ * 而思考深度默认是 max（官方说不可关闭）。额度小的话，
+ * 会出现「token 全被推理吃掉、正文一个字都没有」——
+ * 实测（2026-10-24，真 key）：256 会让相当一部分请求回空正文，
+ * 界面报的是「模型服务返回了响应，但没能读出回话内容」，看着像接口坏了，其实是额度不够。
+ */
+export const MINIMAX_MAX_TOKENS = 8192;
+
 /** 一次调用所需的凭据（密钥只在内存里待着，不落盘、不回显） */
 export interface MinimaxCallOptions {
   readonly apiKey: string;
@@ -240,7 +251,7 @@ export async function chatOnce(
   const payload: Record<string, unknown> = {
     model: options.model,
     messages: [{ role: 'user', content: options.prompt }],
-    max_tokens: 256,
+    max_tokens: MINIMAX_MAX_TOKENS,
   };
   if (options.effort) payload.reasoning_effort = options.effort;
 
