@@ -20,8 +20,11 @@
  *
  * ## 一条都不要凭记忆写
  *
- * 厂商的端点与套餐规则会变（百炼 Coding Plan 的专用端点、火山方舟的 Coding Plan
- * 路径、模型清单…）。改这张表之前，先去打一发真实端点。
+ * 厂商的端点与套餐规则会变（模型清单、套餐端点…）。改这张表之前，先去打一发真实端点。
+ *
+ * ⚠️ **有一类套餐不接**：条款写明「仅限在 AI 编程工具内交互式使用、禁止 API 调用」的
+ * Coding Plan（百炼、火山方舟）。用户 2026-10-24 裁定不要这两家，目录里就没有它们；
+ * 下面那两条的 note 里写明了为什么 —— 别偷偷加回来。
  */
 import type { CredentialReader, KeyProvider, LlmCredentials, LlmProviderId } from '../key-provider.ts';
 import { MINIMAX_MODELS } from '../key-provider.ts';
@@ -135,16 +138,7 @@ export const LLM_PROVIDERS: readonly LlmProviderEntry[] = [
     modelsSupported: true,
     family: 'dashscope',
     keyPrefixes: [],
-  },
-  {
-    id: 'dashscope-coding',
-    displayName: '阿里云百炼 Coding Plan',
-    baseUrl: 'https://coding.dashscope.aliyuncs.com/v1',
-    modelsSupported: true,
-    // `sk-sp-` 是 `sk-` 的前缀 —— 匹配必须按长度倒序，否则套餐 key 会被当成按量 key。
-    family: 'dashscope',
-    keyPrefixes: ['sk-sp-'],
-    note: '套餐 key（sk-sp- 开头）与按量 key 不通用。官方条款限定在编程工具内交互式使用，禁止 API 调用。',
+    note: '只接按量计费。Coding Plan 套餐（key 以 sk-sp- 开头）不接：条款限定在 AI 编程工具内使用，禁止 API 调用。',
   },
   {
     id: 'ark',
@@ -153,19 +147,7 @@ export const LLM_PROVIDERS: readonly LlmProviderEntry[] = [
     modelsSupported: true,
     family: 'ark',
     keyPrefixes: [],
-  },
-  {
-    id: 'ark-coding',
-    displayName: '火山方舟 Coding Plan',
-    baseUrl: 'https://ark.cn-beijing.volces.com/api/coding',
-    // 官方文档给的是 Anthropic 协议路径；OpenAI 兼容能否直连**未验证**
-    // （实测 401 = 网关在鉴权，但鉴权通过后是不是 OpenAI 格式，问不出来）。
-    // 所以这里标成不支持拉清单：宁可让用户手填模型名，
-    // 也不发一个可能必然失败的请求。
-    modelsSupported: false,
-    family: 'ark',
-    keyPrefixes: [],
-    note: '官方文档给的是 Anthropic 协议路径，OpenAI 兼容直连未验证（可用自定义端点试）；套餐额度仅限 AI 编程工具内使用。',
+    note: '只接按量计费。Coding Plan 套餐不接：条款限定在 AI 编程工具内使用，且官方只给了 Anthropic 协议路径。',
   },
   {
     id: 'deepseek',
