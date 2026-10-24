@@ -61,10 +61,12 @@ const manifest = JSON.parse(readFileSync(join(SAMPLE_DIR, 'manifest.json'), 'utf
  */
 const EXT_SAMPLES_DIR = process.env.CARTOUCHE_EXT_SAMPLES ?? join(homedir(), 'cartouche-samples');
 /** 评测用的临时工作区落点。 */
-const TMP_ROOT = process.env.CARTOUCHE_TMP_DIR ?? join(EXT_BASE, '_cartouche-tmp');
+// 评测的临时工作区：放在**仓库外**（仓库在 C 盘，跑评测会撑爆它）。
+// 落位跟着扩展样本目录走 —— 两边都在仓库外，才不会互相踩。
+const TMP_ROOT = process.env.CARTOUCHE_TMP_DIR ?? join(EXT_SAMPLES_DIR, '_cartouche-tmp');
 /** 刁难数据集的清单（不存在就跳过，不报错退出）。 */
 const HARDCASES_MANIFEST =
-  process.env.CARTOUCHE_HARDCASES ?? join(EXT_BASE, 'cartouche-hardcases', 'cases.json');
+  process.env.CARTOUCHE_HARDCASES ?? join(EXT_SAMPLES_DIR, 'cartouche-hardcases', 'cases.json');
 
 const ENGINE_URL = pathToFileURL(join(ROOT, 'src', 'engine', 'index.ts')).href;
 const {
