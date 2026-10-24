@@ -93,7 +93,6 @@
   --nav-fg-muted: var(--color-ink-2);
   --nav-border: var(--color-line-2);
   --nav-hover-bg: rgb(28 26 22 / 0.05);
-  --nav-warn: var(--color-warn);
 }
 
 /* 深段（墨面）：**不用纸纹**。
@@ -108,7 +107,6 @@
   --nav-fg-muted: rgb(244 241 234 / 0.85);
   --nav-border: rgb(244 241 234 / 0.2);
   --nav-hover-bg: rgb(244 241 234 / 0.08);
-  --nav-warn: var(--color-warn-lit);
 }
 
 @theme {
@@ -451,11 +449,6 @@
   .nav-item:hover {
     background-color: var(--nav-hover-bg);
   }
-  /* 「开发中」小徽标：浅段用警示棕，深段换亮一档的 warn-lit */
-  .nav-warn {
-    color: var(--nav-warn);
-    border-color: color-mix(in srgb, var(--nav-warn) 45%, transparent);
-  }
 
   /* 纸纹：固定的、不接收指针事件的伪元素层，绝不放在滚动容器里。
      1px 点阵、3px 间距、alpha 0.045 —— alpha 再高纸面就会显脏
@@ -737,10 +730,6 @@
   .nav-outline {
     border-color: CanvasText !important;
     background-color: transparent !important;
-  }
-  .nav-warn {
-    color: CanvasText !important;
-    border-color: CanvasText !important;
   }
 
   [data-gate='card'],

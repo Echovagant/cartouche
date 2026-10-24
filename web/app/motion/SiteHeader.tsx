@@ -96,15 +96,9 @@ export function SiteHeader({ items }: { items: readonly NavItem[] }) {
           ))}
           <a
             href="ai.html"
-            className="nav-fg-muted inline-flex min-h-11 min-w-11 items-center gap-1.5 rounded-full px-3 text-[13px] whitespace-nowrap transition-colors"
+            className="nav-fg-muted inline-flex min-h-11 min-w-11 items-center justify-center rounded-full px-3 text-[13px] whitespace-nowrap transition-colors"
           >
             AI 接入
-            <span
-              className="nav-warn rounded-full border px-1.5 py-px font-mono text-[11px] leading-none"
-              title="模型接入（配密钥、拉模型清单、测连通）已可用；用一句话改图的链路已接通，但还没用真实模型跑通"
-            >
-              开发中
-            </span>
           </a>
         </div>
 
@@ -151,15 +145,9 @@ export function SiteHeader({ items }: { items: readonly NavItem[] }) {
           <a
             href="ai.html"
             onClick={() => setOpen(false)}
-            className="nav-item flex min-h-11 items-center gap-2 rounded-lg px-4 text-[14px] transition-colors"
+            className="nav-item flex min-h-11 items-center rounded-lg px-4 text-[14px] transition-colors"
           >
             AI 接入
-            <span
-              className="nav-warn rounded-full border px-1.5 py-px font-mono text-[11px] leading-none"
-              title="模型接入（配密钥、拉模型清单、测连通）已可用；用一句话改图的链路已接通，但还没用真实模型跑通"
-            >
-              开发中
-            </span>
           </a>
         </div>
       ) : null}

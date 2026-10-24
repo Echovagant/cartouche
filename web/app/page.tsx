@@ -39,14 +39,19 @@ import { SiteHeader } from './motion/SiteHeader';
  * 第三条：**矢量编辑仍未实现**（10 个 op 在并行开发），所以官网继续按
  * 「矢量 · 只读」写——不假装能做。
  * 第四条（2026-10-24）：「用一句话改图」现在**有界面了**（画布上能发起，
- * AI 工作台里能提议 → 预演 → 确认），但还没用真实模型跑通一次，
- * 所以首页仍然不承诺它 —— 导航里那一项继续挂着「开发中」。
+ * AI 工作台里能提议 → 预演 → 确认 → 落盘），矢量 op 也接上了，
+ * 所以首页不再挂「开发中」徽标，改成**一屏把三层分工说清楚**：
+ * AI 只翻译意图、引擎算与写、你点头。
+ * ——徽标表达的是"我们没测过"，不是"这功能弱"；能说清分工就不必靠徽标。
+ * 但**真实模型那条链路还没跑过**（目前是本地模拟端点），这一点在 AI 工作台
+ * 页面里用一句实话写着，不藏。
  */
 
 /* ── 导航 ── */
 
 const NAV = [
   { href: '#s4', label: '能做什么' },
+  { href: '#s-ai', label: '一句话改图' },
   { href: '#s2', label: '改前确认' },
   { href: '#s5', label: '改后交付' },
   { href: '#s6', label: '怎么用' },
@@ -95,6 +100,35 @@ const GATES = [
     n: '04',
     title: '操作类型',
     body: '涂色 / 擦除 / 调色，不含糊。你知道自己在干什么。',
+  },
+];
+
+/**
+ * 「一句话改图」里的三层分工。
+ *
+ * 为什么单独一屏，而不是在别处带一句：多数人判断不了"逐轴容差 0.02 米"，
+ * 但判断得了"我说一句话它就绕开了箱子"——**分工**正是那句话能说清的东西。
+ * 三层各干各的活：AI 只把话翻译成计划，数值与落盘归确定性引擎，最后由你点头。
+ * 写清哪一段不归谁管，比写"AI 很厉害"有用得多。
+ */
+const AI_ROLES = [
+  {
+    who: 'AI · 只翻译',
+    title: '把话变成一份操作计划',
+    body: '做哪个动作、作用于哪个图层、参数是什么——它产出的是一份计划，不是结果。',
+    not: '它不产出任何数值：像元数、面积、条数都不是它算的。',
+  },
+  {
+    who: '确定性引擎 · 只算与写',
+    title: '数值精度由它保证',
+    body: '按契约校验这份计划，预演一遍算出影响面，你确认后才按确定性规则写盘。',
+    not: '精度与用哪个模型无关；换模型只换坐前面的那个人。',
+  },
+  {
+    who: '你 · 点头',
+    title: '改之前看得见',
+    body: '会改多少像元、改哪个文件、备份叫什么，三样都摆在你面前；改了什么记进项目留痕。',
+    not: '不点头，一个字节都不动；改错了，备份就在原文件旁边。',
   },
 ];
 
@@ -518,6 +552,44 @@ export default function Home() {
           </div>
         </section>
 
+        {/* ═══ S-AI · 一句话改图，谁来做什么 ══════════════════════ */}
+        <section id="s-ai" className="bg-paper px-5 py-24 sm:px-8 sm:py-28 lg:min-h-[95vh]">
+          <div className="mx-auto max-w-[1440px]">
+            <div data-section-head className="reveal">
+              <p className="font-mono text-eyebrow text-ink-2 uppercase">谁来做哪一段</p>
+              <h2 className="font-display mt-6 max-w-3xl text-pretty text-display-2 text-ink">
+                一句话改图，谁来做什么？
+              </h2>
+              <p className="mt-6 max-w-[52ch] text-lead text-ink-2">
+                你只管说想要什么。中间这几段活儿分给谁、哪一段不归谁管——
+                说清楚，你就知道该信哪一段。
+              </p>
+            </div>
+
+            {/* 不等宽三栏：等分栅格是 2015 年 SaaS 模板 */}
+            <div className="mt-12 grid grid-cols-1 gap-4 lg:grid-cols-[1.25fr_1fr_1.15fr]">
+              {AI_ROLES.map((r) => (
+                <div
+                  key={r.who}
+                  data-ai-role="card"
+                  className="reveal flex flex-col rounded-panel border border-line bg-surface p-6"
+                >
+                  <p className="font-mono text-[12px] tracking-[0.08em] text-ink-3">{r.who}</p>
+                  <h3 className="font-display mt-2.5 text-display-3 text-ink">{r.title}</h3>
+                  <p className="mt-3 text-body leading-relaxed text-ink-2">{r.body}</p>
+                  <p className="mt-4 border-t border-line pt-3 text-body-sm leading-relaxed text-ink-3">
+                    {r.not}
+                  </p>
+                </div>
+              ))}
+            </div>
+
+            <p className="mt-8 max-w-[68ch] text-body-sm leading-relaxed text-ink-3">
+              换掉模型不影响这套流程——引擎和运算表不变，只是坐在前面的操作员换了人。
+            </p>
+          </div>
+        </section>
+
         {/* ═══ S5 · 交付物三件实物（画面强度峰） ═════════════════════ */}
         <section
           id="s5"
@@ -840,7 +912,7 @@ export default function Home() {
                 links: [
                   { label: '怎么用', href: '#s6' },
                   { label: '格式支持', href: '#s7' },
-                  { label: 'AI 接入（开发中）', href: 'ai.html' },
+                  { label: 'AI 接入', href: 'ai.html' },
                 ],
               },
               {
