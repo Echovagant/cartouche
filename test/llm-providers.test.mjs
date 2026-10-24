@@ -49,12 +49,16 @@ test('端点只能用 https（本机那条除外）', () => {
   }
 });
 
-test('认 key：`sk-sp-` 是百炼 Coding Plan，不是百炼按量', () => {
-  // sk-sp- 是 sk- 的前缀 —— 匹配必须按长度倒序，否则套餐 key 会被当成按量 key。
-  const hit = detectProviderByKey('sk-sp-abcdef123456');
-  assert.ok(hit, '应该认得出来');
-  assert.equal(hit.family, 'dashscope');
-  assert.equal(hit.providerId, 'dashscope-coding', '要认出是 Coding Plan 那条');
+test('认 key：Coding Plan 的 `sk-sp-` 认不出来 —— 那种套餐我们不接', () => {
+  // 2026-10-24 用户裁定：百炼与方舟的 Coding Plan 条款限定在编程工具内使用、
+  // 禁止 API 调用，所以那两条接入线从目录里去掉了。
+  // 它们的 key 也就**不该**被认成一条可用接入线：认出来却没有对应的线可选，更糊涂。
+  assert.equal(detectProviderByKey('sk-sp-abcdef123456'), null, '认不出来才诚实');
+  // 但要在界面上说清楚为什么：理由写进厂商条目的提示里
+  const dashscope = findProvider('dashscope');
+  assert.match(dashscope?.note ?? '', /Coding Plan/);
+  const ark = findProvider('ark');
+  assert.match(ark?.note ?? '', /Coding Plan/);
 });
 
 test('认 key：`sk-` 开头认不出是哪一家（太通用）', () => {
@@ -82,10 +86,15 @@ test('找接入线：找不到就 null（不抛错）', () => {
 });
 
 test('没有清单接口的接入线要标出来，且带原因', () => {
-  const arkCoding = findProvider('ark-coding');
-  assert.ok(arkCoding, '火山方舟 Coding Plan 应该在目录里');
-  assert.equal(arkCoding.modelsSupported, false, '官方只给了 Anthropic 协议路径');
-  assert.ok(arkCoding.note, '要说清为什么');
+  // 目录里现在每条都支持拉清单；这条断言守的是**规则**：
+  // 将来加一条端点没有 /models 的接入线时，它必须自己把原因写出来 ——
+  // 界面据此不给「拉取模型清单」按钮（发一个必然失败的请求比不给这个按钮更糟）。
+  for (const p of LLM_PROVIDERS) {
+    assert.equal(typeof p.modelsSupported, 'boolean', `${p.id} 没标 modelsSupported`);
+    if (!p.modelsSupported) {
+      assert.ok(p.note, `${p.id} 不支持拉清单就必须说清为什么`);
+    }
+  }
 });
 
 test('只给 MiniMax 发思考深度参数', () => {
