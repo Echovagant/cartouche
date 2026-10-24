@@ -22,6 +22,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  findProvider,
   listImplementedOps,
   parseChatReply,
   probeDataset,
@@ -31,7 +32,7 @@ import {
   type OperationSpec,
   type PlanDocument,
 } from '@cartouche/engine';
-import { resolveCredentials, scrub } from './llm.ts';
+import { currentProviderId, resolveCredentials, scrub } from './llm.ts';
 
 /* ────────────────────────────────────────────────────────────
  * §1 上下文裁剪：白名单
@@ -1058,6 +1059,8 @@ export interface PlanRequestInput {
   readonly prompt: string;
   readonly model?: string | undefined;
   readonly effort?: string | undefined;
+  /** 用哪条接入线（厂商 × 端点）；不给就用当前选中的那条 */
+  readonly providerId?: string | undefined;
   /** 前端交来的原始上下文（会被裁剪到白名单） */
   readonly context?: unknown;
   /** 项目根（绝对路径）；给了才能补齐字段名、要素数量、坐标系 */
@@ -1119,7 +1122,8 @@ export async function createPlan(input: PlanRequestInput): Promise<PlanResponseB
     context: preview,
   };
 
-  const creds = await resolveCredentials();
+  const providerId = input.providerId ?? undefined;
+  const creds = await resolveCredentials(providerId);
   if (!creds?.apiKey) {
     return {
       ...base,
@@ -1127,14 +1131,25 @@ export async function createPlan(input: PlanRequestInput): Promise<PlanResponseB
       message: '还没有配置 API Key：先在「密钥来源」里粘贴，或用启动脚本从本机密文注入。',
     };
   }
+  // 自定义接入线可能还没填地址 —— 这时不能"退回默认端点"：
+  // 拿 MiniMax 的端点去发别家的 key，报错会指不到真正的原因。
+  if (!creds.baseUrl) {
+    return {
+      ...base,
+      error: 'llm_not_configured',
+      message: '还没填端点地址：先在「密钥来源」里选好接入线并填入地址。',
+    };
+  }
+  // 思考深度只在**认这个参数**的接入线上发：多发一个不认的参数会让整次请求失败。
+  const effortSupported = findProvider(providerId ?? currentProviderId())?.effortSupported === true;
 
   let reply: ChatJsonResult;
   try {
     reply = await chatJson({
       apiKey: creds.apiKey,
-      baseUrl: creds.baseUrl ?? 'https://api.minimax.cn/v1',
+      baseUrl: creds.baseUrl,
       model: input.model?.trim() || creds.model,
-      ...(input.effort ? { effort: input.effort } : {}),
+      ...(effortSupported && input.effort ? { effort: input.effort } : {}),
       prompt: promptText,
       ...(input.fetchImpl ? { fetchImpl: input.fetchImpl } : {}),
     });
