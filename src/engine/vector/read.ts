@@ -64,6 +64,7 @@ export async function probeLayer(loc: GdalLocation, path: string): Promise<Layer
 export function parseLayerInfo(stdout: string): LayerInfo {
   const lines = stdout.split(/\r?\n/);
   let layerName = '';
+  const layerNames: string[] = [];
   let featureCount = 0;
   const fields: LayerField[] = [];
   let srsWkt: string | null = null;
@@ -72,7 +73,18 @@ export function parseLayerInfo(stdout: string): LayerInfo {
     const line = lines[i]!;
     const nameMatch = /^Layer name:\s*(.+)$/.exec(line);
     if (nameMatch) {
-      layerName = nameMatch[1]!.trim();
+      const name = nameMatch[1]!.trim();
+      layerNames.push(name);
+      if (layerNames.length === 1) {
+        layerName = name;
+        continue;
+      }
+      // 第二个及以后的图层：**只记名字，跳过它的细节**。
+      //
+      // 不跳的话，多图层 GeoPackage 的列名会全部累加进来
+      // （实测拿到「名称,编号,名称,编号」这种重复列名），
+      // 后面「这一层里没有 X 这一列」的检查与写回都跟着错。
+      while (i + 1 < lines.length && !/^Layer name:\s*/.test(lines[i + 1]!)) i += 1;
       continue;
     }
     const countMatch = /^Feature Count:\s*(\d+)/.exec(line);
@@ -109,6 +121,7 @@ export function parseLayerInfo(stdout: string): LayerInfo {
 
   return {
     layerName,
+    layerNames,
     featureCount,
     fields,
     srsWkt,
@@ -280,6 +293,17 @@ export async function readFeatures(
       args.push('-oo', `ENCODING=${options.encoding}`);
     }
     if (select) args.push('-select', select);
+    // 多图层容器（GeoPackage 等）只读第一个图层。
+    //
+    // 不指定图层的话，ogr2ogr 会把每个图层都往同一个 GeoJSON 里写，
+    // 第二个图层就报「Layer 'x' does not already exist in the output dataset」——
+    // **整个文件读不出来**（实测：多图层 GPKG 直接读不了）。
+    // `-sql` 选层是实测走得通的一条路：`path:图层名` 那条不行
+    // （GDAL 按扩展名认驱动，带上「:图层名」就认不出是 GPKG 了）。
+    const multiLayer = info.layerNames.length > 1;
+    if (multiLayer) {
+      args.push('-sql', `SELECT * FROM "${info.layerName.replace(/"/g, '""')}"`);
+    }
     // 有条件时不在 GDAL 侧限量：限量要发生在筛选之后
     if (options.limit !== undefined && options.limit > 0 && whereNode === null) {
       args.push('-limit', String(options.limit));
@@ -327,6 +351,8 @@ export async function readFeatures(
       totalCount,
       truncated,
       fields: info.fields.map((f) => f.name),
+      layerName: info.layerName,
+      otherLayerNames: multiLayer ? info.layerNames.filter((n) => n !== info.layerName) : [],
     };
   } finally {
     rmSync(tempDir, { recursive: true, force: true });

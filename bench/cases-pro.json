@@ -249,7 +249,7 @@
     },
     {
       "id": "P8",
-      "status": "gap",
+      "status": "covered",
       "category": "vector-edit",
       "title": "字段计算器：算综合评分",
       "utterance": "给每个地块算个评分，人口密度占六成、离主干道距离占四成",
@@ -259,19 +259,28 @@
         "crs": "CGCS2000 / 3 度带"
       },
       "expected": {
-        "ops": [],
-        "gap": {
-          "missingCapability": "字段表达式（field expression）",
-          "closestOps": ["feature.setAttributes（只能把字段设成常量）"],
-          "why": "Pro 的字段计算器支持 Python 表达式 !人口密度! * 0.6 + !道路距离! * 0.4；我们只能写死值，无法按行计算",
-          "proTools": ["Calculate Field (Data Management)"]
-        },
-        "assertions": []
+        "ops": [
+          {
+            "op": "vector.addField",
+            "params": {
+              "target": "dataset://parcels.shp",
+              "name": "评分",
+              "expression": "人口密度 * 0.6 + 道路距离 * 0.4"
+            }
+          }
+        ],
+        "assertions": [
+          { "kind": "impact-report", "mustContain": ["备份文件名"] },
+          { "kind": "no-self-commit", "expect": true }
+        ]
       },
       "traps": [
-        "表达式里的字段名必须**加 ! 包围**，中文字段名尤其容易写错",
+        "Pro 的表达式里字段名要**加 ! 包围**，中文字段名尤其容易写错；我们的表达式直接写列名",
         "除以权重之和前要处理空值与零值",
-        "评分是派生字段，**不应覆盖原始字段**"
+        "评分是派生字段，**不应覆盖原始字段**",
+        "**Shapefile 的 DBF 字段名限 10 字节**：中文列名会被截断（人口密度 → 人口密□），实测过；",
+        "**写回只支持 .shp 与 .geojson**：GPKG 读得进、写不回去",
+        "表达式支持的是子集（没有 CASE / 条件节点），加权组合这类够用，分档判断要拆成多条"
       ],
       "proParity": {
         "level": "L2",

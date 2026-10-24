@@ -10,7 +10,7 @@
  */
 import { spatialJoin, toOpData, JOIN_COUNT_FIELD } from '../spatial/index.ts';
 import type { JoinAggregate, SpatialRelation } from '../spatial/index.ts';
-import { readFeatures } from './read.ts';
+import { probeLayer, readFeatures } from './read.ts';
 import { writeFeatures } from './write.ts';
 import { toRelPathChecked } from './paths.ts';
 import type { FeatureRecord } from './types.ts';
@@ -82,6 +82,28 @@ export async function runVectorSpatialJoin(
 
   const targetAbs = deps.store.resolve(targetRel);
   const sourceAbs = deps.store.resolve(sourceRel);
+
+  // 坐标系必须对得上。
+  //
+  // 两个图层的坐标系不一样时，空间关系算出来是**错的**，
+  // 而结果看上去完全正常（匹配数、汇总值都像真的）——
+  // 这种错用户不会发现，只能在这里挡住。
+  // 实测：4326 的面与 3857 的点 Previously 照样连出「匹配 2 条」。
+  const [targetInfo, sourceInfo] = await Promise.all([
+    probeLayer(deps.loc, targetAbs),
+    probeLayer(deps.loc, sourceAbs),
+  ]);
+  if (targetInfo.epsg !== null && sourceInfo.epsg !== null && targetInfo.epsg !== sourceInfo.epsg) {
+    throw new Error(
+      `两个图层的坐标系不一样（target 是 EPSG:${targetInfo.epsg}，source 是 EPSG:${sourceInfo.epsg}）：` +
+        `这样连出来的结果在空间上是错的，但看上去完全正常。` +
+        `请先用 vector.reproject 把它们投影到同一个坐标系，再连接。`,
+    );
+  }
+  // 有一个图层没有坐标系 ⇒ **确认不了**是否一致。
+  // 确认不了不等于一定错，所以照做，但必须说出来。
+  const crsUnknown = targetInfo.epsg === null || sourceInfo.epsg === null;
+
   const [targetRead, sourceRead] = await Promise.all([
     readFeatures(deps.loc, { path: targetAbs }),
     readFeatures(deps.loc, { path: sourceAbs }),
@@ -144,6 +166,7 @@ export async function runVectorSpatialJoin(
     `（共 ${targetRead.features.length} 个；汇总 ${[...aggregateNames].join('、')}）` +
     (opData.unmatched.length > 0 ? `，${opData.unmatched.length} 个没匹配上` : '') +
     (opData.skippedFields.length > 0 ? `；跳过非数值字段 ${opData.skippedFields.join('、')}` : '') +
+    (crsUnknown ? '（有一个图层没有坐标系，没法核对是否一致，结果可能不准）' : '') +
     (dryRun ? '（预演：没有写盘）' : '');
 
   return {
