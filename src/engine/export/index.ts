@@ -8,7 +8,7 @@
  * 图面要素（比例尺/图例/指北针/图框/标题栏）由前端 canvas 绘制，
  * 因此中文字体正常，且与屏幕上所见完全一致。
  */
-export { renderRasterPng, renderRasterBytes, readPngSize, RasterRenderError } from './raster-image.ts';
+export { renderRasterPng, renderRasterBytes, readPngSize, RasterRenderError, MAX_RENDER_PIXELS } from './raster-image.ts';
 export type {
   BBox4326,
   RasterRenderOptions,

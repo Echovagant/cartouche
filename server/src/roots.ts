@@ -94,6 +94,47 @@ export function registerRoot(roots: RootRegistry, path: string, label?: string):
   return root;
 }
 
+/**
+ * 撤销一个根的登记，并把它从落盘文件里去掉。
+ *
+ * 为什么需要「撤销」：登记是**有后果**的——登记之后，那棵目录树整棵树
+ * 可被读/写/删。原来的接口只有「登记」没有「撤销」，用户登记错了目录
+ * 就只能去手改 `%LOCALAPPDATA%\cartouche\roots.json`，承诺是单向的。
+ * 补上撤销，「只碰你登记过的目录」才是个闭环。
+ *
+ * 三条拒绝的情况都要说清楚，不能静默成功：
+ *  - 没登记过 → 说清是哪个路径没登记过；
+ *  - 内置默认根 → 说清为什么不能撤（它是所有相对路径的落点，撤了相对路径就没地方解析）；
+ *  - 路径写法不同但其实是同一个目录（Windows 大小写）→ 按同一个目录处理。
+ */
+export function unregisterRoot(roots: RootRegistry, path: string): WorkspaceRoot {
+  const abs = resolve(path);
+  const root = roots.list().find((r) => foldCase(r.path) === foldCase(abs));
+  if (!root) {
+    throw new Error(`这个文件夹没有登记过：${abs}`);
+  }
+  if (root.builtin) {
+    throw new Error(
+      '默认工作区不能撤销：所有相对路径都落在它下面，撤了相对路径就没有地方解析了。',
+    );
+  }
+  roots.remove(root.id);
+  // 落盘的那份也要去掉，否则下次启动又被读回来 —— 撤销必须是真的撤销。
+  const list = loadRegistered().filter((r) => foldCase(resolve(r.path)) !== foldCase(abs));
+  saveRegistered(list);
+  return root;
+}
+
+/**
+ * Windows 上文件系统路径不区分大小写。
+ *
+ * 不折叠大小写的话，用户登记的是 `D:\任务`、撤销时传 `d:\任务`
+ * 会被当成两个目录，撤销不掉 —— 这是 Windows 上真实会踩的坑。
+ */
+function foldCase(p: string): string {
+  return process.platform === 'win32' ? p.toLowerCase() : p;
+}
+
 function isExistingDir(path: string): boolean {
   try {
     return statSync(path).isDirectory();
