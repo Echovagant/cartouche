@@ -212,6 +212,7 @@ export {
   renderRasterPng,
   readPngSize,
   RasterRenderError,
+  MAX_RENDER_PIXELS,
   buildPdfFromJpeg,
   inspectPdf,
   PdfBuildError,

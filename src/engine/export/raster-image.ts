@@ -24,6 +24,20 @@ import {
   type PixelType,
 } from '../raster/pixels.ts';
 
+/**
+ * 渲染输出的像素数上限（宽 × 高）。
+ *
+ * 为什么要有上限：渲染走 GDAL 的 translate / warp，中间产物落**系统临时目录**
+ * （Windows 上是 C 盘），而且渲染结果要整个读进内存再交给前端。
+ * 请求方可以把 width/height 写成任意大 —— 那等于让本机调用方往 C 盘写超大文件、
+ * 把内存吃光。宁可明确报错让对方把尺寸调小。
+ *
+ * 为什么是 6400 万像素：与导出路径的 `MAX_OUTPUT_PIXELS`（`image-export.ts`）
+ * **同一口径** —— 渲染出来的是给人看的预览，超过这个尺寸在屏幕上没有意义。
+ * 8000 × 8000 是这个上限的典型边界，够覆盖 4K 以上的预览。
+ */
+export const MAX_RENDER_PIXELS = 64_000_000;
+
 /** [minX, minY, maxX, maxY]，EPSG:4326（经纬度）。
  *  ⚠️ 用的是**通用 bbox 约定**（min/max 序），不是 GDAL 的 ulx/uly/lrx/lry 序。
  *  前端 `map.getBounds()` 给的正是这个序，服务端负责转成 GDAL 的顺序。 */
@@ -409,6 +423,16 @@ export async function renderRasterBytes(
   const gdal: GdalTools = tools(loc);
   const width = Math.max(1, Math.round(options.width));
   const height = Math.max(1, Math.round(options.height));
+
+  // 尺寸上限的**硬闸**：引擎是跨形态复用的，别的地方调它也该被挡住。
+  // 放在这里而不是只在服务端挡，是因为引擎自己也要守住「不写超大临时文件」这条。
+  if (width * height > MAX_RENDER_PIXELS) {
+    throw new RasterRenderError(
+      `渲染尺寸太大了：${width}×${height} 已经是 ${(width * height / 1_000_000).toFixed(1)} 兆像素，` +
+        `上限是 ${(MAX_RENDER_PIXELS / 1_000_000).toFixed(0)} 兆像素。请把宽度或高度调小一些。`,
+      '',
+    );
+  }
 
   if (options.bbox) assertBBox(options.bbox);
 

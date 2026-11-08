@@ -39,6 +39,7 @@ import {
   readRasterFrame,
   hasOverviews,
   ensureRasterOverviews,
+  MAX_RENDER_PIXELS,
   type OperationSpec,
   type PlanDocument,
   type PlanExecutionResult,
@@ -57,7 +58,7 @@ import {
 } from './llm.ts';
 import { findProvider } from '@cartouche/engine';
 import { buildContextPreview, checkPlanAgainstContract, createPlan } from './llm-plan.ts';
-import { loadRegisteredRoots, registerRoot } from './roots.ts';
+import { loadRegisteredRoots, registerRoot, unregisterRoot } from './roots.ts';
 
 /**
  * 引擎自报的版本号。
@@ -115,9 +116,89 @@ export function opCount(): number {
   return schema.$defs.operation.properties.op.enum.length;
 }
 
-async function readBody(req: import('node:http').IncomingMessage): Promise<Buffer> {
+/**
+ * 请求体上限（64 MiB）。
+ *
+ * ## 这个数字是怎么定的
+ *
+ * 正常路径里最大的请求体是**导出 PDF**（前端 canvas 的 JPEG 转 base64 塞进 JSON）
+ * 与**项目产物落盘**（图片转 base64）：base64 比原始字节大 4/3，
+ * 一张 4K JPEG 约 5–10 MB → base64 约 7–13 MB；PNG 更大一些。
+ * 留出 4–5 倍余量取 64 MiB，正常使用碰不到这个天花板，
+ * 但足以让「本机任意页面发一个超大 POST 把引擎内存吃光」这件事做不到。
+ *
+ * 为什么必须要有：引擎只监听回环地址，但**本机上任何一个网页**都能往
+ * `http://127.0.0.1:8787` 发 POST —— 而 `readBody` 原来是「全量收进内存再拼接」，
+ * 没有 content-length 检查，也没有累计上限。
+ */
+const MAX_BODY_BYTES = 64 * 1024 * 1024;
+
+/**
+ * 请求体超限 —— 单独一类错误，好让上层回 **413** 而不是笼统的 400。
+ *
+ * 分开是因为「太大」和「格式不对」对用户是两件事：
+ * 前者要他把东西拆小，后者要他把参数改对。
+ */
+class BodyTooLargeError extends Error {
+  /** 上限字节数（随错误一起回给调用方，省得对方再猜） */
+  readonly limit: number;
+
+  // ⚠️ 这里**不能**用 TypeScript 的参数属性（`constructor(readonly limit: number)`）：
+  //    服务端源码是用 Node 的类型剥离模式直接跑的（node --experimental-strip-types），
+  //    那种模式只删类型不转换语法，遇到参数属性会直接报
+  //    `ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX`。所以老老实实写字段 + 显式赋值。
+  constructor(limit: number, res: import('node:http').ServerResponse) {
+    super(`请求体太大了（上限 ${(limit / 1048576).toFixed(0)} MB）。请把内容拆小一点再试。`);
+    this.name = 'BodyTooLargeError';
+    this.limit = limit;
+    // 当场把 413 回掉：请求体大小只有这一层知道，让每个调用点自己判「是不是 413」只会漏。
+    const payload = JSON.stringify({
+      error: 'payload_too_large',
+      message: this.message,
+      limitBytes: limit,
+    });
+    if (!res.headersSent) {
+      res.writeHead(413, {
+        'content-type': 'application/json; charset=utf-8',
+        'content-length': Buffer.byteLength(payload),
+      });
+      res.end(payload);
+    }
+  }
+}
+
+/**
+ * 读请求体，超过上限就**当场回 413** 并抛 {@link BodyTooLargeError}。
+ *
+ * 两道闸：
+ *  - **先看 `content-length`**：有它就不用真读，超限立刻拒绝；
+ *  - **边读边累计**：分块传输（没有 content-length）时也能挡住。
+ *
+ * 为什么由它自己写响应：请求体大小这件事**只在这一层知道**，
+ * 让 16 个调用点各自判断「这个错误是不是 413」只会漏。
+ * 写完之后 `res.headersSent` 为 true，各路由 catch 里那句 `json(400, …)`
+ * 会被 {@link json} 里的防重写检查挡掉，不会出现「响应已发送」的第二份。
+ *
+ * 超限时**不写任何已读的内容到响应** —— 响应只有一个说清原因的 JSON。
+ */
+async function readBody(
+  req: import('node:http').IncomingMessage,
+  res: import('node:http').ServerResponse,
+): Promise<Buffer> {
+  const declared = Number(req.headers['content-length']);
+  if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) {
+    throw new BodyTooLargeError(MAX_BODY_BYTES, res);
+  }
   const chunks: Buffer[] = [];
-  for await (const c of req) chunks.push(c as Buffer);
+  let total = 0;
+  for await (const c of req) {
+    const buf = c as Buffer;
+    total += buf.length;
+    if (total > MAX_BODY_BYTES) {
+      throw new BodyTooLargeError(MAX_BODY_BYTES, res);
+    }
+    chunks.push(buf);
+  }
   return Buffer.concat(chunks);
 }
 
@@ -474,6 +555,10 @@ export function createEngineServer(): Server {
     }
 
     const json = (status: number, body: unknown) => {
+      // 已经回过就别再写一份 —— 第二次 writeHead 会抛「响应已发送」。
+      // 什么时候会已经回过？请求体超限时 {@link BodyTooLargeError} 当场回了 413，
+      // 各路由 catch 里那句 json(400, …) 就会撞上这里。
+      if (res.headersSent) return;
       const payload = JSON.stringify(body);
       res.writeHead(status, {
         'content-type': 'application/json; charset=utf-8',
@@ -520,7 +605,7 @@ export function createEngineServer(): Server {
     if (url.pathname === '/api/llm/session-key' && req.method === 'POST') {
       void (async () => {
         try {
-          const body = await readBody(req);
+          const body = await readBody(req, res);
           const raw = body.toString('utf8').trim();
           // 约定：传 JSON {"providerId":"...","apiKey":"..."} 设置；
           // 传空体或 {"clear":true} 清除。providerId 省略就是当前选中的那条。
@@ -602,7 +687,7 @@ export function createEngineServer(): Server {
       void (async () => {
         let body: { prompt?: string; model?: string; effort?: string };
         try {
-          const raw = (await readBody(req)).toString('utf8').trim();
+          const raw = (await readBody(req, res)).toString('utf8').trim();
           body = raw ? (JSON.parse(raw) as typeof body) : {};
         } catch {
           json(400, { error: 'bad_request', message: '请求体必须是 JSON：{"prompt":"...","model":"...","effort":"..."}' });
@@ -638,7 +723,7 @@ export function createEngineServer(): Server {
         try {
           const body = (
             req.method === 'POST'
-              ? JSON.parse((await readBody(req)).toString('utf8') || '{}')
+              ? JSON.parse((await readBody(req, res)).toString('utf8') || '{}')
               : {}
           ) as {
             context?: unknown;
@@ -672,7 +757,7 @@ export function createEngineServer(): Server {
     if (url.pathname === '/api/llm/plan' && req.method === 'POST') {
       void (async () => {
         try {
-          const body = JSON.parse((await readBody(req)).toString('utf8') || '{}') as {
+          const body = JSON.parse((await readBody(req, res)).toString('utf8') || '{}') as {
             prompt?: string;
             model?: string;
             effort?: string;
@@ -726,6 +811,26 @@ export function createEngineServer(): Server {
           const root = url.searchParams.get('root');
           const width = Number(url.searchParams.get('width') ?? 1024);
           const height = Number(url.searchParams.get('height') ?? 768);
+          // 尺寸上限：引擎侧有一道硬闸（`MAX_RENDER_PIXELS`，引擎是跨形态复用的，
+          // 别的地方调它也该被挡住），这里再挡一道是为了**先说人话**——
+          // 引擎那句是「渲染尺寸太大了」，用户真正要知道的答案是「把宽度调小到多少」。
+          if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+            json(400, {
+              error: 'bad_request',
+              message: `宽高必须是正数（收到 width=${width}、height=${height}）`,
+            });
+            return;
+          }
+          if (width * height > MAX_RENDER_PIXELS) {
+            json(400, {
+              error: 'bad_request',
+              message:
+                `渲染尺寸太大了：${width}×${height} 是 ${(width * height / 1_000_000).toFixed(1)} 兆像素，` +
+                `上限 ${(MAX_RENDER_PIXELS / 1_000_000).toFixed(0)} 兆像素。请把宽度或高度调小一些` +
+                `（大约 ${Math.floor(Math.sqrt(MAX_RENDER_PIXELS))} × ${Math.floor(Math.sqrt(MAX_RENDER_PIXELS))} 以内）。`,
+            });
+            return;
+          }
           const bboxParam = url.searchParams.get('bbox');
           const bbox = bboxParam
             ? (bboxParam.split(',').map(Number) as [number, number, number, number])
@@ -816,7 +921,7 @@ export function createEngineServer(): Server {
             json(503, { error: 'gdal_unavailable', message: '未找到 GDAL 运行时，出图与体检不可用；请先运行 npm run doctor' });
             return;
           }
-          const body = await readBody(req);
+          const body = await readBody(req, res);
           const req0 = JSON.parse(body.toString('utf8') || '{}') as {
             path?: string;
             root?: string;
@@ -857,7 +962,7 @@ export function createEngineServer(): Server {
             json(503, { error: 'gdal_unavailable', message: '未找到 GDAL 运行时，出图与体检不可用；请先运行 npm run doctor' });
             return;
           }
-          const body = await readBody(req);
+          const body = await readBody(req, res);
           const req0 = JSON.parse(body.toString('utf8') || '{}') as {
             jpeg?: string;
             width?: number;
@@ -906,7 +1011,25 @@ export function createEngineServer(): Server {
     if (url.pathname === '/api/workspace/roots' && req.method === 'POST') {
       void (async () => {
         try {
-          const body = JSON.parse((await readBody(req)).toString('utf8') || '{}') as {
+          // ── 第一道闸：必须是 application/json ────────────────────────
+          // 为什么单挑这一个 content-type：
+          // 浏览器只在「非简单请求」时才强制走 CORS 预检，而 application/json
+          // 正是触发预检的那一类；text/plain / multipart/form-data /
+          // application/x-www-form-urlencoded 都是「简单请求」，**不预检、直接送达**。
+          // 所以只接受 application/json，等于要求「这个请求必须先过预检」——
+          // 跨站页面就过不了预检（引擎的 CORS 只放行回环来源）。
+          //
+          // 为什么这么定不影响原有功能：引擎自己的前端发的就是 application/json
+          // （web/app/canvas/useProjects.ts:125），实测全部 JSON 写接口都是它。
+          const ct = String(req.headers['content-type'] ?? '').split(';')[0]?.trim().toLowerCase() ?? '';
+          if (ct !== 'application/json') {
+            json(415, {
+              error: 'unsupported_media_type',
+              message: '登记工作区必须用 application/json 提交（这样浏览器会先做跨源检查）',
+            });
+            return;
+          }
+          const body = JSON.parse((await readBody(req, res)).toString('utf8') || '{}') as {
             path?: string;
             label?: string;
           };
@@ -915,6 +1038,27 @@ export function createEngineServer(): Server {
             return;
           }
           json(200, registerRoot(roots, body.path, body.label));
+        } catch (err) {
+          json(400, { error: 'bad_request', message: scrub((err as Error).message) });
+        }
+      })();
+      return;
+    }
+
+    if (url.pathname === '/api/workspace/roots' && req.method === 'DELETE') {
+      void (async () => {
+        try {
+          // ── 撤销登记 ────────────────────────────────────────────────
+          // 原来只有「登记」没有「撤销」：登记错了目录只能去手改
+          // %LOCALAPPDATA%\cartouche\roots.json。承诺是单向的，不闭环。
+          const body = JSON.parse((await readBody(req, res)).toString('utf8') || '{}') as {
+            path?: string;
+          };
+          if (!body.path) {
+            json(400, { error: 'bad_request', message: '缺少 path：告诉引擎要撤销哪个文件夹' });
+            return;
+          }
+          json(200, unregisterRoot(roots, body.path));
         } catch (err) {
           json(400, { error: 'bad_request', message: scrub((err as Error).message) });
         }
@@ -938,7 +1082,7 @@ export function createEngineServer(): Server {
     if (url.pathname === '/api/project/manifest' && req.method === 'PUT') {
       void (async () => {
         try {
-          const body = JSON.parse((await readBody(req)).toString('utf8')) as {
+          const body = JSON.parse((await readBody(req, res)).toString('utf8')) as {
             path?: string;
             manifest?: ProjectManifest;
             create?: boolean;
@@ -996,7 +1140,7 @@ export function createEngineServer(): Server {
     if (url.pathname === '/api/project/history' && req.method === 'POST') {
       void (async () => {
         try {
-          const body = JSON.parse((await readBody(req)).toString('utf8')) as {
+          const body = JSON.parse((await readBody(req, res)).toString('utf8')) as {
             path?: string;
             entry?: ProjectHistoryEntry;
           };
@@ -1028,7 +1172,7 @@ export function createEngineServer(): Server {
     if (url.pathname === '/api/project/output' && req.method === 'POST') {
       void (async () => {
         try {
-          const body = JSON.parse((await readBody(req)).toString('utf8')) as {
+          const body = JSON.parse((await readBody(req, res)).toString('utf8')) as {
             path?: string;
             name?: string;
             dataBase64?: string;
@@ -1120,7 +1264,7 @@ export function createEngineServer(): Server {
             });
             return;
           }
-          const body = JSON.parse((await readBody(req)).toString('utf8') || '{}') as {
+          const body = JSON.parse((await readBody(req, res)).toString('utf8') || '{}') as {
             path?: string;
             root?: string | null;
             points?: unknown;
@@ -1137,12 +1281,14 @@ export function createEngineServer(): Server {
           }
           const target = resolvePixelTarget(body.root ?? null, rel);
           const editor = new RasterEditor({ loc: gdalLoc, store: target.store });
-          const res = await editor.queryPixels({
+          // 变量名不叫 res：外层的 res 是 HTTP 响应，同名会把它遮住 ——
+          // 上面那行 readBody(req, res) 就会拿到还没声明的像素查询结果。
+          const queried = await editor.queryPixels({
             target: target.relative,
             points: body.points as readonly (readonly [number, number])[],
             ...(body.allowOutside === true ? { allowOutside: true } : {}),
           });
-          json(200, { ok: true, pixels: res.pixels });
+          json(200, { ok: true, pixels: queried.pixels });
         } catch (err) {
           const message = (err as Error).message;
           const bad =
@@ -1182,7 +1328,7 @@ export function createEngineServer(): Server {
             });
             return;
           }
-          const body = JSON.parse((await readBody(req)).toString('utf8') || '{}') as {
+          const body = JSON.parse((await readBody(req, res)).toString('utf8') || '{}') as {
             path?: string;
             root?: string | null;
           };
@@ -1226,7 +1372,7 @@ export function createEngineServer(): Server {
             });
             return;
           }
-          const body = JSON.parse((await readBody(req)).toString('utf8') || '{}') as {
+          const body = JSON.parse((await readBody(req, res)).toString('utf8') || '{}') as {
             path?: string;
             root?: string | null;
             /** 阈值可调：默认 200MB（小于它的图不值得建） */
@@ -1280,7 +1426,7 @@ export function createEngineServer(): Server {
             json(503, { error: 'gdal_unavailable', message: '未找到 GDAL 运行时，无法预演；请先运行 npm run doctor' });
             return;
           }
-          const body = JSON.parse((await readBody(req)).toString('utf8') || '{}') as {
+          const body = JSON.parse((await readBody(req, res)).toString('utf8') || '{}') as {
             op?: string;
             params?: Record<string, unknown>;
             root?: string;
@@ -1347,7 +1493,7 @@ export function createEngineServer(): Server {
             json(503, { error: 'gdal_unavailable', message: '未找到 GDAL 运行时，无法执行；请先运行 npm run doctor' });
             return;
           }
-          const body = JSON.parse((await readBody(req)).toString('utf8') || '{}') as {
+          const body = JSON.parse((await readBody(req, res)).toString('utf8') || '{}') as {
             plan?: PlanDocument | OperationSpec;
             op?: string;
             params?: Record<string, unknown>;
@@ -1431,7 +1577,7 @@ export function createEngineServer(): Server {
             return;
           }
           if (req.method === 'POST') {
-            const body = await readBody(req);
+            const body = await readBody(req, res);
             if (url.pathname === '/api/fs/write') {
               const sep = body.indexOf(0);
               if (sep < 0) {
@@ -1470,7 +1616,11 @@ export function createEngineServer(): Server {
               return;
             }
             if (url.pathname === '/api/fs/assert-writable') {
-              const t = resolveTarget(null, body.toString('utf8'));
+              // ⚠️ root 的口径必须与同组的 read / write / remove / rename 一致
+              //    （它们都用 `url.searchParams.get('root')`）。这里原来写死了 `null`，
+              //    也就是**永远相对默认工作区根解析** —— 项目根在别处时会解析到错位置。
+              //    「读认、写不认」那类同型缺陷的另一个变体。
+              const t = resolveTarget(url.searchParams.get('root'), body.toString('utf8'));
               await t.store.assertWritable(t.relative);
               json(200, { ok: true });
               return;
