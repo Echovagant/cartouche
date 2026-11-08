@@ -14,12 +14,6 @@
  */
 import type { ReactNode } from 'react';
 
-/** 能渲染成表的数据形状 */
-export interface TableLikeData {
-  readonly columns?: readonly string[];
-  readonly rows?: readonly Record<string, unknown>[];
-}
-
 /** asTableData 的返回类型：columns 与 rows 到这里都是确定的 */
 interface ResolvedTable {
   readonly columns: string[];
@@ -30,7 +24,7 @@ interface ResolvedTable {
 const MAX_ROWS = 50;
 
 /** 判断这是不是一个能渲染成表的结果 */
-export function asTableData(data: unknown): ResolvedTable | null {
+function asTableData(data: unknown): ResolvedTable | null {
   if (typeof data !== 'object' || data === null) return null;
   const o = data as Record<string, unknown>;
   const columns = o['columns'];

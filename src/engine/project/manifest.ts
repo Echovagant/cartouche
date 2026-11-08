@@ -8,10 +8,18 @@
  */
 import { isAbsolute } from 'node:path';
 
+/** 清单格式版本号：加字段时递增，旧项目仍按旧版解析。 */
 export const PROJECT_MANIFEST_VERSION = 1;
 
+/** 图层类型：栅格或矢量。 */
 export type ProjectLayerKind = 'raster' | 'vector';
 
+/**
+ * 项目里的一个图层。
+ *
+ * path 是**相对路径**：项目文件夹要能直接压缩发出去，
+ * 绝对路径换个机器就失效了。
+ */
 export interface ProjectLayer {
   readonly id: string;
   readonly kind: ProjectLayerKind;
@@ -20,6 +28,7 @@ export interface ProjectLayer {
   readonly opacity: number;
 }
 
+/** 出图设置：图签标题、制图人、纸张方向与 dpi。 */
 export interface ProjectSheet {
   readonly title: string;
   readonly operator: string;
@@ -27,11 +36,18 @@ export interface ProjectSheet {
   readonly dpi: number;
 }
 
+/** 画布视野（中心经纬度与缩放级别），打开项目时恢复上次的位置。 */
 export interface ProjectView {
   readonly center: readonly [number, number];
   readonly zoom: number;
 }
 
+/**
+ * 清单里记下的一次操作。
+ *
+ * 与留痕（history.jsonl）的分工：清单里只放摘要，
+ * 留痕里才有参数与影响面——清单要能被人直接打开看懂。
+ */
 export interface ProjectOperation {
   readonly at: string;
   readonly op: string;
@@ -40,6 +56,12 @@ export interface ProjectOperation {
   readonly impact?: Readonly<Record<string, unknown>>;
 }
 
+/**
+ * 项目清单（.cartouche/project.json）的结构。
+ *
+ * 刻意是**纯 JSON、人可读**：用户能自己打开看，出错能自己救；
+ * 不用数据库，源数据也不出本机。
+ */
 export interface ProjectManifest {
   readonly version: number;
   readonly name: string;
@@ -51,6 +73,12 @@ export interface ProjectManifest {
   readonly operations: readonly ProjectOperation[];
 }
 
+/**
+ * 清单格式不对。
+ *
+ * 单独一个错误类型：上层要据此告诉用户"project.json 被改坏了"，
+ * 而不是笼统的"读取失败"。
+ */
 export class ManifestError extends Error {
   constructor(message: string) {
     super(message);
@@ -58,6 +86,12 @@ export class ManifestError extends Error {
   }
 }
 
+/**
+ * 新建一份清单。
+ *
+ * 默认值按最常用的出图场景给：A4 横版、150 dpi、标题用产品名。
+ * createdAt 与 updatedAt 相同（此刻两者本就一致）。
+ */
 export function newManifest(name: string, now = new Date().toISOString()): ProjectManifest {
   return {
     version: PROJECT_MANIFEST_VERSION,
@@ -70,10 +104,21 @@ export function newManifest(name: string, now = new Date().toISOString()): Proje
   };
 }
 
+/**
+ * 序列化成落盘字节。
+ *
+ * 缩进 2 格 + 末尾换行：这是给人看的文件，缩进让 diff 与手工排查都方便。
+ */
 export function serializeManifest(m: ProjectManifest): Uint8Array {
   return new TextEncoder().encode(`${JSON.stringify(m, null, 2)}\n`);
 }
 
+/**
+ * 解析并校验清单。
+ *
+ * 解析失败一律抛 ManifestError，且**不改原文件**——
+ * 用户的源数据不该被工具改坏。
+ */
 export function parseManifest(bytes: Uint8Array): ProjectManifest {
   let raw: unknown;
   try {
@@ -84,6 +129,12 @@ export function parseManifest(bytes: Uint8Array): ProjectManifest {
   return validateManifest(raw);
 }
 
+/**
+ * 校验清单内容并返回规范化后的结构。
+ *
+ * 每条错误都写清"哪个字段、现在写的是什么、该怎么改"——
+ * 清单是人手写的（也可能被手工改坏），报错要说人话。
+ */
 function validateManifest(raw: unknown): ProjectManifest {
   if (typeof raw !== 'object' || raw === null) {
     throw new ManifestError('项目清单格式不对：顶层应是一个对象。请检查 .cartouche/project.json 的内容。');
@@ -124,6 +175,7 @@ function validateManifest(raw: unknown): ProjectManifest {
   };
 }
 
+/** 取字符串；不是字符串就当空串。 */
 function str(v: unknown): string {
   return typeof v === 'string' ? v : '';
 }
@@ -179,6 +231,7 @@ function isSafeRelative(p: string): boolean {
   return !parts.includes('..');
 }
 
+/** 校验出图设置（页幅、dpi、标题、制图人）。 */
 function validateSheet(raw: unknown): ProjectSheet {
   const o = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>;
   const page = pick(
@@ -196,6 +249,7 @@ function validateSheet(raw: unknown): ProjectSheet {
   return { title: str(o.title), operator: str(o.operator), page, dpi };
 }
 
+/** 校验图层清单，逐层挑出 id / 类型 / 路径 / 可见性 / 不透明度。 */
 function validateLayers(raw: unknown): ProjectLayer[] {
   if (!Array.isArray(raw)) {
     throw new ManifestError(
@@ -241,6 +295,7 @@ function validateLayers(raw: unknown): ProjectLayer[] {
   return out;
 }
 
+/** 校验操作记录清单。 */
 function validateOperations(raw: unknown): ProjectOperation[] {
   if (!Array.isArray(raw)) {
     throw new ManifestError(
@@ -286,6 +341,7 @@ function validateOperations(raw: unknown): ProjectOperation[] {
   return out;
 }
 
+/** 校验画布视野（中心经纬度 + 缩放级别）。 */
 function validateView(raw: unknown): ProjectView {
   if (typeof raw !== 'object' || raw === null) {
     throw new ManifestError(

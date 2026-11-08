@@ -27,6 +27,13 @@ import {
   type PixelType,
 } from './pixels.ts';
 
+/**
+ * 亮度 / 对比度 / gamma 的参数。
+ *
+ * method 三选一：linear-stretch（按值域拉伸）、gamma（伽马校正）、
+ * manual（只叠亮度与对比度）。
+ * brightness 与 contrast 在任何 method 下都生效——linear-stretch 之后照样叠。
+ */
 export interface LevelsOptions {
   readonly method?: 'linear-stretch' | 'gamma' | 'manual';
   readonly brightness?: number;
@@ -69,6 +76,15 @@ function usesFullTypeRange(type: PixelType): boolean {
   return type === 'Byte' || type === 'UInt16';
 }
 
+/**
+ * 做亮度 / 对比度调整。
+ *
+ * 按像素类型算：8 位按 0..255、16 位按 0..65535 拉伸后铺满的是该类型的值域，
+ * 不是被压回 0..255。
+ * 32 位与浮点（Int32 的高程、Float32 的 Web Mercator）走另一套口径：
+ * linear-stretch 对它们**直接报错**——这类类型没有"满量程"，
+ * 拿它当拉伸目标会把 3000 米高程变成 6.4e9。
+ */
 export function adjustLevels(
   bands: readonly PixelBand[],
   options: LevelsOptions = {},

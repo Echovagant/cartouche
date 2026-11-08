@@ -21,6 +21,12 @@ export interface MinimaxResponseLike {
   text(): Promise<string>;
 }
 
+/**
+ * 请求参数（只留用到的字段）。
+ *
+ * GET 不带 body：undici（Node 自带的 fetch）会直接拒绝带 body 的 GET 请求，
+ * 连空串都不行。
+ */
 export interface MinimaxRequestInit {
   readonly method: string;
   readonly headers: Record<string, string>;
@@ -33,6 +39,11 @@ export interface MinimaxRequestInit {
   readonly body?: string;
 }
 
+/**
+ * fetch 的注入点。
+ *
+ * 做成可注入的函数类型：单元测试用假的 fetch 验证解析与错误处理，不联网。
+ */
 export type MinimaxFetch = (
   url: string,
   init: MinimaxRequestInit,
@@ -72,6 +83,12 @@ export interface MinimaxCallOptions {
   readonly fetchImpl?: MinimaxFetch | undefined;
 }
 
+/**
+ * 模型接口调用失败。
+ *
+ * status 为 0 表示"压根没连上"（网络层失败），非 0 是服务端返回的状态码。
+ * 分开是为了让人一眼分出"网络不通"与"接口报错"。
+ */
 export class MinimaxApiError extends Error {
   readonly status: number;
 
@@ -87,6 +104,7 @@ function endpoint(baseUrl: string, path: string): string {
   return `${baseUrl.replace(/\/+$/, '')}${path}`;
 }
 
+/** 请求头：JSON 内容类型 + Bearer 鉴权。 */
 function headers(apiKey: string): Record<string, string> {
   return {
     'content-type': 'application/json',
@@ -192,6 +210,12 @@ export function parseModelIds(text: string): string[] {
   return ids;
 }
 
+/**
+ * 一次对话的结果。
+ *
+ * reply 为空时上层会报"没能读出回话内容"——那通常不是接口坏了，
+ * 而是 max_tokens 太小、正文被推理 token 吃光了。
+ */
 export interface MinimaxChatResult {
   /** 模型回话正文 */
   readonly reply: string;
@@ -210,6 +234,12 @@ export interface MinimaxChatResult {
  */
 export type ModelsSource = 'api' | 'stale' | 'fallback';
 
+/**
+ * 模型清单的来源与内容。
+ *
+ * source 告诉用户这份清单有多可靠（实时 / 上一次缓存 / 离线兜底），
+ * warning 带着拉取失败的原因（已脱敏）。
+ */
 export interface ModelsOutcome {
   readonly models: readonly string[];
   readonly source: ModelsSource;

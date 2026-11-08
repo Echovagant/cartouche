@@ -32,6 +32,12 @@ export type BBox4326 = readonly [number, number, number, number];
 /** 显示拉伸档位。 */
 export type RasterStretch = 'auto' | 'none';
 
+/**
+ * 栅格渲染参数。
+ *
+ * 取景窗口用 EPSG:4326 的经纬度表达，与前端 MapLibre 的视野同一口径，
+ * 服务端不必替前端算投影。
+ */
 export interface RasterRenderOptions {
   /** 栅格的绝对路径 */
   readonly path: string;
@@ -56,6 +62,12 @@ export interface RasterRenderOptions {
   readonly stretch?: RasterStretch;
 }
 
+/**
+ * 渲染结果（PNG 底图）。
+ *
+ * command 保留实际执行的 gdal_translate 参数：出图效果不对时，
+ * 把这条命令拿到命令行里原样跑一遍，是最快的排查方式。
+ */
 export interface RasterRenderResult {
   readonly png: Uint8Array;
   readonly width: number;
@@ -74,6 +86,12 @@ export interface RasterRenderResult {
  */
 export type RasterOutputFormat = 'PNG' | 'JPEG' | 'GTiff';
 
+/**
+ * 渲染出的字节结果（PNG / JPEG / GTiff 三选一）。
+ *
+ * 与 RasterRenderResult 的差别是**输出格式**：走 GTiff 时是数据导出，
+ * 不做显示拉伸 —— 对 16 位影像按值域拉伸再存成 GeoTIFF，存下来的就不是原数据了。
+ */
 export interface RasterBytesResult {
   readonly bytes: Uint8Array;
   readonly format: RasterOutputFormat;
@@ -83,6 +101,12 @@ export interface RasterBytesResult {
   readonly command: readonly string[];
 }
 
+/**
+ * 渲染失败。
+ *
+ * 带住 stderr：GDAL 的失败原因（驱动缺失、窗口与数据不相交、内存不够）
+ * 只在原始输出里说得清。
+ */
 export class RasterRenderError extends Error {
   readonly stderr: string;
   constructor(message: string, stderr: string) {

@@ -48,6 +48,13 @@ import type { CheckCoverage, CheckStatus, Finding, Severity } from './types.ts';
 
 export type { Severity, Finding, CheckStatus, CheckCoverage } from './types.ts';
 
+/**
+ * 一次体检的完整结论。
+ *
+ * coverage 与 findings 同等重要：findings 说"查出了什么"，
+ * coverage 说"哪些查了、哪些没查"。
+ * 少了 coverage，报告就会让人把"没查"读成"查过、没问题"。
+ */
 export interface HealthReport {
   readonly path: string;
   readonly kind: 'raster' | 'vector' | 'unknown';
@@ -65,6 +72,12 @@ export interface HealthReport {
   readonly coverage?: readonly CheckCoverage[];
 }
 
+/**
+ * 体检的可调项。
+ *
+ * maxFeatureScan 限制逐要素检查的规模：几十万要素的图层全量读进来会把内存吃光；
+ * 超限时只做元信息检查，并在报告里说明只查了前 N 个。
+ */
 export interface HealthOptions {
   /** 要素级检查的最大要素数；超过则只做元信息检查并在报告中说明 */
   readonly maxFeatureScan?: number;
@@ -88,6 +101,7 @@ const DEFAULT_MAX_SCAN = 5000;
  */
 const DEFAULT_ANGLE_THRESHOLD = 10;
 
+/** 造一条体检结论（规则 id + 级别 + 标题 + 说明 + 可选的提示与样本）。 */
 function finding(
   ruleId: string,
   severity: Severity,
@@ -277,6 +291,12 @@ interface VectorHealthOutcome {
   readonly coverage: CheckCoverage[];
 }
 
+/**
+ * 矢量的体检主流程。
+ *
+ * 元信息规则永远查得到；逐要素的规则受扫描上限约束，
+ * 查不了的部分如实写进 coverage，不静默跳过。
+ */
 async function checkVectorHealth(
   loc: GdalLocation,
   info: VectorInfo,
@@ -479,6 +499,12 @@ const CONTRACT_CHECKS: readonly string[] = [
   'null-geometry', 'zero-area', 'sharp-angle', 'outlier-extent', 'extent-compare',
 ];
 
+/**
+ * 跑一遍数据体检。
+ *
+ * 为什么打不开时返回报告而不是抛异常：打不开本身就是一条体检结论（阻断级），
+ * 调用方拿到的应该是"结论 + 覆盖情况"，而不是一个异常。
+ */
 export async function runHealthCheck(
   loc: GdalLocation,
   path: string,

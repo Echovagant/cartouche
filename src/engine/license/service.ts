@@ -28,6 +28,12 @@ export type Capability =
   | 'deploy.onprem'
   | 'support.sla';
 
+/**
+ * 当前许可证信息。
+ *
+ * capabilities 是"现在能用哪些能力"的清单，前端据此显示或隐藏入口。
+ * 社区版没有 expiresAt 与 fingerprint——那两个是商业版才有的概念。
+ */
 export interface LicenseInfo {
   /** 许可证模式 */
   readonly edition: 'community' | 'commercial' | 'trial';
@@ -40,6 +46,12 @@ export interface LicenseInfo {
   readonly fingerprint?: string;
 }
 
+/**
+ * 许可服务接口。
+ *
+ * 引擎只依赖这个接口，不关心许可证从哪来、怎么验签；
+ * 门控发生在服务端，前端拿到的只是能力清单。
+ */
 export interface LicenseService {
   readonly mode: 'community' | 'commercial';
   /** 读取当前许可证；未安装商业许可证时返回社区版信息 */
@@ -72,6 +84,7 @@ export const COMMUNITY_CAPABILITIES: readonly Capability[] = [
 export class CommunityLicenseService implements LicenseService {
   readonly mode = 'community' as const;
 
+/** 读取当前许可证：开源版恒为社区版信息。 */
   async current(): Promise<LicenseInfo> {
     return {
       edition: 'community',
@@ -79,14 +92,17 @@ export class CommunityLicenseService implements LicenseService {
     };
   }
 
+/** 某能力是否可用：社区版全部开放。 */
   async can(capability: Capability): Promise<boolean> {
     return COMMUNITY_CAPABILITIES.includes(capability);
   }
 
+/** 安装商业许可证：开源版不支持，直接报错而不是静默忽略。 */
   async install(): Promise<LicenseInfo> {
     throw new Error('开源版不支持安装商业许可证');
   }
 
+/** 移除商业许可证：社区版本来就没有，返回当前信息即可。 */
   async remove(): Promise<LicenseInfo> {
     return this.current();
   }
@@ -119,6 +135,13 @@ export interface LicenseFileV1 {
   readonly signature: string;
 }
 
+/**
+ * 解析商业许可证文件。
+ *
+ * 这里只做**格式**校验，不验签：验签要靠厂商公钥，属于商业版实现的事。
+ * 格式不对必须当场报错，不能"尽量解析"——一份读不懂的许可证
+ * 被当成有效授权用下去，比直接拒绝危险得多。
+ */
 export function parseLicenseFile(bytes: Uint8Array): LicenseFileV1 {
   let parsed: unknown;
   try {

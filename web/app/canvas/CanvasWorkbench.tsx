@@ -985,9 +985,9 @@ export default function CanvasWorkbench() {
               stretch={stretch}
               onEditGesture={editTools.onGesture}
             />
-            <LayerArrival stageRef={stageRef} layerCount={layers.length} />
+            <LayerArrival layerCount={layers.length} />
             <SelectionShutter stageRef={stageRef} selectedCount={selected.length} />
-            <ExportDevelop stageRef={stageRef} active={engine.isPending('export')} />
+            <ExportDevelop active={engine.isPending('export')} />
           </div>
         </main>
 

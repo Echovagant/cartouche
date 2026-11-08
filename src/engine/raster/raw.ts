@@ -29,6 +29,13 @@ import {
   type PixelType,
 } from './pixels.ts';
 
+/**
+ * 一份原始像素（已从 ENVI 中转格式里读出来）。
+ *
+ * 为什么自己定这个形状：GDAL 没有"把裸像元打到 stdout"的干净选项，
+ * 只能经 ENVI 的 .bin + .hdr 中转，而中转出来的是裸字节——
+ * 自己定义形状，才能让像素级运算（修补 / 混合 / 提亮）留在 TypeScript 里做。
+ */
 export interface RasterPixels {
   readonly width: number;
   readonly height: number;

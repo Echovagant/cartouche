@@ -15,6 +15,13 @@ import {
   type PixelType,
 } from './pixels.ts';
 
+/**
+ * 把覆盖图按 alpha 混合到底图上。
+ *
+ * 按像素类型算：目标带类型由 pixelType 决定（不给就从底图第一条带反推），
+ * 16 位影像按 0..65535 混，不会被压成 255。
+ * 缺一条带时退化成"只留底图"，不会拿错位的带去混。
+ */
 export function blendBands(
   base: readonly PixelBand[],
   overlay: readonly PixelBand[],

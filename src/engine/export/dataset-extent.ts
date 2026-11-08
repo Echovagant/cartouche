@@ -19,11 +19,23 @@ import { tools, type GdalTools } from '../gdal/runner.ts';
 import type { GdalLocation } from '../gdal/env.ts';
 import type { BBox4326 } from './raster-image.ts';
 
+/**
+ * 查询数据集地理范围的入参。
+ *
+ * 只要一个路径：范围由引擎自己去问 GDAL（栅格问 gdalinfo、矢量问 ogrinfo）。
+ * 不让调用方自己算 bbox —— 算错了会让画布飞到数据之外，而且这种错很难被用户察觉。
+ */
 export interface DatasetExtentOptions {
   /** 数据集的绝对路径 */
   readonly path: string;
 }
 
+/**
+ * 数据集范围的结果。
+ *
+ * bbox 一律是 EPSG:4326 的经纬度（lon/lat、min/max 序），
+ * 前端拿它直接喂 MapLibre 的 fitBounds，不需要在前端再做一次投影换算。
+ */
 export interface DatasetExtentResult {
   /** EPSG:4326 的 [minX, minY, maxX, maxY]（min/max 序，lon/lat） */
   readonly bbox: BBox4326;
@@ -34,6 +46,12 @@ export interface DatasetExtentResult {
   readonly reprojected: boolean;
 }
 
+/**
+ * 范围探测失败。
+ *
+ * 带着 GDAL 的原始 stderr：探测失败的真实原因（文件被锁、缺驱动、格式不支持）
+ * 只在原始输出里说得清楚，转成人话之前得先把证据留住。
+ */
 export class DatasetExtentError extends Error {
   readonly stderr: string;
   constructor(message: string, stderr = '') {

@@ -54,18 +54,6 @@ export function assertTemplateName(name: string): string {
   return trimmed;
 }
 
-/* ── 路径工具（浏览器里没有 node:path，只能自己算） ─────── */
-
-/** Windows 的盘符路径不区分大小写；判据是开头有盘符 */
-function fold(p: string): string {
-  return /^[A-Za-z]:/.test(p) ? p.toLowerCase() : p;
-}
-
-/**
- * candidate 相对 root 的路径（正斜杠）。
- * 不在 root 之下就返回 null —— 跨盘符当然也算不在。
- */
-
 /* ── 引擎交互 ────────────────────────────────────────────── */
 
 async function readErrorMessage(res: Response): Promise<string> {

@@ -15,6 +15,43 @@ Copyright 2026 图签 Cartouche 贡献者
 - Geist / Geist Mono — SIL Open Font License 1.1, https://github.com/vercel/geist-font
 - Phosphor Icons — MIT License, https://phosphoricons.com
 
+以下组件随 MapLibre GL JS 一并打包进本产品的静态产物（web/out/），
+其许可同样适用于分发：
+
+- @maplibre/mlt — MIT License 或 Apache License 2.0（双许可，任选其一）
+- @mapbox/vector-tile — BSD-3-Clause
+- @mapbox/point-geometry — ISC License
+- @mapbox/tiny-sdf — BSD-2-Clause
+- @mapbox/unitbezier — BSD-2-Clause
+- @maplibre/geojson-vt — ISC License
+- @maplibre/vt-pbf — MIT License
+- @maplibre/maplibre-gl-style-spec — ISC License
+- bidi-js — MIT License
+- earcut — ISC License
+- gl-matrix — MIT License
+- kdbush — ISC License
+- murmurhash-js — MIT License
+- pbf — BSD-3-Clause
+- potpack — ISC License
+- quickselect — ISC License
+- tinyqueue — ISC License
+
+MapLibre GL JS 自身还包含以下第三方代码，其许可见
+https://github.com/maplibre/maplibre-gl-js/blob/v6.15.0/LICENSE.txt：
+
+- mapbox-gl-js v1.13 及更早版本 — BSD-3-Clause, Copyright (c) 2020, Mapbox
+- glfx.js — MIT License, Copyright (C) 2011 by Evan Wallace
+- d3-color 的部分代码 — BSD-3-Clause, Copyright 2010-2016 Mike Bostock
+- @mapbox/whoots-js — ISC License, Copyright (c) 2017 Mapbox
+
+上述各组件的版权声明与许可全文随其上游项目发布。
+
+随本产品分发的字体（web/fonts/ 下）：
+- Geist — SIL Open Font License 1.1, Copyright (c) 2023 Vercel,
+  in collaboration with basement.studio
+  （本仓库所带的是子集；字体文件内嵌的 name 表保留完整版权声明，
+  许可全文见 https://github.com/vercel/geist-font/blob/main/LICENSE.txt）
+
 本项目不包含、不分发任何 Esri 专有软件或数据。ArcGIS 是 Esri 的注册商标。
 
 官网首屏示例图（web/public/site/china-sheet.png 与 china-sheet.webp）
@@ -27,3 +64,7 @@ Copyright 2026 图签 Cartouche 贡献者
 
 两者的许可与出处另见 samples/manifest.json（随仓库入库，逐条记录每个样本的
 来源与许可；样本数据本身不入库，按需另行下载）。
+
+网站其余配图（web/public/site/ 下的 confirm-card.jpg、canvas-frame.jpg、
+report.jpg、export-pdf.png、og.png，以及根目录 assets/ 下的图片）均为
+本工具运行界面与出图结果的截图，由本项目自行生成，不含第三方素材。

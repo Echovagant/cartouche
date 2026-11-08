@@ -37,6 +37,11 @@ function readPosition(value: unknown, where: string): Position {
   return [x, y];
 }
 
+/**
+ * 读一串坐标点。
+ *
+ * where 带上定位信息（"第 3 个点"），错误信息才能指到具体位置。
+ */
 function readPositions(value: unknown, where: string): Position[] {
   if (!Array.isArray(value)) {
     throw new GeometryError(`${where}不是坐标数组`);
@@ -73,6 +78,7 @@ function readPolygonRings(value: unknown, where: string): Position[][] {
   return value.map((ring, i) => readRing(ring, `${where}第 ${i} 个环`));
 }
 
+/** 把多组点摊平成一组（只用于取顶点、算包围盒）。 */
 function flatten(groups: readonly (readonly Position[])[]): Position[] {
   const out: Position[] = [];
   for (const g of groups) {

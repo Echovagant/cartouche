@@ -21,6 +21,7 @@ import { findWrittenField } from './field-names.ts';
 import { VectorError, type FeatureRecord } from './types.ts';
 import type { VectorOpDeps } from './query.ts';
 
+/** 读一个非空字符串参数；没有、或只有空白，返回 undefined。 */
 function readString(params: Readonly<Record<string, unknown>>, key: string): string | undefined {
   const v = params[key];
   return typeof v === 'string' && v.trim() !== '' ? v : undefined;

@@ -17,6 +17,14 @@ import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, dirname, delimiter } from 'node:path';
 
+/**
+ * GDAL 的落位信息。
+ *
+ * 为什么把 exeSuffix 也带进来：可执行文件名随平台变（Windows 带 .exe），
+ * 拼命令时不能写死。
+ * 为什么把 gdalData / projData 也带进来：不设这两个环境变量，
+ * GDAL 会输出 "GDAL_DATA is not defined" 之类警告，**部分驱动静默加载失败**。
+ */
 export interface GdalLocation {
   /** 存放可执行文件的目录，如 <prefix>\Library\bin 或 <prefix>/bin */
   readonly binDir: string;
@@ -91,6 +99,12 @@ export function resolveGdal(options: ResolveGdalOptions = {}): GdalLocation | nu
   return null;
 }
 
+/**
+ * 由 bin 目录推出安装前缀与数据目录。
+ *
+ * conda 的布局随平台变（Windows 是 <prefix>\Library\bin，POSIX 是 <prefix>/bin），
+ * 数据目录同理（Library\share vs share）——两套布局都试一遍，谁存在用谁。
+ */
 function buildLocation(binDir: string, platform: NodeJS.Platform): GdalLocation {
   // bin 形如 <prefix>\Library\bin（Windows）或 <prefix>/bin（POSIX）
   const prefix = binDir.endsWith(join('Library', 'bin')) ? dirname(dirname(binDir)) : dirname(binDir);

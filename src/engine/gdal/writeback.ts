@@ -14,6 +14,12 @@ import { randomBytes } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { OccupiedError, sha256, type WorkspaceAdapter } from '../workspace/index.ts';
 
+/**
+ * 一起写出的伴随文件（.tfw / .wld / .prj …）。
+ *
+ * 为什么必须单独列出来：栅格换了，仿射参数与坐标系的文件要跟着换，
+ * 否则 ArcGIS 打开时按旧的世界文件定位，图就整个错位。
+ */
 export interface WriteBackSidecar {
   readonly path: string;
   readonly data: Uint8Array;
@@ -27,6 +33,12 @@ export interface WriteBackSidecar {
  */
 export type WriteBackMode = 'replace' | 'copy';
 
+/**
+ * 一次写回的请求。
+ *
+ * mode='copy' 是"另存为"：原文件一个字节都不动，也不建备份。
+ * 这个开关只有两个值是刻意的 —— 第三种"顺便覆盖"的行为最容易出事故。
+ */
 export interface WriteBackRequest {
   /** 目标文件的相对路径 */
   readonly target: string;
@@ -44,6 +56,13 @@ export interface WriteBackRequest {
   readonly outputPath?: string;
 }
 
+/**
+ * 写回结果。
+ *
+ * verified 表示"回读校验通过并且原子替换已完成"：
+ * 校验不过会直接抛错中止写回，不会返回 verified=false 的半成品。
+ * sha256 留给事后核对文件有没有被动过。
+ */
 export interface WriteBackResult {
   readonly target: string;
   /** mode='copy' 时是新文件路径 */
@@ -54,6 +73,7 @@ export interface WriteBackResult {
   readonly verified: boolean;
 }
 
+/** 备份文件名用的时间戳：本地时间，精确到秒。 */
 function timestamp(): string {
   const d = new Date();
   const p = (n: number, w = 2) => String(n).padStart(w, '0');
@@ -71,11 +91,17 @@ export function backupPathFor(target: string, label?: string): string {
 /** 瞬时性错误：Windows 上文件被杀软 / 索引器短暂独占时就会这样 */
 const TRANSIENT_CODES = new Set(['EACCES', 'EPERM', 'EBUSY']);
 
+/**
+ * 这个错误是不是"过一会儿会自己好"的瞬时错误。
+ *
+ * 只对瞬时错误退避重试；其它错误重试没有意义，直接中止写回。
+ */
 function isTransient(err: unknown): boolean {
   const code = (err as NodeJS.ErrnoException | undefined)?.code;
   return typeof code === 'string' && TRANSIENT_CODES.has(code);
 }
 
+/** 等待若干毫秒（退避重试用）。 */
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }

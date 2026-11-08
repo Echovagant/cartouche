@@ -279,11 +279,6 @@ function optionalStr(value: unknown, path: string): string | undefined {
   return str(value, path);
 }
 
-function optionalNum(value: unknown, path: string): number | undefined {
-  if (value === undefined || value === null) return undefined;
-  return num(value, path);
-}
-
 function normalizeLegendItem(raw: unknown, path: string): SheetLegendItem {
   const o = obj(raw, path);
   const name = str(o['name'], `${path}.name`);

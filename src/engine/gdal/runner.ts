@@ -10,6 +10,13 @@ import { execFile } from 'node:child_process';
 import { join } from 'node:path';
 import { gdalEnv, type GdalLocation } from './env.ts';
 
+/**
+ * 一次 GDAL 命令执行的结果。
+ *
+ * 刻意**不抛异常**：命令失败是常态（源不存在、驱动不支持），
+ * 交由上层按 kind 分类后翻译成人话。
+ * 一律抛异常的话，上层就分不清"GDAL 根本没装"和"这个文件有问题"。
+ */
 export interface ToolResult {
   readonly ok: boolean;
   readonly code: number;
@@ -19,6 +26,12 @@ export interface ToolResult {
   readonly command: string;
 }
 
+/**
+ * 跑命令时的可调项。
+ *
+ * timeoutMs 一定要能调：大数据量的 gdalwarp 可能要跑几分钟，
+ * 用同一个超时去卡小查询会误伤。
+ */
 export interface RunOptions {
   readonly timeoutMs?: number;
   readonly cwd?: string;
@@ -26,6 +39,15 @@ export interface RunOptions {
 
 const DEFAULT_TIMEOUT_MS = 120_000;
 
+/**
+ * 跑一个 GDAL 命令行工具。
+ *
+ * 三条硬规矩，少一条就要踩坑：
+ *  1. 用 execFile 传参数数组，不拼 shell 字符串 —— 路径里有空格和中文，
+ *     拼字符串必然出问题，也挡不住注入。
+ *  2. 一定带上 gdalEnv() —— 不设 GDAL_DATA / PROJ_LIB 时部分驱动静默失败。
+ *  3. 超时与非零退出码都转成结构化结果，不在这里抛异常。
+ */
 export function runTool(
   loc: GdalLocation,
   exe: string,
@@ -76,6 +98,12 @@ export interface GdalTools {
   readonly buildVrt: (args: readonly string[]) => Promise<ToolResult>;
 }
 
+/**
+ * 拼出常用 GDAL 工具的调用器。
+ *
+ * 为什么单独一层：可执行文件名要按平台补后缀（Windows 的 .exe），
+ * 抽出来之后调用方只管传参数，不必每个地方都记得拼后缀。
+ */
 export function tools(loc: GdalLocation): GdalTools {
   const sfx = loc.exeSuffix;
   return {
@@ -100,12 +128,26 @@ export type GdalErrorKind =
   | 'not-found'
   | 'unknown';
 
+/**
+ * 归一化之后的错误。
+ *
+ * kind 给上层做分支用，message 给人看，raw 留着原始 stderr 供排查 ——
+ * 三者分工不同，不要互相顶替。
+ */
 export interface ClassifiedError {
   readonly kind: GdalErrorKind;
   readonly message: string;
   readonly raw: string;
 }
 
+/**
+ * 把 GDAL 的原始报错归一化成"可读的错误类型"。
+ *
+ * 为什么按关键字匹配而不是解析结构化输出：GDAL 的错误文本没有稳定格式，
+ * 各驱动各写各的。能稳定分类的几种（超时 / 找不到文件 / 文件被占用 /
+ * 缺坐标系 / 格式不支持 / 缺驱动）用关键字足够；
+ * 认不出来的老实落进 unknown，不硬猜。
+ */
 export function classifyError(result: ToolResult): ClassifiedError {
   const raw = `${result.stderr}\n${result.stdout}`;
   const lower = raw.toLowerCase();

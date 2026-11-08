@@ -75,6 +75,13 @@ import {
   type RasterWindow,
 } from './window.ts';
 
+/**
+ * 一次栅格编辑的结果。
+ *
+ * 影响面用**像元口径**：改了多少像元、占全图多少、改前改后的校验和、备份在哪。
+ * 预演走的是同一条计算路径，只是去掉写盘那一步——
+ * 确认卡要在动手之前就报出"会影响多少像元"，估出来的数不算数。
+ */
 export interface RasterOpResult {
   readonly op: string;
   readonly target: string;
@@ -118,6 +125,14 @@ export interface RasterEditOptions {
   readonly outputPath?: string;
 }
 
+/**
+ * 栅格编辑的依赖。
+ *
+ * maxWindowBytes 与 minFreeBytes 是两道**体积护栏**：
+ * 窗口化解决的是"局部操作别把整图读进内存"，但用户框住半个图时窗口本身也很大；
+ * 磁盘同理——把盘写满会让系统日志、临时目录、别的工程一起写不进去，
+ * 故障就从"这一次操作失败"扩散成"整台机器都不正常"。
+ */
 export interface RasterDeps {
   readonly loc: GdalLocation;
   readonly store: WorkspaceAdapter;
@@ -470,6 +485,12 @@ export interface PixelQueryOpRequest {
   readonly allowOutside?: boolean;
 }
 
+/**
+ * 解析颜色参数。
+ *
+ * 收 #RRGGBB 与 [r,g,b] 两种写法；另有一个特殊值 'sample-from-edge'——
+ * 从影像边缘取色，用于"按影像本身配色"而不是写死颜色。
+ */
 function parseColor(color: string | readonly number[]): [number, number, number] | 'sample-from-edge' {
   if (typeof color === 'string') {
     if (color === 'sample-from-edge') return 'sample-from-edge';
@@ -1200,6 +1221,7 @@ export class RasterEditor {
   }
 }
 
+/** 两个仿射参数是否相同（逐项比较，容差 1e-9）。 */
 function sameGeotransform(a: readonly number[] | null, b: readonly number[] | null): boolean {
   if (!a || !b || a.length < 6 || b.length < 6) return false;
   for (let i = 0; i < 6; i++) {

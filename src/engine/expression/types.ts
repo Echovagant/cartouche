@@ -90,6 +90,12 @@ export interface IsNullNode {
   readonly negated: boolean;
 }
 
+/**
+ * 表达式语法树的节点全集。
+ *
+ * 各节点的具体形状由上面那些 LiteralNode / FieldNode… 定义，
+ * 这里只做汇总：解析器按 kind 构造，求值器按 kind 分派。
+ */
 export type ExprNode =
   | LiteralNode
   | FieldNode
@@ -114,6 +120,12 @@ export type ExpressionErrorCode =
   /** 值算不出来（除零等） */
   | 'value';
 
+/**
+ * 表达式错误。
+ *
+ * 带 code 让上层能分清「没听懂」（syntax）与「数据不对」（type / missing-field）：
+ * 前者要回问用户，后者要提示改数据，混成一句话两边都不知道该怎么办。
+ */
 export class ExpressionError extends Error {
   readonly code: ExpressionErrorCode;
   /** 出错位置的补充说明（列名、字面量…），给人看的上下文 */

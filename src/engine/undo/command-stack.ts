@@ -13,28 +13,41 @@ export interface Command {
   undo(): Promise<void>;
 }
 
+/**
+ * 撤销 / 重做栈。
+ *
+ * 三条不变量：
+ *  - 执行失败 → 不入栈（历史里不留半截状态）
+ *  - 撤销失败 → 命令留在原位（用户可重试），异常不吞
+ *  - 重做按**原始顺序**回放：先撤 C 再撤 B，重做时先做 B
+ */
 export class CommandStack {
   /** 尚未撤销的命令，末尾为最近执行的 */
   #undo: Command[] = [];
   /** 已撤销、可重做的命令，队首为下一个要重做的 */
   #redo: Command[] = [];
 
+/** 有没有可撤销的命令。 */
   get canUndo(): boolean {
     return this.#undo.length > 0;
   }
 
+/** 有没有可重做的命令。 */
   get canRedo(): boolean {
     return this.#redo.length > 0;
   }
 
+/** 最近一步的名字（给"撤销 XXX"按钮用）；没有则 null。 */
   get undoLabel(): string | null {
     return this.#undo[this.#undo.length - 1]?.label ?? null;
   }
 
+/** 下一步要重做的名字；没有则 null。 */
   get redoLabel(): string | null {
     return this.#redo[0]?.label ?? null;
   }
 
+/** 可撤销的命令条数。 */
   get size(): number {
     return this.#undo.length;
   }
@@ -64,6 +77,7 @@ export class CommandStack {
     this.#undo.push(command);
   }
 
+/** 清空两个栈（换项目、重新加载时用）。 */
   clear(): void {
     this.#undo.length = 0;
     this.#redo.length = 0;

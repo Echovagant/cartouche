@@ -21,6 +21,13 @@ import { buildPdfFromJpeg } from './pdf.ts';
 import type { GdalLocation } from '../gdal/env.ts';
 import type { WorkspaceAdapter } from '../workspace/types.ts';
 
+/**
+ * 出图格式全集。
+ *
+ * 为什么 tif 与 png / jpeg 并列：tif 是**数据导出**（保留波段类型与仿射参数），
+ * png / jpeg 是**显示导出**（8 位通道，供屏幕与 PDF 贴图用）。
+ * 两者走的是不同路径，不是同一个开关的不同取值。
+ */
 export type ImageExportFormat = 'png' | 'jpeg' | 'pdf' | 'tif';
 
 /** 契约里 export.image 的 format 取值全集 */
@@ -56,6 +63,13 @@ const BASE_DPI = 72;
 const MAX_OUTPUT_PIXELS = 64_000_000;
 const MAX_OUTPUT_PIXELS_DATA = 256_000_000;
 
+/**
+ * 导出图片的入参。
+ *
+ * target 是被导出的源数据，outputPath 是产物落点，两个都在工作区里。
+ * dpi 只表示"相对源分辨率放大多少倍"（72 = 1:1）—— bbox 是经纬度，
+ * 度不是物理长度，按真实 dpi 推算会得到荒谬的像素数。
+ */
 export interface ImageExportOptions {
   readonly loc: GdalLocation;
   readonly store: WorkspaceAdapter;
@@ -72,6 +86,11 @@ export interface ImageExportOptions {
   readonly dryRun?: boolean;
 }
 
+/**
+ * 导出图片的结果。
+ *
+ * 预演（dryRun）时只算尺寸与格式、不写盘，所以 byteLength 为 0。
+ */
 export interface ImageExportResult {
   readonly outputPath: string;
   readonly format: ImageExportFormat;

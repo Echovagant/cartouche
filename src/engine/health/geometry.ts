@@ -13,6 +13,7 @@
 import type { Finding } from './types.ts';
 import type { ScannedFeature, ScannedGeometry } from './scan.ts';
 
+/** 一个坐标点：[x, y]。从 GeoJSON 坐标数组里读出来，第三维（高程）一律忽略。 */
 export type Position = readonly [number, number];
 
 /** 一个面：外环 + 内环（洞） */

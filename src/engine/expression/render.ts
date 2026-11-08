@@ -24,6 +24,7 @@ const PREC = {
   ATOM: 8,
 } as const;
 
+/** 运算符优先级（数字越大结合得越紧）。 */
 function precOf(op: BinaryOp): number {
   switch (op) {
     case 'OR':
@@ -65,6 +66,12 @@ export function quoteField(name: string): string {
   return `[${name}]`;
 }
 
+/**
+ * 把语法树还原成表达式文本。
+ *
+ * minPrec 用来决定要不要加括号：外层优先级低于内层时必须加，
+ * 否则还原出来的文本含义会变。
+ */
 function render(node: ExprNode, minPrec: number): string {
   switch (node.kind) {
     case 'literal':

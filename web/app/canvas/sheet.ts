@@ -310,10 +310,6 @@ function titleCellCount(layout: SheetLayout): number {
   return TITLE_FIELD_ORDER.filter((key) => key in layout.titleBlock.fields).length;
 }
 
-/** 图框：外线离画布边的距离、内线与外线的间距（都按 k 缩放） */
-const FRAME_MARGIN = 6;
-const FRAME_GAP = 4;
-
 function frameMetrics(
   frame: SheetLayout['frame'],
   k: number,
@@ -561,11 +557,6 @@ function mercatorY(latitude: number): number {
   return Math.log(Math.tan(Math.PI / 4 + (clamped * Math.PI) / 360));
 }
 
-/** Web Mercator 的 y 反算纬度 */
-function latitudeFromMercatorY(y: number): number {
-  return (Math.atan(Math.sinh(y)) * 180) / Math.PI;
-}
-
 /** 一条格网线 */
 export interface GraticuleLine {
   readonly x1: number;
@@ -624,8 +615,6 @@ export function computeGraticule(
     return empty;
   }
 
-  const lines: GraticuleLine[] = [];
-  const labels: GraticuleLabel[] = [];
   const labelInset = 4;
 
   if (g.kind === 'kilometer') {
@@ -645,9 +634,9 @@ export function computeGraticule(
       stepMeters = niceGridStep(stepMeters * factor);
       const grown = stepMeters / Math.max(content.metersPerPixel, 1e-9);
       if (!(grown > 0)) return empty;
-      return computeKilometerGrid(g, content, rect, grown, stepMeters, labelInset);
+      return computeKilometerGrid(rect, grown, stepMeters, labelInset);
     }
-    return computeKilometerGrid(g, content, rect, stepPx, stepMeters, labelInset);
+    return computeKilometerGrid(rect, stepPx, stepMeters, labelInset);
   }
 
   /* ── 经纬网 ── */
@@ -672,15 +661,14 @@ export function computeGraticule(
       }
       grown = step;
     }
-    return computeGeographicGrid(g, content, canvas, rect, grown, centerLat);
+    return computeGeographicGrid(content, canvas, rect, grown, centerLat);
   }
 
-  return computeGeographicGrid(g, content, canvas, rect, lonStep, centerLat);
+  return computeGeographicGrid(content, canvas, rect, lonStep, centerLat);
 }
 
 /** 经纬网的具体排布（步长定好之后再算线与标注） */
 function computeGeographicGrid(
-  g: SheetLayout['graticule'],
   content: SheetContent,
   canvas: { readonly width: number; readonly height: number },
   rect: SheetRect,
@@ -732,8 +720,6 @@ function computeGeographicGrid(
 
 /** 公里网的具体排布（单独拎出来：步长调整后要整体重算） */
 function computeKilometerGrid(
-  g: SheetLayout['graticule'],
-  content: SheetContent,
   rect: SheetRect,
   stepPx: number,
   stepMeters: number,
@@ -777,36 +763,6 @@ function computeKilometerGrid(
     });
   }
   return { lines, labels };
-}
-
-/**
- * 建议一个格网间隔。
- *
- * 目标是图上大约 10 cm 一条线 —— 出图规范里的常用值，
- * 再按比例尺换算成地理量，最后规整到"好看"的档位。
- */
-export function suggestGraticuleInterval(
-  layout: SheetLayout,
-  content: SheetContent,
-  targetCentimeters = 10,
-): number {
-  const denominator = content.scaleDenominator ?? scaleDenominator(content.metersPerPixel, 96);
-  if (!(denominator > 0)) return layout.graticule.interval;
-  const groundMeters = groundMetersForInterval(targetCentimeters, denominator);
-  if (layout.graticule.kind === 'kilometer') {
-    const step = niceGridStep(groundMeters);
-    const cm = (step / denominator) * 100;
-    // 图上厘米取整到 0.5 cm 一档，用户填起来不别扭
-    return Math.max(0.5, Math.round(cm * 2) / 2);
-  }
-  const centerLat = (content.extent.minY + content.extent.maxY) / 2;
-  const metersPerDegree = 111320 * Math.cos((centerLat * Math.PI) / 180);
-  const degrees = groundMeters / Math.max(metersPerDegree, 1e-6);
-  let best: number = GEO_STEPS[0];
-  for (const step of GEO_STEPS) {
-    if (step <= degrees * 1.0001) best = step;
-  }
-  return best;
 }
 
 /* ── 绘制 ───────────────────────────────────────────────── */

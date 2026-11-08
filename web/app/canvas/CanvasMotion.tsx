@@ -58,10 +58,8 @@ export function CanvasBoot({
  * 从上方落位。它同时在传达两件事：数据到了、视野已经跟过去了。
  */
 export function LayerArrival({
-  stageRef,
   layerCount,
 }: {
-  stageRef: React.RefObject<HTMLElement | null>;
   layerCount: number;
 }) {
   const sweepRef = useRef<HTMLDivElement | null>(null);
@@ -150,10 +148,8 @@ export function SelectionShutter({
  * 一道从左到右的显影光带说明"正在出图"，比转圈更有信息量。
  */
 export function ExportDevelop({
-  stageRef,
   active,
 }: {
-  stageRef: React.RefObject<HTMLElement | null>;
   active: boolean;
 }) {
   const bandRef = useRef<HTMLDivElement | null>(null);
