@@ -15,6 +15,12 @@
 import type { DatasetInfo } from '../gdal/probe.ts';
 import type { HealthReport } from '../health/checks.ts';
 
+/**
+ * 报告里要写进去的一次操作。
+ *
+ * 栅格记像元、矢量记要素：两种口径不能混，
+ * 所以 affectedPixels 与 affectedFeatures 分开列。
+ */
 export interface CompatOperation {
   /** 操作名，如 raster.erase */
   readonly op: string;
@@ -33,6 +39,12 @@ export interface CompatOperation {
   readonly checksumAfter?: string;
 }
 
+/**
+ * 生成报告需要的全部材料。
+ *
+ * 纯函数的输入：探查结果 + 体检结果 + 操作记录。
+ * 传进来什么就用什么，缺什么降级成"未检查"，不替用户补。
+ */
 export interface CompatReportInput {
   /** 被检查的文件（相对工作区路径） */
   readonly path: string;
@@ -47,6 +59,13 @@ export interface CompatReportInput {
   readonly engineVersion?: string;
 }
 
+/**
+ * 兼容性报告的结果。
+ *
+ * markdown 是给人直接转给 GIS 同事的材料；
+ * hasBlocker 与 manualChecks 是给界面用的——
+ * 前者决定要不要拦住"交差"，后者是必须人工看一眼的条目。
+ */
 export interface CompatReport {
   readonly markdown: string;
   /** 是否存在会阻断"在 ArcGIS 中正常使用"的问题 */
@@ -55,6 +74,7 @@ export interface CompatReport {
   readonly manualChecks: readonly string[];
 }
 
+/** 数字的显示格式：没有值显示破折号，有值加千分位。 */
 function fmt(n: number | undefined): string {
   if (n === undefined || !Number.isFinite(n)) return '—';
   return n.toLocaleString('zh-CN');

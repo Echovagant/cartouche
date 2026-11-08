@@ -281,18 +281,27 @@ export class OpenAiCompatibleProvider implements KeyProvider {
     this.#effort = options.effort;
   }
 
+/** 当前接入点（每次现取，用户换接入线立刻生效）。 */
   get baseUrl(): string {
     return this.#baseUrl();
   }
 
+/** 当前模型名（每次现取）。 */
   get model(): string {
     return this.#model();
   }
 
+/**
+ * 不提供模型清单。
+ *
+ * 能不能拉到清单由目录表逐条实测决定；这个提供方拿不到目录信息，
+ * 返回空数组（而不是猜几个模型名），界面据此不显示"拉取模型"按钮。
+ */
   async listModels(): Promise<readonly string[]> {
     return [];
   }
 
+/** 取凭据：密钥现取，模型与端点也现取，换接入线无需重建对象。 */
   async resolve(_ownerId: string): Promise<LlmCredentials | null> {
     const apiKey = this.#readApiKey();
     if (!apiKey) return null;
@@ -304,6 +313,7 @@ export class OpenAiCompatibleProvider implements KeyProvider {
     };
   }
 
+/** 是否已配置密钥。 */
   async hasCredentials(_ownerId: string): Promise<boolean> {
     return Boolean(this.#readApiKey());
   }

@@ -10,11 +10,23 @@
 import { tools } from '../gdal/runner.ts';
 import type { GdalLocation } from '../gdal/env.ts';
 
+/**
+ * 扫出来的一个几何（GeoJSON 的形状）。
+ *
+ * coordinates 保持 unknown：GeoJSON 里坐标可能是数字、也可能是字符串、也可能是 null，
+ * 判断放到读的时候做，不在这里假装它一定是干净的数值数组。
+ */
 export interface ScannedGeometry {
   readonly type?: string;
   readonly coordinates?: unknown;
 }
 
+/**
+ * 扫出来的一个要素。
+ *
+ * id 是要素在图层里的序号（从 0 起）：GeoJSON 输出必须加 -lco ID_GENERATE=YES 才有，
+ * 少了它报告里就会出现"要素 undefined"，那种话没法照着做。
+ */
 export interface ScannedFeature {
   readonly id: string | number | null;
   readonly geometry: ScannedGeometry | null;
@@ -22,6 +34,12 @@ export interface ScannedFeature {
   readonly properties?: Record<string, unknown> | null;
 }
 
+/**
+ * 一次扫描的结果。
+ *
+ * truncated 标出是否撞到了扫描上限：撞到了就必须在报告里说"只查了前 N 个"，
+ * 否则用户会以为全查过了。
+ */
 export interface FeatureScan {
   readonly features: readonly ScannedFeature[];
   /** 要素数超过扫描上限，被截断了 */

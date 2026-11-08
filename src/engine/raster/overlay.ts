@@ -176,6 +176,11 @@ interface RasterMeta {
   readonly bandCount: number;
 }
 
+/**
+ * 读栅格的计量信息（尺寸、仿射、波段类型）。
+ *
+ * 走 gdalinfo -json，不读像素：覆盖图层只要元信息就够。
+ */
 async function readMeta(loc: GdalLocation, path: string): Promise<RasterMeta> {
   const res = await tools(loc).info(path, ['-json']);
   if (!res.ok) {

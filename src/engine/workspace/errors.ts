@@ -15,6 +15,12 @@ export class OccupiedError extends Error {
   }
 }
 
+/**
+ * 目标不存在。
+ *
+ * 单独一个错误类型：上层要能分清"文件没了"与"文件在但打不开"——
+ * 前者提示重新选文件，后者提示"先在 ArcGIS 里移除该图层"。
+ */
 export class NotFoundError extends Error {
   readonly path: string;
   constructor(path: string) {
@@ -24,6 +30,13 @@ export class NotFoundError extends Error {
   }
 }
 
+/**
+ * 路径越界：请求的路径不在任何已登记的工作区根之下。
+ *
+ * 这是**安全闸门**，不是"路径写错了"：
+ * 引擎的所有读写都必须先过这一关，越界的请求一律拒绝，
+ * 不做"稍微清理一下再试"——清理本身就是猜测。
+ */
 export class PathEscapeError extends Error {
   readonly path: string;
   constructor(path: string) {

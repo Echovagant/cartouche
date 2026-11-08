@@ -16,6 +16,13 @@
  */
 import { ExpressionError } from './types.ts';
 
+/**
+ * 记号的种类。
+ *
+ * 'cn' 单列一类：中文短语既不是关键字也不是标识符，
+ * 它带的语义（等于 / 不为空 / 包含…）要交给解析器按位置解释——
+ * 「不是」既能是二元「不等于」，也能是一元「非」，混进 'keyword' 就说不清了。
+ */
 export type TokenKind =
   | 'number'
   | 'string'
@@ -49,6 +56,13 @@ export type CnKind =
   /** 「到」「至」（区间里的连接词） */
   | 'sep';
 
+/**
+ * 一个记号。
+ *
+ * 除 kind 外按类别挂不同的值字段（数字挂 num、字符串挂 str…），
+ * 而不是拆成十来个记号类型：词法器只负责切，切出来的字段组合很多，
+ * 用可选字段比用类型联合体好维护。
+ */
 export interface Token {
   readonly kind: TokenKind;
   /** 原始文本（拼回 SQL 时用） */
@@ -143,14 +157,17 @@ export function isCjk(ch: string): boolean {
   );
 }
 
+/** 标识符的首字符：英文字母、下划线或中文。 */
 function isIdentStart(ch: string): boolean {
   return /[A-Za-z_]/.test(ch) || isCjk(ch);
 }
 
+/** 标识符的后续字符：字母、数字、下划线或中文。 */
 function isIdentChar(ch: string): boolean {
   return /[A-Za-z0-9_]/.test(ch) || isCjk(ch);
 }
 
+/** 空白字符（切词时跳过）。 */
 function isSpace(ch: string): boolean {
   return /\s/.test(ch);
 }
@@ -186,6 +203,12 @@ function matchCnPhrase(src: string, i: number): { cn: CnKind; sql: string; len: 
 /** 多字符运算符（长的先试）。 */
 const OPERATORS: readonly string[] = ['<>', '!=', '<=', '>=', '=', '<', '>', '+', '-', '*', '/'];
 
+/**
+ * 造一个语法错误。
+ *
+ * 带上出错位置附近的原文：只说"第 12 个字符有问题"，
+ * 用户得自己数字符；把附近的字贴出来才改得动。
+ */
 function syntaxError(src: string, pos: number, reason: string): ExpressionError {
   const near = src.slice(Math.max(0, pos - 10), Math.min(src.length, pos + 10));
   return new ExpressionError(

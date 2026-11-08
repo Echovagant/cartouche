@@ -11,6 +11,13 @@ import type { GdalLocation } from '../gdal/env.ts';
 import type { CheckStatus, Finding } from './types.ts';
 import type { Extent } from './scope.ts';
 
+/**
+ * 参照层的描述。
+ *
+ * 参照层是跨图层比较（坐标系是否一致、范围是否对得上、有没有整体平移）的基准。
+ * 没有参照层，这一族检查只能报"没查"——不能拿单层数据自己跟自己比，
+ * 那种"一致"是自说自话。
+ */
 export interface ReferenceLayer {
   readonly path: string;
   readonly kind: 'raster' | 'vector';
@@ -68,6 +75,12 @@ export async function loadReferenceLayer(
   };
 }
 
+/**
+ * 读数据集的范围（源坐标系下）。
+ *
+ * 栅格由原点 + 像元尺寸 + 宽高算出，矢量交给 ogrinfo；
+ * 拿不到就返回 null，不编一个范围出来。
+ */
 async function readExtent(loc: GdalLocation, dataset: DatasetInfo): Promise<Extent | null> {
   if (dataset.kind === 'raster') {
     const { origin, pixelSize, width, height } = dataset;
@@ -229,6 +242,12 @@ export function checkSystematicOffset(
   };
 }
 
+/**
+ * 数字的显示格式。
+ *
+ * 常规数值四舍五入到 4 位小数；特别大或特别小的用科学计数，
+ * 免得报告里出现一长串数字或一串 0.0000。
+ */
 function fmtNum(n: number): string {
   if (!Number.isFinite(n)) return '—';
   return Math.abs(n) >= 1e-4 && Math.abs(n) < 1e9 ? String(Math.round(n * 1e4) / 1e4) : n.toExponential(3);

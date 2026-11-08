@@ -26,10 +26,22 @@
 /** MapLibre 图层类型（本期只出这三种） */
 export type MapLibreLayerType = 'circle' | 'line' | 'fill';
 
+/**
+ * MapLibre 的 paint 属性集合。
+ *
+ * 用索引签名而不逐个列字段：paint 的键随图层类型变化
+ * （circle / line / fill 各有一套），列死一半不如不列。
+ */
 export interface MapLibrePaint {
   [property: string]: unknown;
 }
 
+/**
+ * 一条 MapLibre 图层描述。
+ *
+ * 形状就是 MapLibre style.json 里图层对象的形状：
+ * 本模块的产物能直接塞进 style.json，不需要二次转换。
+ */
 export interface MapLibreLayer {
   id: string;
   type: MapLibreLayerType;
@@ -40,6 +52,12 @@ export interface MapLibreLayer {
   layout?: Record<string, unknown>;
 }
 
+/**
+ * CIM → style 转换的选项。
+ *
+ * source 是数据源 id（style.json 里的那个），不是文件路径；
+ * sourceLayer 只在矢量瓦片下有意义。
+ */
 export interface CimToStyleOptions {
   /** MapLibre 数据源名（style.json 里的 source id） */
   readonly source: string;
@@ -49,6 +67,13 @@ export interface CimToStyleOptions {
   readonly idPrefix?: string;
 }
 
+/**
+ * 转换结果。
+ *
+ * warnings 是"能还原但不完全等价"（缺色、字段缺失、降级到默认符号），
+ * unsupported 是"完全转不了"。两类都要报出来：
+ * 静默丢弃等于让用户以为图迁过来了，其实是少了一部分。
+ */
 export interface CimToStyleResult {
   readonly layers: MapLibreLayer[];
   /** 可恢复但不完全等价的情况（缺色、字段缺失、降级到默认符号等） */
@@ -61,10 +86,12 @@ export interface CimToStyleResult {
 
 type Json = Record<string, unknown>;
 
+/** 是不是一个 JSON 对象；不是就返回 null。 */
 function asRecord(value: unknown): Json | null {
   return typeof value === 'object' && value !== null && !Array.isArray(value) ? (value as Json) : null;
 }
 
+/** 是数组就返回它，不是就返回空数组。 */
 function asArray(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
 }
@@ -460,6 +487,12 @@ export function cimToMapLibreLayers(cim: unknown, options: CimToStyleOptions): C
   return { layers, warnings, unsupported };
 }
 
+/**
+ * 由渲染器类型推一个兜底的符号类型。
+ *
+ * 唯一值渲染器退化成标记符号、分类断点退化成填充符号——
+ * 目的是有个能用的默认样式，而不是整层不画。
+ */
 function rendererTypeFromRenderer(rendererType: string): string | undefined {
   if (rendererType.includes('UniqueValue')) return 'CIMSimpleMarkerSymbol';
   if (rendererType.includes('ClassBreaks')) return 'CIMSimpleFillSymbol';

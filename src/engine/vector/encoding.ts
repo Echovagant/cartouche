@@ -22,6 +22,12 @@ import { VectorError } from './types.ts';
 /** 引擎支持的属性表编码（与契约里 vector.recode 的取值一致）。 */
 export const SUPPORTED_ENCODINGS = ['GBK', 'UTF-8', 'LATIN1'] as const;
 
+/**
+ * 引擎支持的属性表编码。
+ *
+ * 与契约里 vector.recode 的取值一致——引擎支持的口径必须与契约对齐，
+ * 不然会出现"界面上能选、引擎却拒下"。
+ */
 export type SupportedEncoding = (typeof SUPPORTED_ENCODINGS)[number];
 
 /**
@@ -171,6 +177,12 @@ export function isAsciiOnlyDbf(dbfPath: string): boolean {
   }
 }
 
+/**
+ * 编码探测的结果。
+ *
+ * source 记清依据是 .cpg 还是字节探测：两者的可信度不一样，
+ * 真实数据里 .cpg 写错的情况并不少见。
+ */
 export interface DetectedEncoding {
   /** 认出来的编码 */
   readonly encoding: SupportedEncoding;

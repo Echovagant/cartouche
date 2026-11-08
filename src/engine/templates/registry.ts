@@ -19,6 +19,12 @@ export type ParamType =
   | 'object'
   | 'stringArray';
 
+/**
+ * 一个模板参数的规格。
+ *
+ * type 里的 layerRef / pathRef / region 是**带约定的参数**：
+ * 引擎只认 dataset:// 引用（图层标识不是文件路径），校验就按这个口径判。
+ */
 export interface TemplateParamSpec {
   readonly name: string;
   readonly label: string;
@@ -28,11 +34,23 @@ export interface TemplateParamSpec {
   readonly options?: readonly string[];
 }
 
+/**
+ * 模板产出的操作计划。
+ *
+ * 和 AI 直接产出的计划是同一种东西，所以两者可以混用：
+ * 模板负责确定性，AI 只负责判断"用户想要哪个模板"。
+ */
 export interface OperationPlan {
   readonly op: string;
   readonly params: Record<string, unknown>;
 }
 
+/**
+ * 一个操作模板。
+ *
+ * build 是纯函数：同样的输入永远得到同样的计划——这正是模板的价值
+ * （确定性、可复现、零幻觉）。
+ */
 export interface OperationTemplate {
   readonly id: string;
   readonly title: string;
@@ -44,6 +62,7 @@ export interface OperationTemplate {
   build(input: Record<string, unknown>): OperationPlan;
 }
 
+/** 参数的对外摘要（给界面渲染表单用，形状与规格一致）。 */
 export interface TemplateParamSummary {
   readonly name: string;
   readonly label: string;
@@ -53,6 +72,7 @@ export interface TemplateParamSummary {
   readonly options?: readonly string[];
 }
 
+/** 模板的对外摘要（给界面列出可用模板用）。 */
 export interface TemplateSummary {
   readonly id: string;
   readonly title: string;
@@ -62,6 +82,12 @@ export interface TemplateSummary {
   readonly params: readonly TemplateParamSummary[];
 }
 
+/**
+ * 模板相关错误。
+ *
+ * 带上 templateId：多个模板的参数校验都走同一套代码，
+ * 不带 id 就不知道是哪一个模板出的问题。
+ */
 export class TemplateError extends Error {
   readonly templateId: string;
   constructor(templateId: string, message: string) {
@@ -71,10 +97,17 @@ export class TemplateError extends Error {
   }
 }
 
+/** 是不是一个普通对象（不是数组、不是 null）。 */
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
 }
 
+/**
+ * 校验参数值是否符合规格声明的类型。
+ *
+ * 类型不符就报错并说清"应该是哪种、实际收到哪种"；
+ * 不做静默转换——转换过的值与用户填的不是一回事。
+ */
 function checkType(spec: TemplateParamSpec, value: unknown): void {
   const bad = (): never => {
     throw new TemplateError(
@@ -128,6 +161,12 @@ function checkType(spec: TemplateParamSpec, value: unknown): void {
   }
 }
 
+/**
+ * 模板注册表。
+ *
+ * 重复 id 直接报错：两个模板撞 id 时，后注册的那个会把前一个悄悄顶掉，
+ * 界面与执行都可能用到错的模板。
+ */
 export class TemplateRegistry {
   readonly #templates = new Map<string, OperationTemplate>();
 
@@ -135,6 +174,7 @@ export class TemplateRegistry {
     for (const t of templates) this.register(t);
   }
 
+/** 注册一个模板；id 重复就报错。 */
   register(template: OperationTemplate): void {
     if (this.#templates.has(template.id)) {
       throw new TemplateError(template.id, '模板 id 重复');
@@ -142,6 +182,12 @@ export class TemplateRegistry {
     this.#templates.set(template.id, template);
   }
 
+/**
+ * 按 id 取模板。
+ *
+ * 取不到就报错：模板 id 来自 AI 的输出，
+ * 拿一个不存在的模板去凑一条计划，比直接报错危险。
+ */
   get(id: string): OperationTemplate {
     const t = this.#templates.get(id);
     if (!t) throw new TemplateError(id, '未登记的模板');
@@ -246,6 +292,12 @@ const LAYER = (required = true): TemplateParamSpec => ({
   description: '形如 dataset://a.shp —— 引擎只认 dataset:// 引用（图层标识不是文件路径）',
 });
 
+/**
+ * 内置模板清单。
+ *
+ * 这些是**确定性**的那部分：固定形状的改图任务走模板，
+ * AI 只负责把用户的话映射到参数上，不参与算图。
+ */
 export const builtinTemplates: readonly OperationTemplate[] = [
   template(
     'health-check',

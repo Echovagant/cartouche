@@ -19,21 +19,25 @@ export interface BBox {
   readonly maxY: number;
 }
 
+/** GeoJSON 的 Point：一个坐标点。 */
 export interface PointGeometry {
   readonly type: 'Point';
   readonly coordinates: Position;
 }
 
+/** GeoJSON 的 MultiPoint：多个互不相干的点。 */
 export interface MultiPointGeometry {
   readonly type: 'MultiPoint';
   readonly coordinates: readonly Position[];
 }
 
+/** GeoJSON 的 LineString：一条折线（首尾相接的多个坐标点）。 */
 export interface LineStringGeometry {
   readonly type: 'LineString';
   readonly coordinates: readonly Position[];
 }
 
+/** GeoJSON 的 MultiLineString：多条折线（一个要素被拆成几段时会出现）。 */
 export interface MultiLineStringGeometry {
   readonly type: 'MultiLineString';
   readonly coordinates: readonly (readonly Position[])[];
@@ -45,11 +49,19 @@ export interface PolygonGeometry {
   readonly coordinates: readonly (readonly Position[])[];
 }
 
+/** GeoJSON 的 MultiPolygon：多个多边形（一个要素带几块分离的面）。 */
 export interface MultiPolygonGeometry {
   readonly type: 'MultiPolygon';
   readonly coordinates: readonly (readonly (readonly Position[])[])[];
 }
 
+/**
+ * 全部几何类型。
+ *
+ * 为什么照抄 GeoJSON 的六种，而不是收窄成三种：
+ * 这里描述的是**输入**的形状，用户文件里就是这六种；
+ * 收窄成三种会逼调用方自己判断"这是不是 Multi*"——而这本来不该由调用方操心。
+ */
 export type Geometry =
   | PointGeometry
   | MultiPointGeometry

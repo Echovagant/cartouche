@@ -15,18 +15,30 @@ import type { Stats } from 'node:fs';
 import type { RootRegistry } from '../workspace/roots.ts';
 import { parseManifest, serializeManifest, type ProjectManifest } from './manifest.ts';
 
+/**
+ * 工具痕迹目录名（.cartouche）。
+ *
+ * 源数据原地不动，工具的痕迹全在这个隐藏目录里——
+ * 用户把项目文件夹压缩发出去，收件人看到的还是干净的数据。
+ */
 export const PROJECT_DIR_NAME = '.cartouche';
 
 const MANIFEST_FILE_NAME = 'project.json';
 const HISTORY_FILE_NAME = 'history.jsonl';
 const OUTPUTS_DIR_NAME = 'outputs';
 
+/** 产出物的一条清单信息：文件名、大小、修改时间。 */
 export interface ProjectOutput {
   readonly name: string;
   readonly size: number;
   readonly mtimeMs: number;
 }
 
+/**
+ * 留痕里的一次操作。
+ *
+ * 一行一条（history.jsonl），追加写入：中途崩了也不会把之前的留痕弄坏。
+ */
 export interface ProjectHistoryEntry {
   readonly at: string;
   readonly op: string;
@@ -46,6 +58,12 @@ export interface ProjectHistoryEntry {
   readonly error?: string;
 }
 
+/**
+ * 项目目录的读写入口。
+ *
+ * 所有路径都先过 RootRegistry.resolve()：项目根必须落在**某个已登记根之下**，
+ * 否则直接抛错。源数据可以放在任意位置，但项目的写入范围受登记根约束。
+ */
 export class ProjectStore {
   readonly #roots: RootRegistry;
 
@@ -59,6 +77,12 @@ export class ProjectStore {
     return { rootId: r.rootId, relative: r.relative };
   }
 
+/**
+ * 读清单。
+ *
+ * 文件不存在返回 null（这是"还没建过项目"，不是错误）；
+ * 存在但坏了就抛错，且**不动原文件**。
+ */
   async readManifest(projectRoot: string): Promise<ProjectManifest | null> {
     const file = this.#manifestPath(projectRoot);
     let bytes: Uint8Array;
@@ -72,18 +96,31 @@ export class ProjectStore {
     return parseManifest(bytes);
   }
 
+/** 写清单（先建目录再落盘）。 */
   async writeManifest(projectRoot: string, m: ProjectManifest): Promise<void> {
     const dir = this.#dirOf(projectRoot);
     await mkdir(dir, { recursive: true });
     await writeFile(join(dir, MANIFEST_FILE_NAME), serializeManifest(m));
   }
 
+/**
+ * 追加一条留痕。
+ *
+ * 用追加模式（flag: 'a'）：一次操作一行，
+ * 中途崩了也不会把之前的留痕弄坏。
+ */
   async appendHistory(projectRoot: string, e: ProjectHistoryEntry): Promise<void> {
     const dir = this.#dirOf(projectRoot);
     await mkdir(dir, { recursive: true });
     await writeFile(join(dir, HISTORY_FILE_NAME), `${JSON.stringify(e)}\n`, { flag: 'a' });
   }
 
+/**
+ * 读全部留痕。
+ *
+ * 坏掉的一行跳过，不拖垮整个读取：留痕是给人查的，
+ * 少一行总比整个打不开强。
+ */
   async readHistory(projectRoot: string): Promise<ProjectHistoryEntry[]> {
     const file = join(this.#dirOf(projectRoot), HISTORY_FILE_NAME);
     let text: string;
@@ -110,6 +147,7 @@ export class ProjectStore {
     return out;
   }
 
+/** 列出产出物，按修改时间倒序（最近的排前面）。 */
   async listOutputs(projectRoot: string): Promise<ProjectOutput[]> {
     const dir = join(this.#dirOf(projectRoot), OUTPUTS_DIR_NAME);
     let names: string[];
@@ -129,6 +167,13 @@ export class ProjectStore {
     return out.sort((a, b) => b.mtimeMs - a.mtimeMs);
   }
 
+/**
+ * 写一个产出物。
+ *
+ * 文件名必须是单个文件名（safeOutputName 把关），
+ * 否则 `../../evil.txt` 就能写到项目外面去。
+ * 返回的相对路径一律用 `/`。
+ */
   async writeOutput(projectRoot: string, name: string, data: Uint8Array): Promise<string> {
     const safe = safeOutputName(name);
     const dir = join(this.#dirOf(projectRoot), OUTPUTS_DIR_NAME);
@@ -196,10 +241,12 @@ function toHistoryEntry(raw: unknown): ProjectHistoryEntry | null {
   };
 }
 
+/** 是不是一个普通对象（不是数组、不是 null）。 */
 function isPlainObject(v: unknown): v is Readonly<Record<string, unknown>> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
 }
 
+/** 是不是带 code 的系统错误（ENOENT 之类）。 */
 function isErrno(err: unknown): err is NodeJS.ErrnoException {
   return err instanceof Error;
 }

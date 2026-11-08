@@ -62,6 +62,13 @@ const OVERLAP_MAX_PAIRS = 200;
  */
 const OVERLAP_MIN_RATIO = 0.001;
 
+/**
+ * 拓扑检查的入参。
+ *
+ * featureIds 必须与扫描到的要素**同源同序**：SQL 侧拿不到源图层的 FID，
+ * 只能用 ROW_NUMBER() 造一个行号，再按源顺序一一对应。
+ * alreadyFlagged 用来避免同一个事实报两遍（已被别的规则点过名的要素不再重复报）。
+ */
 export interface TopologyInput {
   readonly loc: GdalLocation;
   readonly path: string;
@@ -78,6 +85,12 @@ export interface TopologyInput {
   readonly alreadyFlagged: ReadonlySet<string>;
 }
 
+/**
+ * 拓扑检查的结果。
+ *
+ * validity 与 overlap 各自带执行状态：SpatiaLite 没编进 GDAL 时，
+ * 这两项是"没查成"而不是"没问题"——报告里必须分开说。
+ */
 export interface TopologyOutcome {
   readonly findings: Finding[];
   /** 几何有效性（自相交等）这一族的执行状态 */

@@ -34,6 +34,13 @@ export type SpatialRelation = 'within' | 'intersects' | 'contains';
  */
 export type JoinAggregate = 'first' | 'count' | 'sum' | 'mean';
 
+/**
+ * 空间连接的选项。
+ *
+ * relation 定方向（within / intersects / contains 互为反向），
+ * aggregate 定汇总方式，fields 定汇总哪些源字段——
+ * 三者的默认口径各不相同，所以每个默认值都在这里写死，不留含糊。
+ */
 export interface SpatialJoinOptions {
   readonly relation: SpatialRelation;
   readonly aggregate: JoinAggregate;
@@ -56,6 +63,12 @@ export interface SpatialJoinOptions {
   readonly fieldPrefix?: string;
 }
 
+/**
+ * 空间连接的结果。
+ *
+ * rows 按目标要素的原顺序给出，每个目标要素匹配到哪些源要素、汇总值是多少。
+ * unmatched 列出**一个都没匹配上**的目标要素——它们不会被悄悄丢掉。
+ */
 export interface SpatialJoinResult {
   /** 每个目标要素的匹配结果（按目标要素原顺序） */
   readonly rows: ReadonlyArray<{

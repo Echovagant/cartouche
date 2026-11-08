@@ -18,6 +18,12 @@ export const A4_LANDSCAPE_PT = { width: 841.89, height: 595.28 } as const;
 /** A4 竖版（点） */
 export const A4_PORTRAIT_PT = { width: 595.28, height: 841.89 } as const;
 
+/**
+ * PDF 封装参数。
+ *
+ * 页面尺寸与 dpi 用来把像素尺寸换算成页面上的物理尺寸；
+ * title / author / producer 只写进 PDF 元数据，不参与绘图。
+ */
 export interface PdfOptions {
   /** 页面尺寸（点） */
   readonly pageWidthPt?: number;
@@ -34,6 +40,12 @@ export interface PdfOptions {
   readonly producer?: string;
 }
 
+/**
+ * PDF 封装失败。
+ *
+ * 单列一个错误类型：这份 PDF 是**按字节拼**出来的（xref 偏移差一个字节就不合法），
+ * 失败必须能被上层单独认出来，不能混进一般性的导出错误里。
+ */
 export class PdfBuildError extends Error {
   constructor(message: string) {
     super(message);
@@ -41,6 +53,12 @@ export class PdfBuildError extends Error {
   }
 }
 
+/**
+ * 把字符串按 Latin-1 解释。
+ *
+ * PDF 的文本字符串是单字节的：非 Latin-1 字符（中文）换成 '?'，
+ * 这样字节长度不变，xref 里的偏移量才不会错位。
+ */
 function latin1(text: string): string {
   // PDF 的文本字符串按 Latin-1 解释；非 Latin-1 字符换成 '?'
   let out = '';
@@ -51,6 +69,7 @@ function latin1(text: string): string {
   return out;
 }
 
+/** 转义 PDF 字符串里的  与 ( )——这两个字符在 PDF 字符串里有特殊含义。 */
 function escapePdfString(text: string): string {
   return latin1(text).replace(/([\\()])/g, '\\$1');
 }

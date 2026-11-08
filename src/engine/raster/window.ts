@@ -13,6 +13,12 @@
 import type { PixelRegion } from './mask.ts';
 import { BYTES_PER_SAMPLE } from './pixels.ts';
 
+/**
+ * 整图上的一个矩形窗口（像元坐标，左上原点）。
+ *
+ * 有了它，局部型操作（涂色 / 擦除 / 修补 / 区域替换）就只读写这一块，
+ * 其余像素由 GDAL 原样搬运，不必把整个文件读进内存。
+ */
 export interface RasterWindow {
   readonly x: number;
   readonly y: number;

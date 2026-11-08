@@ -20,6 +20,7 @@ interface Side {
   readonly origin: string;
 }
 
+/** 值的类型名（中文），报错信息里用来说明"这是个什么类型的值"。 */
 function typeNameOf(v: ExprValue): string {
   if (v === null) return '空值';
   if (typeof v === 'number') return '数字';
@@ -87,6 +88,12 @@ function sideOf(node: ExprNode, value: ExprValue, row: Readonly<Record<string, u
   return { value, typeName, origin: '这一边的计算结果' };
 }
 
+/**
+ * 取一个必须是数字的值。
+ *
+ * 类型对不上就报错，不做隐式转换：把 "12" 当 12 算，
+ * 用户看到的数字与属性表里写的字对不上。
+ */
 function requireNumber(side: Side, what: string): number {
   if (typeof side.value === 'number') return side.value;
   throw new ExpressionError(
@@ -95,6 +102,11 @@ function requireNumber(side: Side, what: string): number {
   );
 }
 
+/**
+ * 取一个必须是文字的值。
+ *
+ * 同样不做隐式转换：类型对不上就报错。
+ */
 function requireString(side: Side, fn: string): string {
   if (typeof side.value === 'string') return side.value;
   throw new ExpressionError(
@@ -142,6 +154,12 @@ export function evaluate(node: ExprNode, row: Readonly<Record<string, unknown>>)
   return evalNode(node, row).value;
 }
 
+/**
+ * 求值一个语法树节点。
+ *
+ * 返回的不只是值，还带着"这个值从哪来、是什么类型"（Side）——
+ * 报错信息要靠它指出是哪个字段出的问题。
+ */
 function evalNode(node: ExprNode, row: Readonly<Record<string, unknown>>): Side {
   switch (node.kind) {
     case 'literal':
@@ -202,6 +220,13 @@ function evalNode(node: ExprNode, row: Readonly<Record<string, unknown>>): Side 
   }
 }
 
+/**
+ * 二元运算。
+ *
+ * 逻辑运算要短路：AND 的左边为假时右边根本不求值，
+ * 否则"不存在 = 1 AND 字段 IS NULL"会在左边就把错误抛出来。
+ * 空值按**三值逻辑**收口（未知 AND 假 = 假），不当作假或真。
+ */
 function evalBinary(
   node: Extract<ExprNode, { kind: 'binary' }>,
   row: Readonly<Record<string, unknown>>,
@@ -321,6 +346,12 @@ function evalBinary(
   return { value: result, typeName: '布尔值', origin: left.origin };
 }
 
+/**
+ * 函数调用。
+ *
+ * 参数个数不对就报错并说清要几个：支持的函数是固定的一小张表，
+ * 猜一个"差不多"的语义只会给出看着能用的错结果。
+ */
 function evalCall(
   node: Extract<ExprNode, { kind: 'call' }>,
   row: Readonly<Record<string, unknown>>,
@@ -393,6 +424,12 @@ function evalCall(
   }
 }
 
+/**
+ * IN / NOT IN。
+ *
+ * 列表里有空值时不直接判假，而是整体返回空值（SQL 的三值逻辑）：
+ * "x IN (1, NULL)" 在 x 不等于 1 时，既不是真也不是假。
+ */
 function evalIn(
   node: Extract<ExprNode, { kind: 'in' }>,
   row: Readonly<Record<string, unknown>>,
@@ -426,6 +463,11 @@ function evalIn(
   return { value: node.negated, typeName: '布尔值', origin: operand.origin };
 }
 
+/**
+ * BETWEEN / NOT BETWEEN（两端都含）。
+ *
+ * 任一端为空值就返回空值，不当作"不在区间内"。
+ */
 function evalBetween(
   node: Extract<ExprNode, { kind: 'between' }>,
   row: Readonly<Record<string, unknown>>,
@@ -454,6 +496,12 @@ function evalBetween(
   return { value: node.negated ? !inside : inside, typeName: '布尔值', origin: operand.origin };
 }
 
+/**
+ * LIKE / NOT LIKE。
+ *
+ * 只能匹配文字：对数字用 LIKE 直接报类型错，
+ * 而不是把数字转成字符串再比（那样永远匹配不上）。
+ */
 function evalLike(
   node: Extract<ExprNode, { kind: 'like' }>,
   row: Readonly<Record<string, unknown>>,

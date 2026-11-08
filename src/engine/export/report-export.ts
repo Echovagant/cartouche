@@ -31,7 +31,20 @@ import type { WorkspaceAdapter } from '../workspace/types.ts';
 import { csvTable, parseCsvRecords } from './csv-text.ts';
 import { escapeHtml, htmlDocument, markdownToHtml } from './markdown-html.ts';
 
+/**
+ * 报告种类。
+ *
+ * 契约列了五种，引擎目前真正做得出来的只有三种（compat-report / health-report / csv）；
+ * 另两种（change-report / audit-log）缺的是引擎侧的**改动台账**，
+ * 没有数据来源就明说"尚未支持"，硬编一份出来就是假的。
+ */
 export type ReportKind = 'csv' | 'change-report' | 'health-report' | 'audit-log' | 'compat-report';
+/**
+ * 报告的输出格式。
+ *
+ * 契约里有 pdf，但引擎目前没有任何一种 kind 支持它（PDF 那条路是给**图件**用的，
+ * 报告走的是文本渲染）：选 pdf 会明确报错，不会悄悄换成别的格式。
+ */
 export type ReportFormat = 'csv' | 'html' | 'pdf' | 'json';
 
 /** 契约里 export.report 的 include 取值全集 */
@@ -91,6 +104,12 @@ const KIND_SPECS: Readonly<Record<ReportKind, KindSpec>> = {
   },
 };
 
+/**
+ * 导出报告的入参。
+ *
+ * include 列的是要带的**元信息块**（机器可读的那部分）；
+ * 报告正文始终完整 —— 报告是给人照着做的材料，裁成半截就没意义了。
+ */
 export interface ReportExportOptions {
   readonly loc: GdalLocation;
   readonly store: WorkspaceAdapter;
@@ -106,6 +125,12 @@ export interface ReportExportOptions {
   readonly dryRun?: boolean;
 }
 
+/**
+ * 导出报告的结果。
+ *
+ * body 是已经序列化好的正文（按 format 决定是 Markdown 还是 CSV 文本），
+ * findings / manualChecks 只在体检与兼容性报告里有。
+ */
 export interface ReportExportResult {
   readonly outputPath: string;
   readonly kind: ReportKind;
@@ -417,6 +442,7 @@ function serialize(built: BuiltReport, format: ReportFormat): string {
   throw new Error(`该报告类型不支持 ${format} 格式`);
 }
 
+/** 报告标题：能拿到文件名就带上文件名。 */
 function reportTitle(built: BuiltReport): string {
   const file = built.meta.find((m) => m.key === 'file')?.value ?? '';
   return file ? `报告 — ${file}` : '报告';

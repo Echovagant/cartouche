@@ -47,7 +47,7 @@ function isListStart(line: string): boolean {
 }
 
 /** 把 Markdown 拆成块级结构 */
-export function parseBlocks(markdown: string): Block[] {
+function parseBlocks(markdown: string): Block[] {
   const lines = markdown.replace(/\r\n/g, '\n').split('\n');
   const blocks: Block[] = [];
   let i = 0;

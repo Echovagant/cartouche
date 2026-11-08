@@ -21,6 +21,14 @@
 /** 取密钥的函数：返回 null 表示当前没有可用密钥 */
 export type CredentialReader = () => string | null | undefined;
 
+/**
+ * 模型提供方的标识。
+ *
+ * 这一串是**接入线目录**的全集（含各家 OpenAI 兼容端点），
+ * 不是"已经接通"的名单——目录里每一条能不能用，取决于用户手里那把 key。
+ * 收紧成联合类型是故意的：目录里写一个这里没有的 id，编译就会报错，
+ * 而不是等到运行时才发现某家厂商没人认。
+ */
 export type LlmProviderId =
   | 'minimax'
   | 'minimax-cn'
@@ -40,6 +48,13 @@ export type LlmProviderId =
   | 'local'
   | 'custom';
 
+/**
+ * 一次调用用的凭据。
+ *
+ * apiKey 只在内存里流转：不落盘、不进日志、不进发往模型的内容。
+ * effort 是思考深度档位，各家字段名不同（OpenAI 兼容协议叫 reasoning_effort），
+ * 这里统一成业务语义，由网关负责翻译成各家认的字段名。
+ */
 export interface LlmCredentials {
   /** 模型标识，如 MiniMax-M3.1-Flash、gpt-4o-mini、qwen-plus */
   readonly model: string;
@@ -56,6 +71,14 @@ export interface LlmCredentials {
   readonly effort?: string;
 }
 
+/**
+ * 密钥提供方的接口。
+ *
+ * 引擎与 AI 网关只依赖这个接口，不感知密钥从哪来——
+ * 换实现（自带 / 团队托管 / 内存态）时上层一行都不用改。
+ * hasCredentials 单独列一个方法，是为了在界面上直接提示"请填写 Key"，
+ * 而不是在真正发请求时才甩一个鉴权失败出来。
+ */
 export interface KeyProvider {
   readonly id: LlmProviderId;
   readonly displayName: string;
@@ -89,14 +112,17 @@ export class ByokKeyProvider implements KeyProvider {
     this.#resolve = options.resolve;
   }
 
+/** 返回构造时给的模型清单（自带 Key 模式下清单是静态的）。 */
   async listModels(): Promise<readonly string[]> {
     return this.#models;
   }
 
+/** 解析凭据：直接转交注入的函数，不做任何缓存或加工。 */
   async resolve(ownerId: string): Promise<LlmCredentials | null> {
     return this.#resolve(ownerId);
   }
 
+/** 有没有可用凭据：解析一次，看结果是不是 null。 */
   async hasCredentials(ownerId: string): Promise<boolean> {
     return (await this.resolve(ownerId)) !== null;
   }
@@ -116,10 +142,17 @@ export class ManagedKeyProvider implements KeyProvider {
     this.#enabled = options.enabled ?? false;
   }
 
+/** 托管模式尚未启用：返回空清单，而不是编一份出来。 */
   async listModels(): Promise<readonly string[]> {
     return [];
   }
 
+/**
+ * 托管模式的取密钥入口。
+ *
+ * 未启用时直接报错：宁可让调用方知道"这条路走不通"，
+ * 也不要返回一份看着能用的假凭据。
+ */
   async resolve(_ownerId: string): Promise<LlmCredentials | null> {
     if (!this.#enabled) {
       throw new Error('团队托管模式未启用，请使用自带 Key（BYOK）');
@@ -127,18 +160,32 @@ export class ManagedKeyProvider implements KeyProvider {
     throw new Error('尚未实现');
   }
 
+/** 是否启用：v1 恒为 false。 */
   async hasCredentials(_ownerId: string): Promise<boolean> {
     return this.#enabled;
   }
 }
 
+/**
+ * 提供方注册表。
+ *
+ * 按 id 存：界面上的选择项与后台取密钥走的是同一个 id，
+ * 少一层映射就少一处可能对不上的地方。
+ */
 export class KeyProviderRegistry {
   readonly #providers = new Map<LlmProviderId, KeyProvider>();
 
+/** 注册（或替换）一个提供方。 */
   register(provider: KeyProvider): void {
     this.#providers.set(provider.id, provider);
   }
 
+/**
+ * 按 id 取提供方。
+ *
+ * 取不到就抛错，不返回 null：调用方拿到 null 多半会当成"没配 Key"去提示用户，
+ * 而真实原因是"这个 id 没注册"，那句话会把人引到错误的方向上。
+ */
   get(id: LlmProviderId): KeyProvider {
     const found = this.#providers.get(id);
     if (!found) {
@@ -147,6 +194,7 @@ export class KeyProviderRegistry {
     return found;
   }
 
+/** 列出已注册的提供方（给界面渲染下拉框）。 */
   list(): readonly KeyProvider[] {
     return [...this.#providers.values()];
   }
@@ -178,8 +226,11 @@ export class KeyProviderRegistry {
  *    **不要凭记忆写模型名**——接模型前先拉一次 `/models` 拿实时清单。
  */
 export const MINIMAX_CN_BASE_URL = 'https://api.minimax.cn/v1';
+/** 国内版 Anthropic 兼容端点（官方推荐，支持 thinking 块）。 */
 export const MINIMAX_CN_ANTHROPIC_BASE_URL = 'https://api.minimax.cn/anthropic';
+/** 国际版 OpenAI 兼容端点。 */
 export const MINIMAX_INTL_BASE_URL = 'https://api.minimax.io/v1';
+/** 国际版 Anthropic 兼容端点。 */
 export const MINIMAX_INTL_ANTHROPIC_BASE_URL = 'https://api.minimax.io/anthropic';
 
 /**
@@ -213,6 +264,12 @@ export const MINIMAX_EFFORT_LEVELS: readonly string[] = ['low', 'medium', 'high'
 /** 默认思考深度（官方默认即 max） */
 export const MINIMAX_DEFAULT_EFFORT = 'max';
 
+/**
+ * MiniMax 提供方的构造参数。
+ *
+ * readApiKey 是唯一的取密钥入口：本类不持有、不缓存、不落盘密钥。
+ * 端点与模型都可覆盖——国内版与国际版的差别就在这两个值上。
+ */
 export interface MiniMaxProviderOptions {
   /** 取密钥的方式；返回 null 表示未配置 */
   readonly readApiKey: CredentialReader;
@@ -248,18 +305,26 @@ export class MiniMaxProvider implements KeyProvider {
     this.#effort = options.effort;
   }
 
+/** 当前默认模型。 */
   get model(): string {
     return this.#model;
   }
 
+/** 当前接入点。 */
   get baseUrl(): string {
     return this.#baseUrl;
   }
 
+/** 模型清单：构造时没覆盖就用代码里的兜底清单。 */
   async listModels(): Promise<readonly string[]> {
     return this.#models;
   }
 
+/**
+ * 取出凭据。
+ *
+ * 密钥每次现取：不在这一层缓存——缓存了就等于把密钥在内存里多留了一份。
+ */
   async resolve(_ownerId: string): Promise<LlmCredentials | null> {
     const apiKey = this.#readApiKey();
     if (!apiKey) return null;
@@ -270,6 +335,7 @@ export class MiniMaxProvider implements KeyProvider {
       ...(this.#effort ? { effort: this.#effort } : {}),
     };
   }
+/** 是否已配置密钥（只读一次，不落盘）。 */
   async hasCredentials(_ownerId: string): Promise<boolean> {
     return Boolean(this.#readApiKey());
   }
@@ -297,16 +363,21 @@ export class SessionKeyProvider implements KeyProvider {
     this.#models = options.models ?? [];
   }
 
+/** 返回构造时给的模型清单。 */
   async listModels(): Promise<readonly string[]> {
     return this.#models;
   }
 
+/**
+ * 取凭据：密钥由本次会话临时交给，只在内存里，进程退出即消失。
+ */
   async resolve(_ownerId: string): Promise<LlmCredentials | null> {
     const apiKey = this.#readApiKey();
     if (!apiKey) return null;
     return { model: this.#models[0] ?? '', apiKey };
   }
 
+/** 是否已配置密钥。 */
   async hasCredentials(_ownerId: string): Promise<boolean> {
     return Boolean(this.#readApiKey());
   }

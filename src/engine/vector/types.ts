@@ -11,6 +11,12 @@ export interface FeatureGeometry {
   readonly coordinates: unknown;
 }
 
+/**
+ * 一个要素（属性 + 几何）。
+ *
+ * 不用 GeoJSON 原始对象：原始对象里混着 bbox、crs 这些与查询无关的字段，
+ * 直接透传会让返回结构随 GDAL 版本漂移。
+ */
 export interface FeatureRecord {
   readonly properties: Readonly<Record<string, unknown>>;
   readonly geometry: FeatureGeometry | null;
@@ -44,6 +50,13 @@ export interface LayerInfo {
   readonly epsg: number | null;
 }
 
+/**
+ * 读要素的选项。
+ *
+ * where 由**引擎自己算**，不交给 GDAL 的 SQL：
+ * GDAL 的通用 SQL 方言没有 UPPER/LOWER，还会把文字悄悄当数字比，
+ * 与本项目"类型对不上必须报错"的口径相反。
+ */
 export interface ReadFeaturesOptions {
   /** 矢量文件绝对路径 */
   readonly path: string;
@@ -69,6 +82,12 @@ export interface ReadFeaturesOptions {
   readonly limit?: number;
 }
 
+/**
+ * 读要素的结果。
+ *
+ * totalCount 是满足条件的总数（不受 limit 影响），
+ * truncated 说明这次只取了一部分——两个数一起看才知道"有没有漏"。
+ */
 export interface ReadFeaturesResult {
   readonly features: readonly FeatureRecord[];
   /** 返回的条数 */
@@ -99,6 +118,12 @@ export interface ReadFeaturesResult {
  */
 export type VectorWriteFormat = 'shapefile' | 'geojson' | 'gpkg';
 
+/**
+ * 写要素的选项。
+ *
+ * srsWkt 不给就沿用目标文件原来的坐标系（坐标没变，只把标签保住）；
+ * 给了就表示"这次要把坐标系换成它"——重投影走的正是这条。
+ */
 export interface WriteFeaturesOptions {
   /** 目标文件（工作区相对路径）；绝对路径与 .. 会被路径闸门挡掉 */
   readonly target: string;
@@ -135,6 +160,12 @@ export interface WriteFeaturesOptions {
   readonly encoding?: string;
 }
 
+/**
+ * 写回的结果。
+ *
+ * files 与 removed 一起给：Shapefile 换格式时会多出或少掉文件，
+ * 只报"写好了"不说清多出哪些，用户不知道该把哪些一起交出去。
+ */
 export interface WriteFeaturesResult {
   /** 备份目录（工作区相对路径）；没备份时是 null */
   readonly backupPath: string | null;

@@ -43,6 +43,12 @@ export type CheckStatus =
   /** 引擎根本没实现这一项 */
   | 'unsupported';
 
+/**
+ * 一个检查项的执行情况。
+ *
+ * 这是"查了没问题"与"根本没查"的唯一分界：报告里凡是 status 不是 checked 的，
+ * 一律不许写进"未发现……"的句式里。
+ */
 export interface CheckCoverage {
   /** 检查项名：契约里的 15 项用契约里的名字，引擎自加的用短名 */
   readonly check: string;

@@ -8,6 +8,12 @@ import { join } from 'node:path';
 import { tools, type GdalTools } from '../gdal/runner.ts';
 import type { GdalLocation } from '../gdal/env.ts';
 
+/**
+ * 矢量转 GeoJSON 的入参。
+ *
+ * targetCrs 默认与源一致，但前端 MapLibre 只认 EPSG:4326，
+ * 传投影坐标系的源时必须显式给出目标坐标系。
+ */
 export interface VectorToGeoJsonOptions {
   /** 矢量文件绝对路径 */
   readonly path: string;
@@ -19,12 +25,24 @@ export interface VectorToGeoJsonOptions {
   readonly limit?: number;
 }
 
+/**
+ * 转换结果。
+ *
+ * truncated 标出是否因为 limit 被截断：要素数正好等于 limit 时无法区分
+ * "刚好这么多"和"被砍掉了"，所以宁可多标一次也不让人误以为数据是全的。
+ */
 export interface VectorToGeoJsonResult {
   readonly geojson: unknown;
   readonly featureCount: number;
   readonly truncated: boolean;
 }
 
+/**
+ * 矢量转换失败。
+ *
+ * 单独一个错误类型：转换失败有三种截然不同的原因（源打不开、驱动缺失、
+ * 产出不是合法 JSON），上层要分别翻译成人话，不能一律报"转换失败"。
+ */
 export class VectorConvertError extends Error {
   readonly stderr: string;
   constructor(message: string, stderr: string) {

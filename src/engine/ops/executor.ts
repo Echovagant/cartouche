@@ -65,12 +65,25 @@ export interface OperationSpec {
   readonly requireUserConfirm?: boolean;
 }
 
+/**
+ * 一份操作计划。
+ *
+ * 对应 ops.schema.json 里的计划形状：版本 + 可选的意图说明 + 一串 op。
+ * intent 是给人看的（"把高程压到 0~255"），执行器不靠它做判断。
+ */
 export interface PlanDocument {
   readonly version?: string;
   readonly intent?: string;
   readonly ops: readonly OperationSpec[];
 }
 
+/**
+ * 一条栅格型 op 的量化影响面。
+ *
+ * 为什么字段这么多：用户按下确认之前，必须能回答"到底改了什么"——
+ * 改了多少像元、占全图百分之几、改前改后的校验和、备份在哪。
+ * 只有一句"已完成"是不够的。
+ */
 export interface OpImpact {
   readonly affectedPixels: number;
   readonly totalPixels: number;
@@ -111,6 +124,13 @@ export interface OpValueResult {
   readonly data?: Readonly<Record<string, unknown>>;
 }
 
+/**
+ * 一条 op 的执行记录。
+ *
+ * impact 与 value 二选一：栅格型 op 给影响面，非栅格型 op（打开 / 体检 / 快照）给结论值。
+ * unimplemented 单独标出：契约里有些 op 引擎还没实现，
+ * 必须明说"尚未支持"，不能当成失败，也不能当成成功。
+ */
 export interface OpExecutionRecord {
   readonly index: number;
   readonly op: string;
@@ -125,6 +145,12 @@ export interface OpExecutionRecord {
   readonly error?: string;
 }
 
+/**
+ * 整份计划的执行结果。
+ *
+ * failedAt 指出失败的是第几条（0 起）：失败**不回滚**，
+ * 已完成的条目照常生效，报告里照实写"已完成 N 条、第 K 条失败"。
+ */
 export interface PlanExecutionResult {
   readonly ok: boolean;
   readonly results: readonly OpExecutionRecord[];
@@ -134,6 +160,12 @@ export interface PlanExecutionResult {
   readonly failedAt?: number;
 }
 
+/**
+ * 执行器的依赖。
+ *
+ * confirmed 是契约里 requireUserConfirm 在引擎侧唯一的落点：
+ * 计划里标了"必须人工确认"的 op，拿不到这个标记就不动手。
+ */
 export interface ExecutorDeps {
   readonly loc: GdalLocation;
   readonly store: WorkspaceAdapter;
@@ -1255,6 +1287,7 @@ function pixelRegionOf(raw: unknown): PixelRegion | undefined {
   return { minX, minY, maxX, maxY };
 }
 
+/** 把栅格编辑的结果折成执行器的影响面（额外算出受影响比例）。 */
 function toImpact(r: RasterOpResult): OpImpact {
   return {
     affectedPixels: r.affectedPixels,
@@ -1296,6 +1329,7 @@ function requireTarget(params: Readonly<Record<string, unknown>>): string {
   return requireRelPath(params, 'target');
 }
 
+/** 必填的相对路径参数：不给、或不是安全相对路径就报错。 */
 function requireRelPath(params: Readonly<Record<string, unknown>>, key: string): string {
   const raw = readString(params, key);
   if (raw === undefined) throw new Error(`缺少参数 ${key}`);
@@ -1309,6 +1343,12 @@ function readRelPath(params: Readonly<Record<string, unknown>>, key: string): st
   return toRelPathChecked(raw, key);
 }
 
+/**
+ * 校验一个相对路径。
+ *
+ * 绝对路径与含 .. 的路径一律拒绝：它们不在已登记的工作区根之下，
+ * 那是路径穿越，不是"路径写错了"。
+ */
 function toRelPathChecked(raw: string, key: string): string {
   const rel = toRelPath(raw);
   if (/^[A-Za-z]:/.test(rel) || rel.startsWith('/') || rel.startsWith('\\')) {
@@ -1343,6 +1383,7 @@ function stripScheme(raw: string): string {
   return m?.[1] ?? raw;
 }
 
+/** 读一个非空字符串参数；没有、或只有空白，返回 undefined。 */
 function readString(params: Readonly<Record<string, unknown>>, key: string): string | undefined {
   const v = params[key];
   return typeof v === 'string' && v.trim() !== '' ? v : undefined;
@@ -1372,11 +1413,13 @@ function readBoolean(params: Readonly<Record<string, unknown>>, key: string): bo
   return v;
 }
 
+/** 读一个有限数字参数；不是数字或是无穷，返回 undefined。 */
 function readNumber(params: Readonly<Record<string, unknown>>, key: string): number | undefined {
   const v = params[key];
   return typeof v === 'number' && Number.isFinite(v) ? v : undefined;
 }
 
+/** 读颜色参数：#RRGGBB 字符串或 [r,g,b] 数组，两种写法都收。 */
 function requireColor(params: Readonly<Record<string, unknown>>): string | readonly number[] {
   const v = params['color'];
   if (typeof v === 'string' && v.trim() !== '') return v;
@@ -1398,6 +1441,12 @@ function requireColor(params: Readonly<Record<string, unknown>>): string | reado
  * 两处共用 mask.ts 里的同一份文案。
  */
 function requireRegion(params: Readonly<Record<string, unknown>>): PixelRegion;
+/**
+ * 读区域参数。
+ *
+ * 只接像元坐标对象 { minX, minY, maxX, maxY }；
+ * 地理范围数组形式还没接上，碰到就明说，不猜。
+ */
 function requireRegion(
   params: Readonly<Record<string, unknown>>,
   opts: { readonly optional: true },
@@ -1472,6 +1521,12 @@ async function normalizeParams(
   return params;
 }
 
+/**
+ * 读地理范围参数。
+ *
+ * 四个数允许任意顺序（min/max 会自动摆正）；
+ * 不是四个有限数字就当没给。
+ */
 function readBbox(params: Readonly<Record<string, unknown>>): GeoBounds | undefined {
   const raw = params['bbox'];
   if (!Array.isArray(raw) || raw.length !== 4) return undefined;
@@ -1556,6 +1611,7 @@ function readMask(params: Readonly<Record<string, unknown>>): PixelMask | undefi
   return buildPixelMask(width, height, bytes);
 }
 
+/** 取错误信息（不是 Error 就转成字符串）。 */
 function messageOf(err: unknown): string {
   if (err instanceof Error) return err.message;
   return String(err);

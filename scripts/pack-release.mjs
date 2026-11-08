@@ -18,6 +18,14 @@
  * 两边都收就是每张图存两份（实测多出 7.1MB，其中首屏那张 PNG 就 4.5MB）。
  * 打包前会核对 out 里确实有 public 的全部文件，缺了就不打这个包。
  *
+ * ⚠️ **收 `web/fonts/`**：字体是自托管的（next/font/local，见 web/app/layout.tsx），
+ * 不收就等于对方 `npm run build:web` 时字体找不到。
+ * 字体许可：Geist / Geist Mono 是 SIL OFL 1.1，可商用、可随仓库分发，
+ * 声明写在 NOTICE 里。
+ *
+ * ⚠️ **收 `test/helpers/`**：`scripts/smoke-engine.mjs` 从 `../test/helpers/listen-safe.mjs`
+ * 借了一个起端口的辅助函数。不收它，对方在包里跑 `npm run smoke:engine` 会直接失败。
+ *
  * 为什么自己写 zip：仓库的依赖许可门禁只放行宽松许可的包，
  * 为打一个包引一个压缩库不划算；而 ZIP 的存储格式本身不复杂（zlib 是 Node 自带的）。
  */
@@ -41,6 +49,8 @@ const INCLUDE = [
   'web/next.config.mjs',
   'web/postcss.config.mjs',
   'web/next-env.d.ts',
+  'web/fonts',
+  'test/helpers',
   'scripts',
   'package.json',
   'package-lock.json',
@@ -58,7 +68,39 @@ const PREBUILT = [
   'web/out',
 ];
 
+/**
+ * 这些目录一律不进包。
+ *
+ * ⚠️ **必须是"路径全等"而不是"路径段相等"**：
+ * 曾经写成 `rel.split('/').some((seg) => SKIP_DIR.has(seg))`，
+ * 那是**任意层级**同名目录都跳过 —— 于是 `src/engine/workspace/`
+ * （引擎的工作区适配器，被 `src/engine/index.ts` 直接 import）
+ * 连同它的预构建产物 `src/engine/dist/workspace/`
+ * 一起被吞掉，**打出来的包连引擎都加载不了**。
+ * 实测（2026-11-08）：已发布的 v0.1.0 与 v0.2.0 两个包都是坏的，
+ * `import('.../src/engine/dist/index.js')` 直接报
+ * `Cannot find module .../dist/workspace/index.js`。
+ *
+ * 同一个坑在 `.gitignore` 里已经踩过并修过一次（那里写成了 `/workspace/`，
+ * 锚定到仓库根），打包脚本这边**当时漏改了**。
+ *
+ * 现在只跳过**仓库根那一层**的这些目录（路径全等）。
+ * 嵌套同名的目录一律保留 —— 引擎的 `workspace/` 就是靠这条规则活下来的。
+ */
 const SKIP_DIR = new Set(['node_modules', '.git', '.next', '.turbo', 'coverage', '.impeccable', 'shots', 'workspace']);
+
+/**
+ * 这些目录**只在仓库根那一层**跳过（路径全等），嵌套的同名目录保留。
+ *
+ * 为什么单独列：`node_modules` 之类的在任何层级出现都是不要的；
+ * 但 `workspace` 是有意义的目录名（引擎的工作区适配器），
+ * 把两者混在一起就会误伤 —— 见 SKIP_DIR 上面的说明。
+ */
+const SKIP_DIR_ROOT_ONLY = new Set(['workspace', 'shots', '.impeccable']);
+
+/** 任何层级都不要的目录（这些名字在嵌套处出现也一律不要） */
+const SKIP_DIR_ANYWHERE = new Set(['node_modules', '.git', '.next', '.turbo', 'coverage']);
+
 const SKIP_FILE = new Set(['.DS_Store', 'Thumbs.db']);
 
 /**
@@ -219,6 +261,24 @@ function zip(entries) {
 
 /* ── 收集文件 ── */
 
+/**
+ * 这个相对路径要不要跳过。
+ *
+ * 规则分两类（见 SKIP_DIR 的说明）：
+ *   - **任何层级都不要**：node_modules / .git / .next 等
+ *   - **只有仓库根那一层不要**：workspace / shots / .impeccable
+ *
+ * @param {string} rel 相对仓库根的路径（始终用 `/` 分隔）
+ */
+function shouldSkip(rel) {
+  const segs = rel.split('/');
+  // 仓库根那一层：路径全等才跳
+  if (SKIP_DIR_ROOT_ONLY.has(rel)) return true;
+  // 任何层级：路径段相等就跳
+  if (segs.some((seg) => SKIP_DIR_ANYWHERE.has(seg))) return true;
+  return false;
+}
+
 async function walk(abs, rel, out) {
   let st;
   try {
@@ -227,7 +287,7 @@ async function walk(abs, rel, out) {
     return;
   }
   if (st.isDirectory()) {
-    if (SKIP_DIR.has(rel)) return;
+    if (shouldSkip(rel)) return;
     for (const name of await readdir(abs)) {
       await walk(join(abs, name), rel ? `${rel}/${name}` : name, out);
     }
@@ -235,7 +295,7 @@ async function walk(abs, rel, out) {
     if (SKIP_FILE.has(rel)) return;
     // 文件名像日志/临时产物的：不进包（见 SKIP_FILE_RE 的说明）
     if (SKIP_FILE_RE.test(rel.split(sep).pop() ?? rel)) return;
-    if (rel.split('/').some((seg) => SKIP_DIR.has(seg))) return;
+    if (shouldSkip(rel)) return;
     out.push({ rel, abs, size: st.size });
   }
 }
@@ -354,6 +414,44 @@ async function main() {
     process.exitCode = 1;
     return;
   }
+
+  /* ── 出包后的完整性自检：包里必须有的文件，一个都不能少 ──────────
+     这道闸是为 2026-11-08 那个事故加的：v0.1.0 与 v0.2.0 两个已发布的包
+     都因为 SKIP_DIR 吞掉 `src/engine/workspace/` 而**连引擎都加载不了**，
+     而当时所有的门禁（类型检查、单测、许可、密钥、编码）**全部通过** ——
+     因为它们检查的都是仓库，不是包。
+
+     所以这里检查的是「**包里**有没有」，不是「仓库里有没有」。
+     一个包少了一个目录，从外面看还是那个大小差不多的 zip，
+     只有解压后才会炸 —— 那时已经扩散出去了。 */
+  const required = [
+    'src/engine/index.ts',
+    'src/engine/workspace/index.ts',
+    'src/engine/workspace/roots.ts',
+    'src/engine/dist/index.js',
+    'src/engine/dist/workspace/index.js',
+    'server/dist/index.js',
+    'server/package.json',
+    'package.json',
+    'package-lock.json',
+    'web/app/layout.tsx',
+    'web/fonts/geist.woff2',
+    'web/fonts/geist-mono.woff2',
+    'test/helpers/listen-safe.mjs',
+  ];
+  const have = new Set(entries.map((e) => e.name));
+  const missing = required.filter((r) => !have.has(r));
+  if (missing.length > 0) {
+    console.error(`[pack] 拒绝出包：包里缺少 ${missing.length} 个必需文件`);
+    for (const m of missing) console.error(`        ${m}`);
+    console.error(
+      '        这些文件是引擎能跑起来的前提。\n' +
+        '        多半是 SKIP_DIR / INCLUDE 的规则把它们漏掉了（见 shouldSkip 的说明）。',
+    );
+    process.exitCode = 1;
+    return;
+  }
+  console.log(`[pack] 完整性核对通过：${required.length} 个必需文件都在包里`);
 
   const buf = zip(entries);
   await mkdir(outDir, { recursive: true });

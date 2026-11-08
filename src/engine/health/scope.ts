@@ -16,6 +16,7 @@ import type { ScannedFeature } from './scan.ts';
 import { verticesOf } from './geometry.ts';
 import type { CrsInfo, VectorFieldInfo } from '../gdal/probe.ts';
 
+/** 范围：[minX, minY, maxX, maxY]（源坐标系下，不是经纬度）。 */
 export type Extent = readonly [number, number, number, number];
 
 /** 系统自带字段：不做字段类型检查（它们由软件维护，用户改不了） */
@@ -366,6 +367,12 @@ export function checkOutliers(features: readonly ScannedFeature[]): Finding[] {
 /** 看起来像数字的文本 */
 const NUMERIC_TEXT = /^[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?$/;
 
+/**
+ * 这个值是不是"看着像数字的文字"。
+ *
+ * 用于识别「数字存成了文本」这类字段类型错配——
+ * 属性表里看着是数字、类型却是文本，在表里根本看不出来。
+ */
 function looksNumericText(v: unknown): boolean {
   return typeof v === 'string' && NUMERIC_TEXT.test(v.trim());
 }

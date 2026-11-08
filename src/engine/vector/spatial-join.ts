@@ -20,6 +20,7 @@ import type { VectorOpDeps } from './query.ts';
 const RELATIONS: readonly SpatialRelation[] = ['within', 'intersects', 'contains'];
 const AGGREGATES: readonly JoinAggregate[] = ['first', 'count', 'sum', 'mean'];
 
+/** 读一个非空字符串参数；没有、或只有空白，返回 undefined。 */
 function readString(
   params: Readonly<Record<string, unknown>>,
   key: string,

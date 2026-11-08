@@ -19,6 +19,14 @@ import {
   type PixelType,
 } from './pixels.ts';
 
+/**
+ * 边界内插修补：从区域边界开始，用已填充邻居的均值向内推进。
+ *
+ * 这是**边界内插**，不是纹理合成：对扫描件的小污点、折痕够用，
+ * 大面积缺失会明显发糊——那种场景应改用 raster.replaceRegion 从干净底图取像素。
+ * 拷贝按带自己的类型逐元素做：`Uint8Array.from` 对 16 位带是逐元素截断，
+ * 65535 会被悄悄写成 255。
+ */
 export function inpaintRegion(
   bands: readonly PixelBand[],
   width: number,

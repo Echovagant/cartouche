@@ -16,6 +16,12 @@ import { LocalFolderStore } from './local-folder-store.ts';
 import { PathEscapeError } from './errors.ts';
 import type { WorkspaceAdapter } from './types.ts';
 
+/**
+ * 一个已登记的工作区根。
+ *
+ * 用户的数据通常在工作区之外（D:\任务\… 这类目录），
+ * 登记一个根等于"允许引擎动这个目录"，登记之外的一律越界。
+ */
 export interface WorkspaceRoot {
   /** 形如 'r1' 'r2'；内置默认根固定是 'r0' */
   readonly id: string;
@@ -27,6 +33,11 @@ export interface WorkspaceRoot {
   readonly builtin: boolean;
 }
 
+/**
+ * 解析结果：这条路径落在哪个根下、根下的相对路径是什么。
+ *
+ * relative 为空串表示解析到了根本身。
+ */
 export interface ResolvedPath {
   readonly rootId: string;
   /**
@@ -37,6 +48,14 @@ export interface ResolvedPath {
   readonly absolute: string;
 }
 
+/**
+ * 工作区根登记表。
+ *
+ * 规则：
+ *  - 相对路径 → 一律相对**默认根**（与早期单一根的行为一致）；
+ *  - 绝对路径 → 与各根做**最长前缀匹配**，命中即转成该根下的相对路径；
+ *    一个都不命中 → PathEscapeError。
+ */
 export class RootRegistry {
   #roots: WorkspaceRoot[] = [];
   #seq = 0;
@@ -52,10 +71,17 @@ export class RootRegistry {
     });
   }
 
+/** 列出已登记的根。 */
   list(): readonly WorkspaceRoot[] {
     return [...this.#roots];
   }
 
+/**
+ * 登记一个根。
+ *
+ * 同一个目录重复登记直接返回原来那条：Windows 上大小写不同也是同一个目录，
+ * 不去重就会拿到两个 id 指向同一处。
+ */
   add(path: string, label?: string): WorkspaceRoot {
     const abs = resolve(path);
     // 同一个目录重复登记不该拿到两个 id——Windows 上大小写不同也是同一个目录。
@@ -72,10 +98,23 @@ export class RootRegistry {
     return root;
   }
 
+/**
+ * 移除一个根。
+ *
+ * 内置默认根不可移除（builtin 的那一条会被保下来）——
+ * 默认根是所有相对路径的落点，删了相对路径就没地方解析了。
+ */
   remove(id: string): void {
     this.#roots = this.#roots.filter((r) => r.id !== id || r.builtin);
   }
 
+/**
+ * 把输入路径解析成「根 + 相对路径」。
+ *
+ * 相对路径一律落默认根；绝对路径按最长前缀匹配找根，
+ * 嵌套的根要赢（路径长的那个更具体）。
+ * 一个根都没命中就抛 PathEscapeError。
+ */
   resolve(input: string): ResolvedPath {
     if (!isAbsolute(input)) {
       const root = this.#roots[0];
@@ -93,6 +132,12 @@ export class RootRegistry {
     return { rootId: hit.id, relative: relative(hit.path, abs), absolute: abs };
   }
 
+/**
+ * 拿到某个根对应的存储适配器。
+ *
+ * 每个根一个独立的 LocalFolderStore：写操作必须落在根内，
+ * 适配器本身就是那道闸门。
+ */
   storeFor(rootId: string): WorkspaceAdapter {
     const root = this.#roots.find((r) => r.id === rootId);
     if (!root) throw new PathEscapeError(rootId);
@@ -100,6 +145,11 @@ export class RootRegistry {
   }
 }
 
+/**
+ * 候选路径是否落在根之下（含根本身）。
+ *
+ * 比较前折叠大小写：Windows 上文件系统不区分大小写。
+ */
 function isInside(rootPath: string, candidate: string): boolean {
   const root = foldCase(rootPath);
   const cand = foldCase(candidate);
@@ -117,6 +167,7 @@ function foldCase(p: string): string {
   return process.platform === 'win32' ? p.toLowerCase() : p;
 }
 
+/** 根的默认展示名：取目录名。 */
 function defaultLabel(path: string): string {
   const parts = path.split(sep).filter(Boolean);
   return parts[parts.length - 1] ?? path;

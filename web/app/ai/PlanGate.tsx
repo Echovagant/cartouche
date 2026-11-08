@@ -16,7 +16,7 @@
  */
 
 import { useEffect, useState } from 'react';
-import { CheckCircleIcon, WarningIcon } from '@phosphor-icons/react';
+import { WarningIcon } from '@phosphor-icons/react';
 import { ActionButton } from '../canvas/ui';
 import { opLabel } from './opLabels';
 import { describeZeroImpact, findZeroImpactOps } from './failures';
@@ -273,23 +273,4 @@ function ratioOf(preview: PlanGatePreview): number {
   if (total <= 0) return 0;
   const ratio = preview.affectedRatio ?? 0;
   return ratio > 0 ? ratio : (preview.affectedPixels ?? 0) / total;
-}
-
-/** 执行成功后给的一句收尾（成功 / 部分成功 / 失败） */
-export function outcomeTone(
-  ok: boolean,
-  completed: number,
-  total: number,
-): 'ok' | 'warn' | 'error' {
-  if (ok) return 'ok';
-  return completed > 0 ? 'warn' : 'error';
-}
-
-/** 收尾提示里的图标（保持与 ConfirmCard 一致） */
-export function OutcomeIcon({ tone }: { readonly tone: 'ok' | 'warn' | 'error' }) {
-  return tone === 'ok' ? (
-    <CheckCircleIcon size={16} weight="bold" className="mt-0.5 shrink-0" />
-  ) : (
-    <WarningIcon size={16} weight="bold" className="mt-0.5 shrink-0" />
-  );
 }

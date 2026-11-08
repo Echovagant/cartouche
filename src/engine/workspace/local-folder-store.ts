@@ -41,6 +41,13 @@ function insideRoot(root: string, candidate: string): boolean {
   return candidate.startsWith(prefix);
 }
 
+/**
+ * 本地文件夹工作区：单机版的主用实现。
+ *
+ * 所有路径都先过 resolve()：不在根下的一律 PathEscapeError。
+ * 这是引擎对外的第一道闸门——绝对路径同样要判，
+ * 2026-10-23 实测的洞就是在这里放行了绝对路径。
+ */
 export class LocalFolderStore implements WorkspaceAdapter {
   readonly kind = 'local-folder';
   readonly root: string;
@@ -49,6 +56,12 @@ export class LocalFolderStore implements WorkspaceAdapter {
     this.root = resolve(root);
   }
 
+/**
+ * 把工作区相对路径解析成绝对路径。
+ *
+ * 绝对路径**也要**判根内：是绝对路径不代表它在工作区里。
+ * `C:/Windows/System32/…` 能被当成工作区文件读写的话，引擎的所有闸门都白设了。
+ */
   resolve(path: string): string {
     // 绝对路径**也要**做根内判定：是绝对路径不代表它在工作区里。
     // 2026-10-23 实测的洞：这里原来直接放行，`C:/Windows/System32/...`
@@ -78,6 +91,7 @@ export class LocalFolderStore implements WorkspaceAdapter {
     return existsViaAccess(this.resolve(path));
   }
 
+/** 读文件；不存在抛 NotFoundError，其它错误原样抛出。 */
   async read(path: string): Promise<Uint8Array> {
     try {
       return await fs.readFile(this.resolve(path));
@@ -87,12 +101,14 @@ export class LocalFolderStore implements WorkspaceAdapter {
     }
   }
 
+/** 写文件（必要时先建父目录）。 */
   async write(path: string, data: Uint8Array): Promise<void> {
     const full = this.resolve(path);
     await fs.mkdir(dirname(full), { recursive: true });
     await fs.writeFile(full, data);
   }
 
+/** 列目录；目录不存在返回空数组，不报错。 */
   async list(dir: string): Promise<string[]> {
     try {
       return await fs.readdir(this.resolve(dir));
@@ -102,6 +118,7 @@ export class LocalFolderStore implements WorkspaceAdapter {
     }
   }
 
+/** 取文件信息；不存在抛 NotFoundError。 */
   async stat(path: string): Promise<FileStat> {
     try {
       const s = await fs.stat(this.resolve(path));
@@ -112,10 +129,12 @@ export class LocalFolderStore implements WorkspaceAdapter {
     }
   }
 
+/** 删除（force + recursive）：目标不存在也不报错。 */
   async remove(path: string): Promise<void> {
     await fs.rm(this.resolve(path), { force: true, recursive: true });
   }
 
+/** 复制文件（必要时先建目标父目录）。 */
   async copy(from: string, to: string): Promise<void> {
     const dest = this.resolve(to);
     await fs.mkdir(dirname(dest), { recursive: true });

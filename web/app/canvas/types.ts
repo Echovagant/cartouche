@@ -85,14 +85,6 @@ export interface RasterGrid {
   readonly epsg?: number | null;
 }
 
-/** 原生像元矩形（左上原点，maxX / maxY 不含） */
-export interface PixelRegion {
-  readonly minX: number;
-  readonly minY: number;
-  readonly maxX: number;
-  readonly maxY: number;
-}
-
 /** 画笔遮罩：width×height 的不透明度字节（0 不着色 / 255 完全着色），base64 */
 export interface BrushMask {
   readonly width: number;
@@ -343,18 +335,6 @@ export const SIDECAR_EXTENSIONS = [
 
 /** 工作区条目在界面上的三类 */
 export type EntryKind = 'raster' | 'vector' | 'sidecar' | 'other';
-
-/**
- * 按扩展名猜图层类型。
- *
- * 为什么用扩展名猜而不是让引擎回报：/api/fs/list 只给文件名，不给类型；
- * 多问一次 stat 就要多一轮往返。这里接受"猜错就报错"——真正决定成败的是
- * 引擎能不能打开该数据集，而不是扩展名本身。
- */
-export function guessLayerKind(name: string): LayerKind | null {
-  const kind = guessEntryKind(name);
-  return kind === 'raster' || kind === 'vector' ? kind : null;
-}
 
 /**
  * 猜工作区条目的种类。

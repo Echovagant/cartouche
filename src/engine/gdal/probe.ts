@@ -12,6 +12,15 @@ import { dirname, join } from 'node:path';
 import { tools, type GdalTools } from './runner.ts';
 import type { GdalLocation } from './env.ts';
 
+/**
+ * 数据集坐标系的探测结果。
+ *
+ * source 记的是"GDAL 最终从哪里读到的"：embedded（文件内嵌）、
+ * sidecar（同名伴随文件）、none（没有）。
+ * 为什么必须记来源：GTiff 驱动**不会**自动读同名 .prj，但会读 .tfw；
+ * Shapefile 驱动会读 .prj。只看"旁边的 .prj 文件在不在"，
+ * 会得出与 GDAL 实际行为相反的结论。
+ */
 export interface CrsInfo {
   readonly present: boolean;
   readonly wkt?: string;
@@ -20,6 +29,13 @@ export interface CrsInfo {
   readonly source: 'embedded' | 'sidecar' | 'none';
 }
 
+/**
+ * 栅格数据集的描述。
+ *
+ * bandTypes / geotransform / pixelSize 是交差报告要用的"事实"：
+ * 位深不同数值含义完全不同，仿射参数决定这张图能不能量距离——
+ * 缺一项，对方就得回头再问一轮。
+ */
 export interface RasterInfo {
   readonly kind: 'raster';
   readonly path: string;
@@ -47,11 +63,18 @@ export interface RasterInfo {
   };
 }
 
+/** 一个属性字段的名字与类型（类型用 GDAL 的原始写法，如 'Integer' / 'String'）。 */
 export interface VectorFieldInfo {
   readonly name: string;
   readonly type: string;
 }
 
+/**
+ * 矢量数据集的描述（一个图层一条）。
+ *
+ * encoding 单独留着：中文属性乱码几乎都出在编码上，
+ * 而它不影响文件能不能打开，所以必须单独报出来，不能藏在"打开成功"里。
+ */
 export interface VectorInfo {
   readonly kind: 'vector';
   readonly path: string;
@@ -68,8 +91,15 @@ export interface VectorInfo {
   };
 }
 
+/** 栅格与矢量的统一描述：探测入口在拿到结果前还不知道是哪种数据。 */
 export type DatasetInfo = RasterInfo | VectorInfo;
 
+/**
+ * 探测失败。
+ *
+ * raw 留着 GDAL 的原始输出：打不开的真实原因（文件被锁、缺驱动、格式不支持）
+ * 只在原始输出里说得清。
+ */
 export interface ProbeError {
   readonly message: string;
   readonly raw: string;
@@ -293,6 +323,7 @@ export async function probeDataset(
   };
 }
 
+/** 读 .cpg 里的编码标记；读不到或内容为空返回 null。 */
 async function readCpg(path: string): Promise<string | null> {
   try {
     const { readFileSync } = await import('node:fs');
