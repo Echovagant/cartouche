@@ -122,16 +122,17 @@ test('撤销登记：DELETE 能把根从列表里去掉', async () => {
   const target = before.roots.find((r) => !r.builtin);
   assert.ok(target, '前面应该已经登记了一个非内置根');
 
+  // 撤销凭**根的 id**（前端拿不到绝对路径，所以只能凭 id）
   const res = await fetch(`${base}/api/workspace/roots`, {
     method: 'DELETE',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ path: target.path }),
+    body: JSON.stringify({ id: target.id }),
   });
   assert.equal(res.status, 200);
 
   const after = await listRoots();
   assert.ok(
-    !after.roots.some((r) => r.path === target.path),
+    !after.roots.some((r) => r.id === target.id),
     '撤销后列表里不该还有这个根',
   );
 });
@@ -150,11 +151,17 @@ test('撤销登记：撤销也要从落盘的文件里去掉（否则重启后�
     '前置：登记后落盘文件里应该有这个根',
   );
 
-  await fetch(`${base}/api/workspace/roots`, {
+  // 凭 id 撤销（前端不知道绝对路径）
+  const list = await listRoots();
+  const own = list.roots.find((r) => r.label === '要落盘检查的目录');
+  assert.ok(own, '前置：列表里应该能找到刚登记的根');
+
+  const del = await fetch(`${base}/api/workspace/roots`, {
     method: 'DELETE',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ path: ownDir }),
+    body: JSON.stringify({ id: own.id }),
   });
+  assert.equal(del.status, 200);
 
   const raw = JSON.parse(await readFile(rootsFile, 'utf8'));
   assert.ok(
@@ -171,7 +178,7 @@ test('撤销登记：内置默认根不可撤销（删了相对路径就没地�
   const res = await fetch(`${base}/api/workspace/roots`, {
     method: 'DELETE',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ path: builtin.path }),
+    body: JSON.stringify({ id: builtin.id }),
   });
   assert.notEqual(res.status, 200, '内置默认根不该能被删');
 
@@ -179,11 +186,11 @@ test('撤销登记：内置默认根不可撤销（删了相对路径就没地�
   assert.ok(after.roots.some((r) => r.builtin), '内置默认根必须还在');
 });
 
-test('撤销登记：撤销一个没登记过的路径要说清楚，不能静默成功', async () => {
+test('撤销登记：撤销一个没登记过的要说清楚，不能静默成功', async () => {
   const res = await fetch(`${base}/api/workspace/roots`, {
     method: 'DELETE',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ path: join(cfgRoot, '根本没登记过的目录') }),
+    body: JSON.stringify({ id: 'r-does-not-exist' }),
   });
   assert.notEqual(res.status, 200, '撤销不存在的根不该报成功');
 });
