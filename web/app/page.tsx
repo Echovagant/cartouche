@@ -1,6 +1,7 @@
 import {
   ArrowDownIcon,
   ArrowRightIcon,
+  ArrowSquareOutIcon,
   CheckCircleIcon,
   DownloadSimpleIcon,
   GitBranchIcon,
@@ -12,6 +13,15 @@ import { GateStack } from './motion/GateStack';
 import { ScrollChoreography } from './motion/ScrollChoreography';
 import { formatPixelGate } from './motion/ConfirmCardBody';
 import { SiteHeader } from './motion/SiteHeader';
+
+/**
+ * 下载页地址。全站只有这一个来源。
+ *
+ * 为什么单独提出来：首屏的「下载」按钮、页尾的下载链接、导航栏的「下载」，
+ * 以前各写各的 —— 有一处写成站内锚点，用户点了以为坏了。
+ * 收成一个常量之后，改地址只改一处。
+ */
+const RELEASES_URL = 'https://github.com/Echovagant/cartouche/releases';
 
 /**
  * 落地页（服务端组件）。
@@ -58,7 +68,9 @@ const NAV = [
   { href: '#s2', label: '改前确认' },
   { href: '#s5', label: '改后交付' },
   { href: '#s6', label: '怎么用' },
-  { href: '#s8', label: '下载' },
+  // 「下载」是去下载，不是滚到页面下方的下载区块 ——
+  // 同一个词在同一个页面上只能有一种行为（首屏 CTA 也是直接去下载）。
+  { href: RELEASES_URL, label: '下载' },
 ] as const;
 
 /* ── 两次真实运行留下的像元口径 ──────────────────────────────────────
@@ -347,16 +359,30 @@ export default function Home() {
                 </h1>
 
                 <div data-hero="cta" className="reveal mt-9 flex flex-wrap items-center gap-3">
+                  {/*
+                    首屏的「下载」是**真的去下载**，不是滚到页面下方的下载区块。
+
+                    原来这里是 href="#s8"（站内锚点），点下去只是滚一段 ——
+                    页面里明明有真实的下载入口，却让人先滑一屏再点一次。
+                    对第一次来的人，这是最贵的一步：多数人不会滚到底，
+                    于是「下载」这个最该发生的事没发生。
+
+                    现在直接指向 GitHub Releases（新标签打开，官网留在原处）。
+                    想先了解的人走右边那个「看看它怎么确认」，仍然是锚点。
+                  */}
                   <MagneticLink
-                    href="#s8"
+                    href={RELEASES_URL}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    title="在新标签页打开 GitHub Releases"
                     className="group inline-flex min-h-11 items-center gap-2 rounded-full bg-accent px-6 py-3 text-[15px] font-medium whitespace-nowrap text-paper transition-colors hover:bg-accent-deep"
                   >
                     下载
-                    <ArrowRightIcon
+                    <ArrowSquareOutIcon
                       aria-hidden="true"
                       size={16}
                       weight="bold"
-                      className="transition-transform duration-[var(--duration-slow)] group-hover:translate-x-1"
+                      className="transition-transform duration-[var(--duration-slow)] group-hover:translate-x-0.5"
                     />
                   </MagneticLink>
                   <a
@@ -832,16 +858,19 @@ export default function Home() {
 
                   <div className="mt-8 flex flex-wrap gap-3">
                     <a
-                      href="https://github.com/Echovagant/cartouche/releases"
+                      href={RELEASES_URL}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      title="在新标签页打开 GitHub Releases"
                       className="group inline-flex min-h-11 items-center gap-2 rounded-full bg-paper px-6 py-3 text-[15px] font-semibold whitespace-nowrap text-ink transition-colors hover:bg-surface"
                     >
                       <DownloadSimpleIcon aria-hidden="true" size={16} weight="bold" />
                       下载
-                      <ArrowRightIcon
+                      <ArrowSquareOutIcon
                         aria-hidden="true"
                         size={16}
                         weight="bold"
-                        className="transition-transform duration-[var(--duration-slow)] group-hover:translate-x-1"
+                        className="transition-transform duration-[var(--duration-slow)] group-hover:translate-x-0.5"
                       />
                     </a>
                     <a
@@ -972,7 +1001,8 @@ export default function Home() {
               {
                 title: '获取',
                 links: [
-                  { label: '下载', href: '#s8' },
+                  // 同样是「下载」，就同样直接去下载 —— 页面上不留两个行为不同的「下载」。
+                  { label: '下载', href: RELEASES_URL },
                   { label: '源码', href: 'https://github.com/Echovagant/cartouche' },
                   { label: '画布', href: 'canvas.html' },
                 ],

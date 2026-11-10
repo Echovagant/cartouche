@@ -137,14 +137,34 @@ export function MagneticLink({
   href,
   className = '',
   children,
+  target,
+  rel,
+  title,
+  'aria-label': ariaLabel,
 }: {
   href: string;
   className?: string;
   children: ReactNode;
+  /**
+   * 外链用 `target="_blank"` —— 下载是主转化路径，
+   * 把官网留在原标签，用户下完还想回来看功能时不用重新找。
+   */
+  target?: '_blank' | '_self';
+  rel?: string;
+  title?: string;
+  'aria-label'?: string;
 }) {
   const ref = useMagnetic<HTMLAnchorElement>(1);
   return (
-    <a ref={ref} href={href} className={className}>
+    <a
+      ref={ref}
+      href={href}
+      className={className}
+      {...(target ? { target } : {})}
+      {...(rel ? { rel } : {})}
+      {...(title ? { title } : {})}
+      {...(ariaLabel ? { 'aria-label': ariaLabel } : {})}
+    >
       {children}
     </a>
   );
