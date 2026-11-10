@@ -83,12 +83,18 @@ test('打包规则：必需文件清单覆盖引擎的工作区适配器', () =>
   }
 });
 
-test('打包规则：web/fonts 与 test/helpers 必须进 INCLUDE 清单', () => {
+test('打包规则：web/fonts 与整个 test 目录必须进 INCLUDE 清单', () => {
   const code = stripComments(readPackRules());
   const includeBlock = code.slice(code.indexOf('const INCLUDE'), code.indexOf('const PREBUILT'));
 
   assert.ok(includeBlock.includes('web/fonts'), "INCLUDE 里缺少 'web/fonts' —— 字体是自托管的，不收就 build 不了");
-  assert.ok(includeBlock.includes('test/helpers'), "INCLUDE 里缺少 'test/helpers' —— smoke-engine.mjs 借了它的 listenSafe");
+  // 收的是**整个** test 目录，不只是 helpers：
+  // 源码包给的是「要自己改代码、走流水线」的人，拿到的得是一份能跑测试的完整源码。
+  // 只收 helpers 的话，对方 npm test 会一条用例都跑不到 —— 而那看起来是「测试都过了」。
+  assert.ok(
+    /'test'/.test(includeBlock),
+    "INCLUDE 里缺少 'test' —— 源码包要带完整测试，只收 helpers 的话用户 npm test 一条都跑不到",
+  );
 });
 
 test('打包规则：不再出现把 workspace 当成「任意层级都跳」的写法', () => {
