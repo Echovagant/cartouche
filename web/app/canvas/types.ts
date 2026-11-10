@@ -240,11 +240,43 @@ export interface ProjectOutput {
 
 /** 「最近打开的项目」列表里的一项 */
 export interface ProjectSummary {
-  /** 项目根的绝对路径 */
+  /** 项目根的绝对路径（**仅用于调用引擎**，不要显示在界面上） */
   readonly path: string;
   readonly name: string;
   readonly updatedAt: string;
   readonly layerCount: number;
+  /**
+   * 给人看的**位置**：相对已登记工作区的路径（`图\2026` 这样）。
+   *
+   * 为什么单独有这个字段：`path` 里带着用户的盘符与用户名，
+   * 界面上显示它就等于把用户身份和机器布局摆在那儿。
+   * 卡片上显示这个相对位置就够了 —— 用户认得出是哪个文件夹。
+   */
+  readonly location?: string;
+}
+
+/**
+ * 引擎已登记的工作区根。
+ *
+ * ⚠️ **这里没有绝对路径**。
+ *
+ * 绝对路径里带着**用户名**（形如 `C:\Users\<用户名>\…`）。前端一旦拿到它，
+ * 它就会留在浏览器的 localStorage、用户的截图、发给同事的消息里 ——
+ * 用户的机器布局不该被产品顺手带出去。
+ *
+ * 所以引擎只给：
+ *   - `id`     形如 'r0'（内置默认根）、'r1'、'r2'…… 撤销时凭它
+ *   - `label`  展示名（默认取目录名）
+ *   - `location` 相对**默认根**的路径（只在根位于默认根之下时才有；
+ *              不含盘符与用户名，纯粹帮用户看清层级）
+ *   - `builtin` 内置默认根为 true —— **不能撤销**（相对路径都落在它下面）
+ */
+export interface WorkspaceRoot {
+  readonly id: string;
+  readonly label: string;
+  readonly builtin: boolean;
+  /** 相对默认根的位置（可选）：`演示项目`、`图\2026` 这样 */
+  readonly location?: string;
 }
 
 export interface SelectedFeature {
