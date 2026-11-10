@@ -23,8 +23,10 @@
  * 字体许可：Geist / Geist Mono 是 SIL OFL 1.1，可商用、可随仓库分发，
  * 声明写在 NOTICE 里。
  *
- * ⚠️ **收 `test/helpers/`**：`scripts/smoke-engine.mjs` 从 `../test/helpers/listen-safe.mjs`
- * 借了一个起端口的辅助函数。不收它，对方在包里跑 `npm run smoke:engine` 会直接失败。
+ * ⚠️ **收 `test/`**：源码包给的是「要自己装环境、改代码、走流水线」的人，
+ * 拿到的应该是一份**能跑测试的完整源码**，不是缺了测试的半份。
+ * （`scripts/smoke-engine.mjs` 还从 `test/helpers/listen-safe.mjs` 借了一个起端口的
+ * 辅助函数 —— 只收 helpers 不收用例的话，用户 `npm test` 会一条都跑不到。）
  *
  * 为什么自己写 zip：仓库的依赖许可门禁只放行宽松许可的包，
  * 为打一个包引一个压缩库不划算；而 ZIP 的存储格式本身不复杂（zlib 是 Node 自带的）。
@@ -50,7 +52,7 @@ const INCLUDE = [
   'web/postcss.config.mjs',
   'web/next-env.d.ts',
   'web/fonts',
-  'test/helpers',
+  'test',
   'scripts',
   'package.json',
   'package-lock.json',
