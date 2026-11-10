@@ -6,6 +6,7 @@ Copyright 2026 图签 Cartouche 贡献者
 - GDAL / OGR — MIT License, https://gdal.org
 - PROJ — MIT License, https://proj.org
 - GEOS — LGPL-2.1, https://libgeos.org
+- libspatialite — LGPL-2.1, https://www.gaia-gis.it/fossil/libspatialite
 - MapLibre GL JS — BSD-3-Clause, https://maplibre.org
 - Next.js — MIT License, https://nextjs.org
 - React / React DOM — MIT License, https://react.dev
@@ -45,6 +46,18 @@ https://github.com/maplibre/maplibre-gl-js/blob/v6.15.0/LICENSE.txt：
 - @mapbox/whoots-js — ISC License, Copyright (c) 2017 Mapbox
 
 上述各组件的版权声明与许可全文随其上游项目发布。
+
+随便携包分发的 libspatialite（LGPL-2.1）是**本项目自行编译**的，
+与上游 5.1.0 的差别是带上了 CVE-2026-112048 与 CVE-2026-112052 的修复
+（上游至今没有发布修复版本）。它以**动态链接**方式加载，可以被替换；
+按 LGPL 的要求，修改后的源码与构建步骤随仓库提供：
+
+- 修改后的源文件：third_party/libspatialite/patched/
+- 构建说明：third_party/libspatialite/README.md
+
+未修改部分的版权与许可属于上游（Copyright (c) 2006-2020 Fausto Beccaria 等，
+Copyright (c) 2016-2020 Even Rouault 等），许可全文随上游源码分发
+（https://www.gaia-gis.it/fossil/libspatialite）。
 
 随本产品分发的字体（web/fonts/ 下）：
 - Geist — SIL Open Font License 1.1, Copyright (c) 2023 Vercel,

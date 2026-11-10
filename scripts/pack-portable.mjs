@@ -96,6 +96,28 @@ const SCRIPTS = [
  */
 const DOCS = ['README.md', 'QUICKSTART.md', 'LICENSE', 'NOTICE', 'assets'];
 
+/**
+ * 找出「打过 CVE 补丁的」spatialite.dll。
+ *
+ * 两个来源，先环境变量后默认路径：
+ *  - `CARTOUCHE_SPATIALITE_DLL`：指到任意位置（CI 产物、本机构建目录都行）
+ *  - `third_party/libspatialite/build/spatialite.dll`：按 README 构建后的默认落点
+ *
+ * 找不到返回 null —— 调用方要**直接拒绝出包**，不能静默退回 conda 那份有漏洞的库。
+ *
+ * @returns {string | null}
+ */
+function resolveSpatialiteOverride() {
+  const candidates = [
+    process.env.CARTOUCHE_SPATIALITE_DLL,
+    join(root, 'third_party', 'libspatialite', 'build', 'spatialite.dll'),
+  ].filter(Boolean);
+  for (const c of candidates) {
+    if (existsSync(c) && statSync(c).isFile()) return c;
+  }
+  return null;
+}
+
 /* ── PE 导入表解析（用来算 DLL 依赖闭包） ───────────────────────────── */
 
 /**
@@ -410,6 +432,34 @@ async function main() {
     console.log(`[pack]   依赖里有 ${closure.missing.size} 个 Windows 自带的 DLL（不打包）：${[...closure.missing].join(', ')}`);
   }
 
+  /* ── 1.5 spatialite：换成打过 CVE 补丁的那份 ──────────────────────
+     conda 的 libspatialite 5.1.0 有两个未修的漏洞（CVE-2026-112048 / 112052），
+     上游至今没有发修复版。本项目自己编了一份带修复的，源码与构建步骤见
+     `third_party/libspatialite/`。
+
+     找不到就**直接报错，不出包** —— 静默退回那份有漏洞的库，
+     正是这个目录存在的理由。 */
+  const spatialitePath = resolveSpatialiteOverride();
+  if (!spatialitePath) {
+    console.error(
+      '[pack] 找不到打过 CVE 补丁的 spatialite.dll，拒绝出包。\n' +
+        '        conda 的 libspatialite 5.1.0 有 CVE-2026-112048 / CVE-2026-112052（上游未发修复版）。\n' +
+        '        请按 third_party/libspatialite/README.md 构建一份，放到\n' +
+        '          third_party/libspatialite/build/spatialite.dll\n' +
+        '        或用环境变量 CARTOUCHE_SPATIALITE_DLL 指过去。',
+    );
+    process.exitCode = 1;
+    return;
+  }
+  const builtSpatialite = statSync(spatialitePath).size;
+  const condaSpatialite = join(gdal.binDir, 'spatialite.dll');
+  const condaSize = existsSync(condaSpatialite) ? statSync(condaSpatialite).size : 0;
+  console.log(
+    `[pack] spatialite：换成打过补丁的版本（${(builtSpatialite / 1048576).toFixed(1)} MB` +
+      (condaSize ? `，conda 那份是 ${(condaSize / 1048576).toFixed(1)} MB` : '') +
+      '）',
+  );
+
   /* ── 2. 组装包内容 ────────────────────────────────────────────── */
   /** @type {{name: string, data: Buffer}[]} */
   const entries = [];
@@ -423,7 +473,10 @@ async function main() {
 
   // 2.2 GDAL：可执行文件 + 它们的 DLL 依赖
   for (const abs of closure.files) {
-    const data = await readFile(abs);
+    // spatialite.dll 用打过补丁的那份替掉闭包里 conda 给的那份
+    const isSpatialite = basename(abs).toLowerCase() === 'spatialite.dll';
+    const from = isSpatialite ? spatialitePath : abs;
+    const data = await readFile(from);
     entries.push({ name: `${TOP}/runtime/gdal/bin/${basename(abs)}`, data });
     bump('GDAL 可执行文件与 DLL', data.length);
   }
