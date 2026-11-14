@@ -10,6 +10,7 @@
  */
 import {
   FolderSimpleIcon,
+  GearIcon,
   PrinterIcon,
   SparkleIcon,
   StackIcon,
@@ -29,6 +30,8 @@ export interface ActivityBarProps {
   /** AI 入口当前能不能用（没打开项目时带上下文才有意义） */
   readonly aiEnabled: boolean;
   readonly aiBlockedReason: string;
+  /** 打开设置（Ctrl+, 同款） */
+  readonly onOpenSettings: () => void;
 }
 
 const VIEWS: readonly {
@@ -48,6 +51,7 @@ export function ActivityBar({
   onOpenAi,
   aiEnabled,
   aiBlockedReason,
+  onOpenSettings,
 }: ActivityBarProps) {
   return (
     <nav
@@ -105,6 +109,15 @@ export function ActivityBar({
       </button>
 
       <span className="mb-1.5 mt-1 h-px w-6 bg-studio-line" aria-hidden="true" />
+      <button
+        type="button"
+        onClick={onOpenSettings}
+        title="设置（Ctrl+,）"
+        aria-label="设置"
+        className="flex h-10 w-10 items-center justify-center rounded-md text-studio-ink-3 transition-colors hover:bg-studio-3/60 hover:text-studio-ink"
+      >
+        <GearIcon size={19} aria-hidden="true" />
+      </button>
       <ThemeToggle variant="icon" />
     </nav>
   );

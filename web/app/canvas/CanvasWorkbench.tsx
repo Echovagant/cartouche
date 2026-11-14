@@ -33,6 +33,10 @@ import { ActivityBar, type WorkbenchView } from './workbench/ActivityBar';
 import { StatusBar } from './workbench/StatusBar';
 import { Welcome } from './workbench/Welcome';
 import { ProjectSidebar } from './workbench/ProjectSidebar';
+import { SettingsModal } from './workbench/SettingsModal';
+import { QuickOpen } from './workbench/QuickOpen';
+import { BottomPanel, type PanelTab } from './workbench/BottomPanel';
+import { guessEntryKind } from './types';
 import { pickFolder } from './useProjects';
 import { setActiveSheetState, metersPerPixelAt } from './sheet';
 import {
@@ -140,6 +144,12 @@ export default function CanvasWorkbench() {
   const [view, setView] = useState<WorkbenchView>('project');
   /** 侧栏折叠（VS Code：再点一下已激活的图标收起侧栏，画布占满） */
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  /** 设置（Ctrl+,）/ 快速打开（Ctrl+P） */
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [quickOpenOpen, setQuickOpenOpen] = useState(false);
+  /** 底部面板（Ctrl+J）：属性表 / 改图记录 */
+  const [panelOpen, setPanelOpen] = useState(false);
+  const [panelTab, setPanelTab] = useState<PanelTab>('attributes');
 
   const [layers, setLayers] = useState<MapLayer[]>([]);
   const [activeLayerId, setActiveLayerId] = useState<string | null>(null);
@@ -249,6 +259,39 @@ export default function CanvasWorkbench() {
   useEffect(() => {
     setFileProtocol(window.location.protocol === 'file:');
   }, []);
+
+  /* ───────── 全局快捷键（VS Code 的键位） ───────── */
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent): void => {
+      if (!(event.ctrlKey || event.metaKey) || event.shiftKey || event.altKey) return;
+      const key = event.key.toLowerCase();
+      if (key === 'p') {
+        event.preventDefault();
+        setQuickOpenOpen((prev) => !prev);
+        return;
+      }
+      if (event.key === ',') {
+        event.preventDefault();
+        setSettingsOpen(true);
+        return;
+      }
+      if (key === 'j') {
+        event.preventDefault();
+        setPanelOpen((prev) => !prev);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  /** 选中要素 0 → >0：底部面板自动升起并切到属性表 */
+  useEffect(() => {
+    if (selected.length > 0) {
+      setPanelOpen(true);
+      setPanelTab('attributes');
+    }
+  }, [selected.length]);
 
   /* ───────── 打开 / 新建 / 退回项目列表 ───────── */
 
@@ -417,8 +460,8 @@ export default function CanvasWorkbench() {
   /* ───────── 图层操作 ───────── */
 
   const addLayer = useCallback(
-    async (name: string, kind: LayerKind) => {
-      const path = dir ? `${dir}/${name}` : name;
+    async (name: string, kind: LayerKind, explicitPath?: string) => {
+      const path = explicitPath ?? (dir ? `${dir}/${name}` : name);
       // 双保险：隐藏条目（.cartouche 等）不是图层数据。fs/list 已经不列它们了，
       // 但「手滑传进来」的代价是坏层进清单，所以这里也挡一道。
       if (path.split('/').some((seg) => seg.startsWith('.'))) {
@@ -896,6 +939,7 @@ export default function CanvasWorkbench() {
             onOpenAi={openAiWorkbench}
             aiEnabled={aiEntry.enabled}
             aiBlockedReason={aiEntry.reason}
+            onOpenSettings={() => setSettingsOpen(true)}
           />
 
           {/* ── 侧栏：按活动栏的视图切换内容；折叠时整条让位给画布 ── */}
@@ -1110,16 +1154,17 @@ export default function CanvasWorkbench() {
                     <ExportDevelop active={engine.isPending('export')} />
                   </div>
                 </div>
-                {/* 属性表：VS Code 的底部面板 —— 选中要素时从下面升起来 */}
-                {selected.length > 0 ? (
-                  <div className="max-h-[220px] shrink-0 overflow-y-auto border-t border-studio-line bg-studio-2/70">
-                    <AttributeTable
-                      features={selected}
-                      activeIndex={selectedIndex}
-                      onSelect={setSelectedIndex}
-                      onClose={() => setSelected([])}
-                    />
-                  </div>
+                {/* 底部面板（VS Code 的面板位）：属性表 / 改图记录，Ctrl+J 开合 */}
+                {panelOpen ? (
+                  <BottomPanel
+                    tab={panelTab}
+                    onTabChange={setPanelTab}
+                    onClose={() => setPanelOpen(false)}
+                    features={selected}
+                    activeIndex={selectedIndex}
+                    onSelect={setSelectedIndex}
+                    operations={manifest?.operations ?? []}
+                  />
                 ) : null}
               </>
             ) : (
@@ -1208,6 +1253,31 @@ export default function CanvasWorkbench() {
             onCancel={closeConfirm}
           />
         ) : null}
+
+        <QuickOpen
+          open={quickOpenOpen}
+          onClose={() => setQuickOpenOpen(false)}
+          recent={projects.recent}
+          files={projectRef ? files.map((f) => (dir ? `${dir}/${f}` : f)) : []}
+          onOpenProject={(project) => {
+            void openOrCreate(
+              project.path
+                ? { path: project.path }
+                : { handle: project.handle ?? '', label: project.name },
+            );
+          }}
+          onOpenFile={(relPath) => {
+            const kind = guessEntryKind(relPath);
+            const name = relPath.split('/').pop() ?? relPath;
+            if (kind !== 'raster' && kind !== 'vector') {
+              setBanner('这个文件不是可直接加载的图层数据（附属文件或未知格式）。');
+              return;
+            }
+            void addLayer(name, kind, relPath);
+          }}
+        />
+
+        <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
       </div>
     </>
   );
