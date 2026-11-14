@@ -19,7 +19,8 @@ import { ThemeToggle } from '../ThemeToggle';
 export type WorkbenchView = 'project' | 'layers' | 'layout';
 
 export interface ActivityBarProps {
-  readonly activeView: WorkbenchView;
+  /** 当前激活的视图；侧栏折叠时为 null（此时所有图标都不亮） */
+  readonly activeView: WorkbenchView | null;
   readonly onViewChange: (view: WorkbenchView) => void;
   /** 没打开项目时，图层与出图两个视图没有内容可看 */
   readonly projectOpen: boolean;

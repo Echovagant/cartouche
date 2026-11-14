@@ -138,6 +138,8 @@ export default function CanvasWorkbench() {
 
   /** 活动栏当前指向的侧栏视图 */
   const [view, setView] = useState<WorkbenchView>('project');
+  /** 侧栏折叠（VS Code：再点一下已激活的图标收起侧栏，画布占满） */
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   const [layers, setLayers] = useState<MapLayer[]>([]);
   const [activeLayerId, setActiveLayerId] = useState<string | null>(null);
@@ -328,6 +330,22 @@ export default function CanvasWorkbench() {
     }
   }, [projectBusy, openOrCreate]);
 
+  /**
+   * 活动栏点图标：切换视图；**再点一下已激活的图标 = 收起侧栏**，
+   * 收起时再点任何图标都展开并切过去 —— 与 VS Code 完全一致的折叠手感。
+   */
+  const handleViewChange = useCallback(
+    (next: WorkbenchView) => {
+      if (next === view && !sidebarCollapsed) {
+        setSidebarCollapsed(true);
+        return;
+      }
+      setSidebarCollapsed(false);
+      setView(next);
+    },
+    [view, sidebarCollapsed],
+  );
+
   /* ───────── 工作区文件列表 ───────── */
 
   const listDir = engine.listDir;
@@ -401,10 +419,20 @@ export default function CanvasWorkbench() {
   const addLayer = useCallback(
     async (name: string, kind: LayerKind) => {
       const path = dir ? `${dir}/${name}` : name;
+      // 双保险：隐藏条目（.cartouche 等）不是图层数据。fs/list 已经不列它们了，
+      // 但「手滑传进来」的代价是坏层进清单，所以这里也挡一道。
+      if (path.split('/').some((seg) => seg.startsWith('.'))) {
+        setBanner('隐藏目录（如 .cartouche）里放的是工具状态，不是图层数据，不能加载。');
+        return;
+      }
       const id = `layer-${(idRef.current += 1)}`;
 
       const layer: MapLayer = { id, name, kind, path, visible: true, opacity: 1 };
+      // 先把数据拉回来，**成功了才进清单**：失败还往里加，用户会得到一个
+      // 图例上挂着、地图上却没有的"幽灵图层"，而且自动保存会把它写进项目
+      // —— 下次打开就一直报错（2026-11-14 实测事故）。失败原因已进横幅。
       const ok = await loadLayerData([layer]);
+      if (!ok) return;
       setLayers((prev) => {
         // 叠放次序 = 数组顺序（末尾在最上），和面板里的上移/下移一致。
         //
@@ -418,7 +446,7 @@ export default function CanvasWorkbench() {
         return [...prev.slice(0, firstVector), layer, ...prev.slice(firstVector)];
       });
       setActiveLayerId(id);
-      if (ok) setBanner(null);
+      setBanner(null);
     },
     [dir, loadLayerData],
   );
@@ -862,15 +890,16 @@ export default function CanvasWorkbench() {
       <div className="flex h-[100dvh] flex-col overflow-hidden bg-studio text-studio-ink">
         <div className="flex min-h-0 flex-1">
           <ActivityBar
-            activeView={view}
-            onViewChange={setView}
+            activeView={sidebarCollapsed ? null : view}
+            onViewChange={handleViewChange}
             projectOpen={Boolean(projectRef)}
             onOpenAi={openAiWorkbench}
             aiEnabled={aiEntry.enabled}
             aiBlockedReason={aiEntry.reason}
           />
 
-          {/* ── 侧栏：按活动栏的视图切换内容 ── */}
+          {/* ── 侧栏：按活动栏的视图切换内容；折叠时整条让位给画布 ── */}
+          {sidebarCollapsed ? null : (
           <aside
             ref={leftRef}
             className="flex w-[264px] shrink-0 flex-col border-r border-studio-line bg-studio-2/70"
@@ -959,6 +988,7 @@ export default function CanvasWorkbench() {
               </div>
             )}
           </aside>
+          )}
 
           {/* ── 编辑区：标签条 + 工具行 + 内容 ── */}
           <main className="relative flex min-w-0 flex-1 flex-col">
@@ -1007,6 +1037,7 @@ export default function CanvasWorkbench() {
                   onReloadHealth={engine.reloadHealth}
                   stretch={stretch}
                   onStretchChange={setStretch}
+                  hasRaster={layers.some((l) => l.kind === 'raster')}
                   onOpenAi={openAiWorkbench}
                   aiBlockedReason={aiEntry.enabled ? '' : aiEntry.reason}
                 />
