@@ -3,7 +3,7 @@
  *
  * ## 为什么要有这个
  *
- * 「打开项目」这一屏原来只有一个输入框，让用户手打 `D:\任务\2026改图`。
+ * 「打开项目」这一屏原来只有一个输入框，让用户手打一长串绝对路径。
  * 手打绝对路径对不熟悉电脑的人是**真门槛**（盘符、中文、反斜杠），
  * 也是 2026-10-22 那份评审里的「100% 流失点」。
  *
@@ -48,8 +48,8 @@ describe('文件夹选择对话框', () => {
   });
 
   test('用户选了就返回绝对路径', () => {
-    const out = parseFolderPickerOutput('D:\\任务\\2026改图\r\n');
-    assert.equal(out, 'D:\\任务\\2026改图');
+    const out = parseFolderPickerOutput('C:\\Users\\someone\\图件项目\r\n');
+    assert.equal(out, 'C:\\Users\\someone\\图件项目');
   });
 
   test('用户取消（空输出）返回 null，不是空字符串', () => {

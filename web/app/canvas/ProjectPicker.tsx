@@ -341,7 +341,7 @@ export default function ProjectPicker({
                         </div>
                         <div className="mt-3.5 border-t border-line pt-2">
                           <div className="truncate font-mono text-[11px] leading-[1.45] text-ink-3">
-                            D:\……\……
+                            （图件所在文件夹）
                           </div>
                           <div className="mt-1 flex items-baseline justify-between font-mono text-[11px] text-ink-3">
                             <span>0 图层</span>
@@ -470,7 +470,7 @@ export default function ProjectPicker({
                   onKeyDown={(event) => {
                     if (event.key === 'Enter') handleCreate();
                   }}
-                  placeholder="D:\任务\2026改图"
+                  placeholder="也可以直接粘贴文件夹路径"
                   className="mt-1.5 h-10 w-full font-mono focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2 focus-visible:[--tw-outline-style:solid]!"
                 />
                 <ActionButton

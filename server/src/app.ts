@@ -218,7 +218,7 @@ interface WorkspaceTarget {
  *   这样即便项目目录本身没被登记成根（只要在某个已登记根之下）也能正确定位。
  *
  * `path` **必须**是相对路径：绝对路径会绕过根的边界
- * （今天 `GET /api/fs/read?path=C:\任意路径` 就能读到工作区外的文件），
+ * （给了绝对路径就能读到工作区外的文件），
  * 一律按越界处理 —— 这是「路径安全不可放松」的要求。
  */
 function resolveTarget(root: string | null, rel: string): WorkspaceTarget {

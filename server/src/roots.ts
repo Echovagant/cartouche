@@ -128,7 +128,7 @@ export function unregisterRoot(roots: RootRegistry, path: string): WorkspaceRoot
 /**
  * Windows 上文件系统路径不区分大小写。
  *
- * 不折叠大小写的话，用户登记的是 `D:\任务`、撤销时传 `d:\任务`
+ * 不折叠大小写的话，登记与撤销时传入的路径大小写不一致
  * 会被当成两个目录，撤销不掉 —— 这是 Windows 上真实会踩的坑。
  */
 function foldCase(p: string): string {

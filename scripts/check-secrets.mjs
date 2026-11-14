@@ -1,10 +1,13 @@
 // 密钥扫描门禁：防止 API Key 被提交进仓库。
 //
-// 检查四类问题：
+// 检查五类问题：
 //   R1 厂商格式的密钥（sk-xxx / eyJ... JWT 形态）出现在任何文本文件里
 //   R2 apiKey / api_key / *_API_KEY 之类的赋值带上了"看起来像真值"的长字符串
 //   R3 仓库里存在 .env / secrets/ 之类会装明文密钥的路径
 //   R4 DPAPI 密文文件出现在仓库内（说明存错地方了）
+//   R5 盘符 + 反斜杠 + 紧跟非 ASCII 字符的路径 —— 这是作者本机的真实
+//      目录形态，公开仓库出现它等于泄露作者的工作环境。举例一律用不带盘符的
+//      说法（「图件所在的文件夹」）或仓库既有的假路径惯例（someone 那种）。
 //
 // 占位符不算命中：your- / placeholder / example / xxx / changeme / <...> / ${...} 等。
 // 输出时**一律脱敏**，只回显前缀，绝不回显完整密钥。
@@ -72,6 +75,10 @@ const R2 = [
   /\b(?:api[_-]?key|apikey|access[_-]?token|secret[_-]?key|bearer)\b\s*[:=]\s*["']([^"'\n]{8,})["']/gi,
   /\b[A-Z][A-Z0-9_]*_API_KEY\b\s*[:=]\s*["']([^"'\n]{8,})["']/g,
 ];
+// R5：盘符 + 反斜杠 + 紧跟非 ASCII 字符 = 疑似作者本机的真实目录。
+// 只匹配反斜杠形态（Windows 展示形态）；测试夹具里的 `E:/别的盘/…` 正斜杠写法
+// 与 `C:\Users\someone` 假路径不受影响。
+const R5 = [/[A-Za-z]:\\[^\x00-\x7F]/g];
 
 for (const f of files) {
   const rel = relative(ROOT, f);
@@ -99,6 +106,14 @@ for (const f of files) {
         const v = m[1] ?? '';
         if (!looksReal(v)) continue;
         add('R2', rel, i + 1, m.index, mask(v), '疑似把密钥写进了配置');
+      }
+    }
+    for (const re of R5) {
+      re.lastIndex = 0;
+      let m;
+      while ((m = re.exec(line)) !== null) {
+        if (ALLOW_MARKER.test(line)) break;
+        add('R5', rel, i + 1, m.index, '***', '疑似作者本机的真实路径（盘符 + 非 ASCII 根段）');
       }
     }
   });

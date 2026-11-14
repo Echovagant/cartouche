@@ -11,9 +11,9 @@ const enc = new TextEncoder();
 const dec = new TextDecoder();
 
 test('清单：新建的项目有版本、名字与空图层', () => {
-  const m = newManifest('2026改图', '2026-10-21T08:00:00.000Z');
+  const m = newManifest('示例项目', '2026-10-21T08:00:00.000Z');
   assert.equal(m.version, PROJECT_MANIFEST_VERSION);
-  assert.equal(m.name, '2026改图');
+  assert.equal(m.name, '示例项目');
   assert.equal(m.layers.length, 0);
   assert.equal(m.operations.length, 0);
   assert.equal(m.sheet.title, '图签 Cartouche 出图');
@@ -21,7 +21,7 @@ test('清单：新建的项目有版本、名字与空图层', () => {
 
 test('清单：序列化后再解析，内容不变', () => {
   const m = {
-    ...newManifest('2026改图', '2026-10-21T08:00:00.000Z'),
+    ...newManifest('示例项目', '2026-10-21T08:00:00.000Z'),
     sheet: { title: '出图', operator: '张三', page: 'A4-portrait', dpi: 300 },
     layers: [{ id: 'l1', kind: 'raster', path: '扫描件.tff', visible: true, opacity: 0.8 }],
     view: { center: [120.31, 30.53], zoom: 14.2 },
@@ -167,8 +167,8 @@ test('清单：错误文案里不出现 undefined / [object Object] 这类占位
 });
 
 test('清单：序列化是带缩进的纯 JSON，能被人直接看懂', () => {
-  const text = dec.decode(serializeManifest(newManifest('2026改图', '2026-10-21T08:00:00.000Z')));
+  const text = dec.decode(serializeManifest(newManifest('示例项目', '2026-10-21T08:00:00.000Z')));
   assert.match(text, /^\{\n {2}"version": 1,/);
   assert.ok(text.endsWith('\n'));
-  assert.deepEqual(JSON.parse(text).name, '2026改图');
+  assert.deepEqual(JSON.parse(text).name, '示例项目');
 });
