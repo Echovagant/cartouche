@@ -419,6 +419,8 @@ export default function MapCanvas({
       producedAt: sheetMetaRef.current.producedAt,
       metersPerPixel: metersPerPixelAt(map.getZoom(), center.lat),
       legend: legend(),
+      // 屏幕预览形态：标题栏不上屏、图例缩小（导出 PDF 仍是完整版式）
+      preview: true,
     });
   }, [legend]);
 

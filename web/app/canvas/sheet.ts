@@ -65,6 +65,16 @@ export interface SheetOptions {
   readonly legend: readonly SheetLegendItem[];
   /** 版式（不给就用默认版式 = 改动前的视觉） */
   readonly layout?: SheetLayout;
+  /**
+   * 屏幕预览模式（true = 画在屏幕覆盖层上）。
+   *
+   * 预览与导出的差别（用户裁定 2026-11-14）：
+   *   - 标题栏（图名 / 出图时间 / 操作人那块）**不上屏** —— 改图过程中
+     它不是实时要看的东西，占画布；导出 PDF 里照旧完整保留；
+   *   - 图例按 72% 缩小，给图面让地方。
+   * 缺省 false = 导出形态，与改动前的画面逐位一致（金标准测试钉着）。
+   */
+  readonly preview?: boolean;
   /** 本次出图的内容（不给就按上面的字段推） */
   readonly content?: SheetContent;
 }
@@ -1136,26 +1146,51 @@ export function drawSheet(ctx: CanvasRenderingContext2D, options: SheetOptions):
   // 万一画幅小到放不下，后画的盖住先画的，
   // 但比例尺的数字与刻度条是同一组，永远不会被图例切掉半截。
   if (geometry.legendVisible) {
-    drawLegend(
+    if (options.preview) {
+      // 屏幕预览：图例按 72% 缩小（往自身左上角收，不会压到比例尺）。
+      // 导出不受影响 —— 导出走的是完整版式，标签栏/图例尺寸一字不差。
+      const lg = geometry.legend;
+      ctx.save();
+      ctx.translate(lg.x, lg.y);
+      ctx.scale(0.72, 0.72);
+      ctx.translate(-lg.x, -lg.y);
+      drawLegend(
+        ctx,
+        effectiveLayout,
+        effectiveLayout.legend.items,
+        geometry.legend,
+        geometry.legendItems,
+        geometry.legendHorizontal,
+        k,
+      );
+      ctx.restore();
+    } else {
+      drawLegend(
+        ctx,
+        effectiveLayout,
+        effectiveLayout.legend.items,
+        geometry.legend,
+        geometry.legendItems,
+        geometry.legendHorizontal,
+        k,
+      );
+    }
+  }
+  drawScaleBar(ctx, effectiveLayout, content, options.dpi, geometry.scale, k);
+  // 标题栏只进**导出**：屏幕改图时不该有一块「出图时间 / 操作人」常驻画布
+  // （用户裁定 2026-11-14：改图记录不是改图过程中实时要看的东西）。
+  // 导出走的仍是完整版式 —— PDF 里该有的一个不少。
+  if (!options.preview) {
+    drawTitleBlock(
       ctx,
       effectiveLayout,
-      effectiveLayout.legend.items,
-      geometry.legend,
-      geometry.legendItems,
-      geometry.legendHorizontal,
+      content,
+      geometry.title,
+      geometry.titleRows,
+      geometry.titleHeaderH,
       k,
     );
   }
-  drawScaleBar(ctx, effectiveLayout, content, options.dpi, geometry.scale, k);
-  drawTitleBlock(
-    ctx,
-    effectiveLayout,
-    content,
-    geometry.title,
-    geometry.titleRows,
-    geometry.titleHeaderH,
-    k,
-  );
   drawNorthArrow(ctx, geometry.arrow, k);
   ctx.restore();
 }
