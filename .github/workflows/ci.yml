@@ -103,6 +103,13 @@ jobs:
       - name: 依赖许可门禁
         run: node scripts/check-licenses.mjs
 
+      - name: 依赖漏洞扫描
+        # check-vulns 查的是 npm 官方 advisory 库（国内镜像不实现这个接口）。
+        # --allow-network-failure：拉不到漏洞库时放行（退出码 2 → 0），
+        # 不让发布被网络抖动卡住；但真发现超阈值的漏洞会以退出码 1 让这一步红。
+        # 门禁就得是真门禁，不许把失败吞掉 —— 与 fixture-gate 钉住的那条纪律一致。
+        run: npm run check:vulns
+
       - name: 密钥扫描门禁（防 API Key 误提交）
         # 本项目规定 API Key 不进仓库、不以明文保存；
         # 这一步是最后一道防线，防止有人把 key 粘进源码/文档后推上去。

@@ -19,6 +19,7 @@
     "check:schema": "node scripts/check-schema.mjs",
     "check:bench": "node scripts/check-bench.mjs",
     "check:licenses": "node scripts/check-licenses.mjs",
+    "check:vulns": "node scripts/check-vulns.mjs --allow-network-failure",
     "check:secrets": "node scripts/check-secrets.mjs",
     "scan:encoding": "node scripts/scan-encoding.mjs",
     "samples": "node scripts/fetch-samples.mjs",
