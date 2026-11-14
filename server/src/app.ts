@@ -59,6 +59,7 @@ import {
 import { findProvider } from '@cartouche/engine';
 import { buildContextPreview, checkPlanAgainstContract, createPlan } from './llm-plan.ts';
 import { loadRegisteredRoots, registerRoot, unregisterRoot } from './roots.ts';
+import { isFolderPickerSupported, pathForHandle, pickFolder } from './folder-picker.ts';
 
 /**
  * 引擎自报的版本号。
@@ -577,7 +578,16 @@ export function createEngineServer(): Server {
       res.end(buf);
     };
 
-    /* ───────── 基础信息 ───────── */
+    /**
+ * Windows 上文件系统路径不区分大小写。
+ *
+ * 撤销工作区时前端可能给的是另一种大小写写法，比对前先折叠。
+ */
+function foldCasePath(p: string): string {
+  return process.platform === 'win32' ? p.toLowerCase() : p;
+}
+
+/* ───────── 基础信息 ───────── */
 
     if (url.pathname === '/api/health') {
       const info: EngineInfo = {
@@ -1004,7 +1014,65 @@ export function createEngineServer(): Server {
     /* ───────── 已登记根与项目 ───────── */
 
     if (url.pathname === '/api/workspace/roots' && req.method === 'GET') {
-      json(200, { roots: roots.list() });
+      // ── 不回绝对路径 ──────────────────────────────────────────────
+      // 绝对路径里带着**用户名**（形如 `C:\Users\<用户名>\…`）。把它送到前端，
+      // 就会留在浏览器的 localStorage、用户的截图、发给同事的消息里。
+      // 前端真正需要的只有两件事：这个根叫什么、能不能撤销 —— 所以只给这两样。
+      //
+      // 需要完整路径时，引擎自己知道（它在同一个进程里），
+      // 前端要办什么事就把**根的 id** 传回来，引擎自己换算。
+      const defaultRoot = roots.list().find((r) => r.builtin)?.path ?? '';
+      const shown = roots.list().map((r) => {
+        // 在默认根之下的，给相对路径（不含盘符与用户名）；在别处的只给名字
+        const rel = relative(defaultRoot, r.path);
+        const inside = r.builtin || (!rel.startsWith('..') && !isAbsolute(rel));
+        return {
+          id: r.id,
+          label: r.label,
+          builtin: r.builtin,
+          ...(inside && rel ? { location: rel.split(sep).join('\\') } : {}),
+        };
+      });
+      json(200, { roots: shown });
+      return;
+    }
+
+    if (url.pathname === '/api/workspace/pick-folder' && req.method === 'POST') {
+      void (async () => {
+        try {
+          // ── 同款闸：必须 application/json ────────────────────────────
+          // 这一条比「登记」更要紧：它能在本机弹出一个选择文件夹的窗口。
+          // 跨站页面若能调，就等于让任意网页在本机弹窗 —— 用户被诱导点了
+          // 某个目录，路径就落进了别人的手里。application/json 强制走预检，
+          // 预检过不了的跨站页面就进不来。
+          const ct = String(req.headers['content-type'] ?? '').split(';')[0]?.trim().toLowerCase() ?? '';
+          if (ct !== 'application/json') {
+            json(415, {
+              error: 'unsupported_media_type',
+              message: '选择文件夹必须用 application/json 提交（这样浏览器会先做跨源检查）',
+            });
+            return;
+          }
+          if (!isFolderPickerSupported()) {
+            json(501, {
+              error: 'not_supported',
+              message: '这个系统暂时不支持图形化的文件夹选择，请手动填写路径',
+            });
+            return;
+          }
+          const picked = await pickFolder();
+          if (!picked) {
+            // 用户取消不是错误：回 204，前端就当「没选」
+            json(200, { cancelled: true });
+            return;
+          }
+          // 只回**代号**与文件夹名，不回绝对路径 ——
+          // 绝对路径里有用户名，送到前端就会留在浏览器里（截图、localStorage）。
+          json(200, { cancelled: false, handle: picked.handle, label: picked.label });
+        } catch (err) {
+          json(500, { error: 'internal', message: scrub((err as Error).message) });
+        }
+      })();
       return;
     }
 
@@ -1032,12 +1100,17 @@ export function createEngineServer(): Server {
           const body = JSON.parse((await readBody(req, res)).toString('utf8') || '{}') as {
             path?: string;
             label?: string;
+            /** 弹窗选出来的目录代号（前端拿不到绝对路径，见 folder-picker.ts） */
+            handle?: string;
           };
-          if (!body.path) {
+          // 有代号就用代号 —— 前端根本拿不到绝对路径，绝对路径只在引擎里
+          const picked = body.handle ? pathForHandle(body.handle) : null;
+          const path = picked ?? body.path;
+          if (!path) {
             json(400, { error: 'bad_request', message: '缺少 path：告诉引擎要登记哪个文件夹' });
             return;
           }
-          json(200, registerRoot(roots, body.path, body.label));
+          json(200, registerRoot(roots, path, body.label));
         } catch (err) {
           json(400, { error: 'bad_request', message: scrub((err as Error).message) });
         }
@@ -1053,12 +1126,20 @@ export function createEngineServer(): Server {
           // %LOCALAPPDATA%\cartouche\roots.json。承诺是单向的，不闭环。
           const body = JSON.parse((await readBody(req, res)).toString('utf8') || '{}') as {
             path?: string;
+            /** 根的 id（前端拿不到绝对路径，所以用 id 撤销） */
+            id?: string;
           };
-          if (!body.path) {
-            json(400, { error: 'bad_request', message: '缺少 path：告诉引擎要撤销哪个文件夹' });
+          // 用 id 撤销：前端根本不知道绝对路径（见 GET 处的说明）
+          const target = body.id
+            ? roots.list().find((r) => r.id === body.id)
+            : body.path
+              ? roots.list().find((r) => foldCasePath(r.path) === foldCasePath(body.path ?? ''))
+              : undefined;
+          if (!target) {
+            json(400, { error: 'bad_request', message: '找不到要撤销的工作区' });
             return;
           }
-          json(200, unregisterRoot(roots, body.path));
+          json(200, unregisterRoot(roots, target.path));
         } catch (err) {
           json(400, { error: 'bad_request', message: scrub((err as Error).message) });
         }

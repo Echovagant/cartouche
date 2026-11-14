@@ -85,15 +85,25 @@ export function SiteHeader({ items }: { items: readonly NavItem[] }) {
 
         {/* ≥900px：一行铺开 */}
         <div className="hidden min-[900px]:flex min-[900px]:items-center">
-          {items.map((item) => (
-            <a
-              key={item.href}
-              href={item.href}
-              className="nav-fg-muted inline-flex min-h-11 min-w-11 items-center justify-center rounded-full px-3 text-label whitespace-nowrap transition-colors"
-            >
-              {item.label}
-            </a>
-          ))}
+          {items.map((item) => {
+            // 外链（下载、GitHub）开新标签，站内锚点原地跳。
+            // 为什么要分：同一个词「下载」在页面上只能有一种行为 ——
+            // 首屏点「下载」是直接去下载，导航点「下载」却只滚一段，
+            // 用户会觉得「怎么这儿的不一样」。
+            const external = /^https?:/i.test(item.href);
+            return (
+              <a
+                key={item.href}
+                href={item.href}
+                {...(external
+                  ? { target: '_blank', rel: 'noopener noreferrer', title: '在新标签页打开' }
+                  : {})}
+                className="nav-fg-muted inline-flex min-h-11 min-w-11 items-center justify-center rounded-full px-3 text-label whitespace-nowrap transition-colors"
+              >
+                {item.label}
+              </a>
+            );
+          })}
           <a
             href="ai.html"
             className="nav-fg-muted inline-flex min-h-11 min-w-11 items-center justify-center rounded-full px-3 text-[13px] whitespace-nowrap transition-colors"
@@ -132,16 +142,23 @@ export function SiteHeader({ items }: { items: readonly NavItem[] }) {
           id="site-menu"
           className="glass mx-auto mt-2 max-w-6xl overflow-hidden rounded-panel p-2 min-[900px]:hidden"
         >
-          {items.map((item) => (
-            <a
-              key={item.href}
-              href={item.href}
-              onClick={() => setOpen(false)}
-              className="nav-item flex min-h-11 items-center rounded-lg px-4 text-label transition-colors"
-            >
-              {item.label}
-            </a>
-          ))}
+          {items.map((item) => {
+            // 与宽屏那排一致：外链开新标签（宽屏与窄屏行为必须一样）
+            const external = /^https?:/i.test(item.href);
+            return (
+              <a
+                key={item.href}
+                href={item.href}
+                onClick={() => setOpen(false)}
+                {...(external
+                  ? { target: '_blank', rel: 'noopener noreferrer', title: '在新标签页打开' }
+                  : {})}
+                className="nav-item flex min-h-11 items-center rounded-lg px-4 text-label transition-colors"
+              >
+                {item.label}
+              </a>
+            );
+          })}
           <a
             href="ai.html"
             onClick={() => setOpen(false)}

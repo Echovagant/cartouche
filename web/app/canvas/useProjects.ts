@@ -19,9 +19,9 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { ENGINE_BASE } from './useEngine';
-import type { ProjectManifest, ProjectOutput, ProjectSummary } from './types';
+import type { ProjectManifest, ProjectOutput, ProjectSummary, WorkspaceRoot } from './types';
 
-export type { ProjectManifest, ProjectOutput, ProjectSummary } from './types';
+export type { ProjectManifest, ProjectOutput, ProjectSummary, WorkspaceRoot } from './types';
 
 const RECENT_KEY = 'cartouche.recent-projects';
 
@@ -76,6 +76,87 @@ async function request(url: string, init?: RequestInit): Promise<Response> {
   }
 }
 
+/**
+ * 列出引擎已登记的工作区根。
+ *
+ * 失败时**抛错**而不是返回空数组：引擎没起来和「一个根都没登记」
+ * 是两回事，混成空数组会让界面说谎。
+ */
+export async function listRoots(): Promise<WorkspaceRoot[]> {
+  const res = await request(`${ENGINE_BASE}/api/workspace/roots`);
+  if (!res.ok) throw new Error(await readErrorMessage(res));
+  const body = (await res.json()) as { roots?: WorkspaceRoot[] };
+  return body.roots ?? [];
+}
+
+/**
+ * 撤销一个根的登记。
+ *
+ * 与 listRoots 一样是模块级函数（不挂在 hook 的状态里）：
+ * 「已登记的工作区」是**引擎的注册表**，不是这层前端的状态。
+ *
+ * 撤销凭**根的 id**，不是路径 —— 前端根本不知道绝对路径（见 types.ts 的说明）。
+ *
+ * 失败时抛错，**不写进 hook 的 error 状态**——撤销失败的消息要显示在
+ * 那个按钮旁边（用户正要撤销哪一条，就在那儿说清楚哪一条没撤掉），
+ * 不该变成页面顶上的一条全局横幅。
+ */
+export async function unregisterRoot(id: string): Promise<void> {
+  const res = await request(`${ENGINE_BASE}/api/workspace/roots`, {
+    method: 'DELETE',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ id }),
+  });
+  if (!res.ok) throw new Error(await readErrorMessage(res));
+}
+
+/**
+ * 弹系统的文件夹选择框，让用户自己挑工作区。
+ *
+ * 为什么不靠浏览器：`showDirectoryPicker()` 给的是**句柄**，没有绝对路径；
+ * 而引擎是按路径找目录的，用不上句柄。所以这条路走不通，
+ * 只能让**本机的引擎**去弹那个框（见 server/src/folder-picker.ts）。
+ *
+ * 返回的是**代号**与文件夹名，**没有绝对路径** ——
+ * 绝对路径里有用户名，不能让它进浏览器（见 types.ts 的说明）。
+ *
+ * 用户取消时返回 null（不是错误）。
+ */
+export async function pickFolder(): Promise<{ handle: string; label: string } | null> {
+  const res = await request(`${ENGINE_BASE}/api/workspace/pick-folder`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({}),
+  });
+  if (!res.ok) throw new Error(await readErrorMessage(res));
+  const body = (await res.json()) as {
+    cancelled?: boolean;
+    handle?: string;
+    label?: string;
+  };
+  if (body.cancelled || !body.handle) return null;
+  return { handle: body.handle, label: body.label ?? '' };
+}
+
+/**
+ * 登记一个工作区。
+ *
+ * 两种来源：
+ *  - `handle`：弹窗选出来的目录（前端只有代号）
+ *  - `path`  ：用户自己敲的路径（少数场景仍需要，比如从命令行调起）
+ */
+export async function registerWorkspace(
+  input: { handle: string } | { path: string },
+  label?: string,
+): Promise<void> {
+  const res = await request(`${ENGINE_BASE}/api/workspace/roots`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(label ? { ...input, label } : input),
+  });
+  if (!res.ok) throw new Error(await readErrorMessage(res));
+}
+
 /** Blob → 纯 base64（去掉 data URL 前缀） */
 function blobToBase64(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -107,6 +188,9 @@ export function useProjects() {
       name: m.name,
       updatedAt: m.updatedAt,
       layerCount: m.layers.length,
+      // 给人看的相对位置：项目在哪个工作区下。
+      // 绝对路径只留在 `path` 里（那是调引擎要用的），**不显示**。
+      location: m.name,
     };
     const next = [summary, ...readRecent().filter((p) => p.path !== path)].slice(0, 10);
     writeRecent(next);
@@ -235,6 +319,12 @@ export function useProjects() {
     loading,
     error,
     registerRoot,
+    /**
+     * 已登记的工作区根（模块级函数，见文件上方）。
+     * 一并挂出来：这个 hook 就是「项目相关的引擎调用」的唯一入口。
+     */
+    listRoots,
+    unregisterRoot,
     createProject,
     openProject,
     saveManifest,
