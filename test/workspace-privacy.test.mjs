@@ -30,6 +30,19 @@ const cfgRoot = await mkdtemp(join(tmpdir(), 'cartouche-wsprivacy-cfg-'));
 process.env.ENGINE_WORKSPACE_ROOT = wsRoot;
 process.env.CARTOUCHE_CONFIG_DIR = cfgRoot;
 
+/**
+ * 预置一份代号表：弹窗流程没法在无人环境里真弹（会挂到超时，见下面的说明），
+ * 所以「代号 → 目录」这层契约用**落盘的代号表**来测 ——
+ * 引擎启动时会把它灌回内存（folder-picker.ts 的 loadHandles），
+ * 之后的 manifest / fs 请求带 `folder-1` 就等于指着这个目录。
+ * 这同时测到了「代号表跨重启存活」这条承诺。
+ */
+const handleDir = join(cfgRoot, '弹窗选的项目');
+await mkdir(handleDir, { recursive: true });
+await (
+  await import('node:fs/promises')
+).writeFile(join(cfgRoot, 'handles.json'), JSON.stringify({ 'folder-1': handleDir }), 'utf8');
+
 const { createEngineServer } = await import(
   pathToFileURL(join(repoRoot, 'server', 'src', 'app.ts')).href
 );
@@ -90,6 +103,14 @@ describe('已登记的工作区', () => {
         body: JSON.stringify({ path: dir }),
       });
       assert.equal(res.status, 200, `登记 ${dir} 应当成功`);
+
+      // 登记的**响应**也不许带绝对路径：GET 消毒了，POST 不能漏
+      const raw = await res.text();
+      assert.equal(/[A-Za-z]:\\/.test(raw), false, `登记响应里有绝对路径：${raw.slice(0, 300)}`);
+      assert.equal(raw.includes('\\AppData\\'), false, '登记响应里带着用户目录片段');
+      const entry = JSON.parse(raw);
+      assert.equal('path' in entry, false, '登记响应带了 path 字段');
+      assert.equal(typeof entry.id, 'string', '登记响应要有 id');
     }
 
     const body = await (await fetch(`${base}/api/workspace/roots`)).json();
@@ -140,6 +161,56 @@ describe('已登记的工作区', () => {
       body: JSON.stringify({ id: builtin.id }),
     });
     assert.notEqual(res.status, 200, '内置默认根不该能被撤销');
+  });
+});
+
+describe('代号全链路（folder-N）', () => {
+  /**
+   * 弹窗选完目录之后，前端手里**只有代号**。这一组测试把"只有代号"的
+   * 一整套动作走一遍：登记 → 新建项目 → 读项目 → 列文件 ——
+   * 任何一步要求前端给出绝对路径，就等于把"路径不出引擎"的承诺撕了。
+   */
+  test('登记（凭代号）→ 新建项目 → 读项目，全程不需要路径', async () => {
+    // 1. 登记：凭代号（弹窗流程里前端只有这个）
+    const reg = await fetch(`${base}/api/workspace/roots`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ handle: 'folder-1' }),
+    });
+    assert.equal(reg.status, 200, '凭代号登记应当成功');
+
+    // 2. 新建项目：只给代号
+    const put = await fetch(`${base}/api/project/manifest`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ handle: 'folder-1', create: true }),
+    });
+    const putRaw = await put.text();
+    assert.equal(put.status, 200, `凭代号新建项目应当成功：${putRaw.slice(0, 200)}`);
+    const created = JSON.parse(putRaw);
+    assert.equal(created.created, true, '应当真的建出清单');
+    assert.ok(created.manifest?.name, '项目要有名字（取文件夹名）');
+
+    // 3. 读项目：只给代号
+    const get = await fetch(`${base}/api/project/manifest?handle=folder-1`);
+    assert.equal(get.status, 200);
+    const body = await get.json();
+    assert.equal(body.exists, true, '凭代号要能读回项目清单');
+    assert.equal(body.manifest.name, created.manifest.name);
+  });
+
+  test('列文件也能凭代号定位（resolveTarget 认 folder-N）', async () => {
+    const res = await fetch(`${base}/api/fs/list?root=folder-1`);
+    assert.equal(res.status, 200, `凭代号列文件应当成功：${await res.text()}`);
+  });
+
+  test('不存在的代号要明确报错，不能静默', async () => {
+    const put = await fetch(`${base}/api/project/manifest`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ handle: 'folder-999', create: true }),
+    });
+    assert.notEqual(put.status, 200, '死代号不该静默成功');
   });
 });
 

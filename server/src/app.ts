@@ -226,11 +226,20 @@ function resolveTarget(root: string | null, rel: string): WorkspaceTarget {
   if (isAbsolute(rel) || /^[A-Za-z]:/.test(rel)) {
     throw new PathEscapeError(rel);
   }
-  if (!root) {
+  let rootAbs: string | null;
+  if (root && /^folder-\d+$/.test(root)) {
+    // 弹窗选出来的目录以**代号**（folder-N）出现在前端：引擎内部换算回绝对路径，
+    // 边界判定照旧走已登记根 —— 绝对路径从头到尾不出引擎（见 folder-picker.ts 的约定）。
+    const resolved = pathForHandle(root);
+    if (!resolved) throw new PathEscapeError(root);
+    rootAbs = resolve(resolved);
+  } else {
+    rootAbs = root ? resolve(root) : null;
+  }
+  if (!rootAbs) {
     // 不给 root：相对默认根。store.resolve 内部还会挡掉 `../` 逃逸
     return { store, relative: rel, absolute: store.resolve(rel) };
   }
-  const rootAbs = resolve(root);
   const abs = resolve(rootAbs, rel);
   // 相对路径不得逃出它自己声明的那个根
   if (!isInside(rootAbs, abs)) throw new PathEscapeError(rel);
@@ -1110,7 +1119,20 @@ function foldCasePath(p: string): string {
             json(400, { error: 'bad_request', message: '缺少 path：告诉引擎要登记哪个文件夹' });
             return;
           }
-          json(200, registerRoot(roots, path, body.label));
+          // 回给前端的只可以是**无路径**的安全形状（与 GET 同一套映射）——
+          // registerRoot 的返回值里带着绝对路径，直接 json 出去就等于把
+          // 用户目录送进浏览器（GET 那边早就消毒了，POST 这里不能漏）。
+          const registered = registerRoot(roots, path, body.label);
+          const defaultRootForShow = roots.list().find((r) => r.builtin)?.path ?? '';
+          const relShow = relative(defaultRootForShow, registered.path);
+          const insideShow =
+            registered.builtin || (!relShow.startsWith('..') && !isAbsolute(relShow));
+          json(200, {
+            id: registered.id,
+            label: registered.label,
+            builtin: registered.builtin,
+            ...(insideShow && relShow ? { location: relShow.split(sep).join('\\') } : {}),
+          });
         } catch (err) {
           json(400, { error: 'bad_request', message: scrub((err as Error).message) });
         }
@@ -1150,7 +1172,13 @@ function foldCasePath(p: string): string {
     if (url.pathname === '/api/project/manifest' && req.method === 'GET') {
       void (async () => {
         try {
-          const p = url.searchParams.get('path') ?? '';
+          // path 与 handle 二选一：弹窗选的项目只有代号，路径留在引擎里
+          const handle = url.searchParams.get('handle');
+          const p = handle ? (pathForHandle(handle) ?? '') : (url.searchParams.get('path') ?? '');
+          if (!p) {
+            json(400, { error: 'bad_request', message: '缺少 path（或 handle）：告诉引擎是哪个项目' });
+            return;
+          }
           const m = await projects.readManifest(p);
           json(200, m ? { exists: true, manifest: m } : { exists: false });
         } catch (err) {
@@ -1165,24 +1193,27 @@ function foldCasePath(p: string): string {
         try {
           const body = JSON.parse((await readBody(req, res)).toString('utf8')) as {
             path?: string;
+            /** 弹窗选出来的项目目录代号（绝对路径不出引擎） */
+            handle?: string;
             manifest?: ProjectManifest;
             create?: boolean;
             name?: string;
           };
-          if (!body.path) {
-            json(400, { error: 'bad_request', message: '缺少 path：告诉引擎是哪个文件夹' });
+          const projectPath = body.handle ? (pathForHandle(body.handle) ?? '') : (body.path ?? '');
+          if (!projectPath) {
+            json(400, { error: 'bad_request', message: '缺少 path（或 handle）：告诉引擎是哪个文件夹' });
             return;
           }
           // create：写一份空清单。**已存在就不覆盖** —— 免得把用户已经配好的项目冲掉。
           if (body.create) {
-            const existing = await projects.readManifest(body.path);
+            const existing = await projects.readManifest(projectPath);
             if (existing) {
               json(200, { ok: true, manifest: existing, created: false });
               return;
             }
-            const name = (body.name ?? '').trim() || defaultProjectName(body.path);
+            const name = (body.name ?? '').trim() || defaultProjectName(projectPath);
             const m = newManifest(name);
-            await projects.writeManifest(body.path, m);
+            await projects.writeManifest(projectPath, m);
             json(200, { ok: true, manifest: m, created: true });
             return;
           }
@@ -1192,12 +1223,12 @@ function foldCasePath(p: string): string {
           }
           // operations 是**只增不减的日志**：前端自动保存带回来的那份可能是旧的，
           // 直接整份覆盖会把服务端刚记下的操作抹掉。这里做并集（见 mergeOperations）。
-          const existing = await projects.readManifest(body.path);
+          const existing = await projects.readManifest(projectPath);
           const operations = mergeOperations(
             existing?.operations ?? [],
             Array.isArray(body.manifest.operations) ? body.manifest.operations : [],
           );
-          await projects.writeManifest(body.path, { ...body.manifest, operations });
+          await projects.writeManifest(projectPath, { ...body.manifest, operations });
           json(200, { ok: true, operations: operations.length });
         } catch (err) {
           json(400, { error: 'bad_request', message: scrub((err as Error).message) });
@@ -1241,7 +1272,8 @@ function foldCasePath(p: string): string {
     if (url.pathname === '/api/project/outputs' && req.method === 'GET') {
       void (async () => {
         try {
-          const p = url.searchParams.get('path') ?? '';
+          const handle = url.searchParams.get('handle');
+          const p = handle ? (pathForHandle(handle) ?? '') : (url.searchParams.get('path') ?? '');
           json(200, { outputs: await projects.listOutputs(p) });
         } catch (err) {
           json(400, { error: 'bad_request', message: scrub((err as Error).message) });
@@ -1255,16 +1287,19 @@ function foldCasePath(p: string): string {
         try {
           const body = JSON.parse((await readBody(req, res)).toString('utf8')) as {
             path?: string;
+            /** 弹窗选出来的项目目录代号（绝对路径不出引擎） */
+            handle?: string;
             name?: string;
             dataBase64?: string;
           };
-          if (!body.path || !body.name || !body.dataBase64) {
-            json(400, { error: 'bad_request', message: '缺少 path / name / dataBase64：告诉引擎存到哪个项目、叫什么名字、内容是什么' });
+          const projectPath = body.handle ? (pathForHandle(body.handle) ?? '') : (body.path ?? '');
+          if (!projectPath || !body.name || !body.dataBase64) {
+            json(400, { error: 'bad_request', message: '缺少 path（或 handle）/ name / dataBase64：告诉引擎存到哪个项目、叫什么名字、内容是什么' });
             return;
           }
           const data = Buffer.from(body.dataBase64, 'base64');
           const relative = await projects.writeOutput(
-            body.path,
+            projectPath,
             body.name,
             new Uint8Array(data),
           );

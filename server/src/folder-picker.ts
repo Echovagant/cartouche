@@ -37,15 +37,63 @@
  * 以及用户主动要求显示的那一刻。
  */
 import { execFile } from 'node:child_process';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
+
+/**
+ * 代号要不要**跨重启**存活？要。
+ *
+ * 「最近打开的项目」存在浏览器 localStorage 里，条目里放的是代号 ——
+ * 如果代号只活在进程内存里，引擎一重启最近列表就全变成了死条目。
+ * 所以代号表落盘到配置目录（与 roots.json 同一套约定）：
+ * 文件里只有「代号 → 目录」的对应，绝对路径照旧不出引擎。
+ * 读不到 / 读坏了就当空表 —— 配置坏了不该挡住服务起来。
+ */
+const configDir =
+  process.env.CARTOUCHE_CONFIG_DIR ??
+  join(process.env.LOCALAPPDATA ?? process.env.HOME ?? '.', 'cartouche');
+const handlesFile = join(configDir, 'handles.json');
 
 /** 引擎进程内记住的「代号 → 绝对路径」表 */
 const handles = new Map<string, string>();
 /** 绝对路径 → 代号（同一个目录不重复发代号） */
 const byPath = new Map<string, string>();
 let seq = 0;
+
+/* ── 落盘 / 灌回 ─────────────────────────────────────────────── */
+
+function saveHandles(): void {
+  try {
+    mkdirSync(configDir, { recursive: true });
+    writeFileSync(
+      handlesFile,
+      JSON.stringify(Object.fromEntries(handles), null, 2),
+      'utf8',
+    );
+  } catch {
+    // 配置写不了只影响「跨重启的最近列表」，不该挡住选文件夹本身
+  }
+}
+
+(function loadHandles() {
+  try {
+    if (!existsSync(handlesFile)) return;
+    const raw = JSON.parse(readFileSync(handlesFile, 'utf8')) as unknown;
+    if (typeof raw !== 'object' || raw === null) return;
+    for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+      if (!/^folder-\d+$/.test(key) || typeof value !== 'string' || value === '') continue;
+      handles.set(key, value);
+      byPath.set(value.toLowerCase(), key);
+      const n = Number(key.slice('folder-'.length));
+      if (Number.isFinite(n)) seq = Math.max(seq, n);
+    }
+  } catch {
+    // 坏文件当空表，与 roots.json 同一态度
+  }
+})();
 
 /**
  * 生成弹文件夹选择框的 PowerShell 脚本。
@@ -126,6 +174,7 @@ export async function pickFolder(
   const handle = `folder-${seq}`;
   handles.set(handle, path);
   byPath.set(path.toLowerCase(), handle);
+  saveHandles();
   return { handle, label: labelOf(path) };
 }
 
