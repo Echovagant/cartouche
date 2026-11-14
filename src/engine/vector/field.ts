@@ -15,7 +15,7 @@ import type { WorkspaceAdapter } from '../workspace/index.ts';
 import type { OpValueResult } from '../ops/executor.ts';
 import { evaluate, parseExpression, toSql, type ExprNode } from '../expression/index.ts';
 import { matchesWhere, probeLayer, readFeatures, referencedFields } from './read.ts';
-import { writeFeatures } from './write.ts';
+import { formatForPath, writeFeatures } from './write.ts';
 import { toRelPathChecked } from './paths.ts';
 import { findWrittenField } from './field-names.ts';
 import { VectorError, type FeatureRecord } from './types.ts';
@@ -73,6 +73,19 @@ export async function runVectorAddField(
     throw new Error('缺少参数 expression（这一列的值怎么算）');
   }
   const where = readString(params, 'where');
+
+  // Shapefile 的 DBF 字段名上限是 **10 字节**：UTF-8 编码下中文最多 3 个字。
+  // 这是格式本身的红线，ArcGIS 自己的 UTF-8 shapefile 也守着它（真实数据实测：
+  // 县.shp 里最长的字段名就是 3 个字）。不在这里拦的话，GDAL 会把名字清洗/丢列，
+  // 用户最后看到的是一句「写回之后没有找到这一列」的难懂报错（2026-11-14 真实数据实测）。
+  if (formatForPath(targetRel) === 'shapefile' && Buffer.byteLength(fieldName, 'utf8') > 10) {
+    const bytes = Buffer.byteLength(fieldName, 'utf8');
+    throw new VectorError(
+      `shapefile 的字段名上限是 10 字节（UTF-8 编码下中文最多 3 个字）：` +
+        `「${fieldName}」占 ${bytes} 字节，放不下。请换个不超过 3 个汉字的字段名` +
+        `（或者先把图层转成 GeoPackage，那里的字段名没有这个限制）。`,
+    );
+  }
 
   const abs = deps.store.resolve(targetRel);
   const info = await probeLayer(deps.loc, abs);
