@@ -29,7 +29,7 @@ import {
   viewportCorners,
   type PixelPoint,
 } from './editGeometry';
-import { ENGINE_BASE } from './useEngine';
+import { ENGINE_BASE } from '../engine-base';
 import type {
   BrushMask,
   EditGesture,

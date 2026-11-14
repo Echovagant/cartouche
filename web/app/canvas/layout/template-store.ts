@@ -14,15 +14,13 @@ import {
   serializeLayout,
   type SheetLayout,
 } from './types.ts';
+import { ENGINE_BASE } from '../../engine-base.ts';
 
 /** 模板目录（相对项目根） */
 export const TEMPLATE_DIR = '.cartouche/templates';
 
 /** 模板文件后缀 */
 const TEMPLATE_SUFFIX = '.json';
-
-/** 引擎的默认地址（与 web/app/canvas/useEngine.ts 一致） */
-const DEFAULT_BASE = 'http://127.0.0.1:8787';
 
 /** 存取模板要用的接口（测试时替换掉 fetch 即可） */
 export interface TemplateStoreOptions {
@@ -72,7 +70,7 @@ function requester(options: TemplateStoreOptions | undefined): {
   readonly fetchImpl: typeof fetch;
 } {
   return {
-    base: options?.base ?? DEFAULT_BASE,
+    base: options?.base ?? ENGINE_BASE,
     fetchImpl: options?.fetchImpl ?? globalThis.fetch,
   };
 }

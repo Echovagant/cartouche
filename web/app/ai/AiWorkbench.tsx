@@ -47,13 +47,8 @@ import {
   parseAiEntryQuery,
   type AiEntryContext,
 } from './entryContext';
-import {
-  useLlm,
-  ENGINE_BASE,
-  type ContextPreview,
-  type LlmSource,
-  type PlanPayload,
-} from './useLlm';
+import { useLlm, type ContextPreview, type LlmSource, type PlanPayload } from './useLlm';
+import { ENGINE_BASE } from '../engine-base';
 
 /** 引擎执行操作的返回体（逐条结果） */
 interface ExecResultPayload {
