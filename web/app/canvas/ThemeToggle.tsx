@@ -3,28 +3,42 @@
 /**
  * 浅色 / 暗色主题切换。
  *
- * 为什么放在画布而不是全局：落地页永远是浅色的（那是它的品牌面），
- * 只有画布需要两套——暗色是"制图台"，浅色是"白天在办公室里看图"。
- * 落地页用的 paper/ink 色阶不受影响。
+ * 全站一个开关：画布工作台、AI 工作台、官网都跟着 <html data-theme> 走。
+ * 主题状态存在 `<html data-theme="...">` 上，CSS 变量据此取值；
+ * 初次加载由 layout.tsx 里的内联脚本**在首帧之前**应用，避免闪白；
+ * 切换那一瞬间挂 `theme-shift` class 做颜色过渡，过完立刻摘掉。
  *
- * 实现要点：
- *  - 主题状态存在 `<html data-theme="...">` 上，CSS 变量据此取值；
- *  - 初次加载由 layout.tsx 里的内联脚本**在首帧之前**应用，避免闪白；
- *  - 切换那一瞬间挂 `theme-shift` class 做颜色过渡，过完立刻摘掉。
+ * 三个形态：
+ *   - `pill`：滑杆式开关（默认）。画布状态栏用；
+ *   - `icon`：单图标按钮，studio 色阶（画布活动栏底部用）；
+ *   - `nav`：单图标按钮，颜色跟导航的 --nav-fg 走（官网玻璃导航上用，
+ *     那里的深浅由 data-surface 按所在段落决定，不能用 studio 色阶）。
  */
 import { useEffect, useState } from 'react';
 import { MoonIcon, SunIcon } from '@phosphor-icons/react';
 
 type Theme = 'dark' | 'light';
 
-const STORAGE_KEY = 'cartouche.canvas.theme';
+const STORAGE_KEY = 'cartouche.theme';
 
 function currentTheme(): Theme {
   if (typeof document === 'undefined') return 'dark';
   return document.documentElement.dataset.theme === 'light' ? 'light' : 'dark';
 }
 
-export function ThemeToggle() {
+function applyTheme(next: Theme): void {
+  const root = document.documentElement;
+  root.classList.add('theme-shift');
+  root.dataset.theme = next;
+  try {
+    localStorage.setItem(STORAGE_KEY, next);
+  } catch {
+    // 隐私模式下 localStorage 可能不可用；不影响本次切换
+  }
+  window.setTimeout(() => root.classList.remove('theme-shift'), 480);
+}
+
+export function ThemeToggle({ variant = 'pill' }: { variant?: 'pill' | 'icon' | 'nav' } = {}) {
   const [theme, setTheme] = useState<Theme>('dark');
 
   // 挂载后同步一次真实值（内联脚本可能已经设成了用户上次选的）
@@ -34,22 +48,39 @@ export function ThemeToggle() {
 
   const toggle = () => {
     const next: Theme = theme === 'dark' ? 'light' : 'dark';
-    const root = document.documentElement;
-
-    // 先挂过渡 class，再换主题 → 颜色平滑过渡
-    root.classList.add('theme-shift');
-    root.dataset.theme = next;
+    applyTheme(next);
     setTheme(next);
-    try {
-      localStorage.setItem(STORAGE_KEY, next);
-    } catch {
-      // 隐私模式下 localStorage 可能不可用；不影响本次切换
-    }
-
-    window.setTimeout(() => root.classList.remove('theme-shift'), 480);
   };
 
   const dark = theme === 'dark';
+
+  if (variant === 'icon') {
+    return (
+      <button
+        type="button"
+        onClick={toggle}
+        title={dark ? '切换到浅色主题' : '切换到暗色主题'}
+        aria-label={dark ? '切换到浅色主题' : '切换到暗色主题'}
+        className="flex h-6 w-6 items-center justify-center rounded-md text-studio-ink-3 transition-colors hover:bg-studio-3 hover:text-studio-ink"
+      >
+        {dark ? <SunIcon size={14} weight="bold" aria-hidden="true" /> : <MoonIcon size={14} weight="bold" aria-hidden="true" />}
+      </button>
+    );
+  }
+
+  if (variant === 'nav') {
+    return (
+      <button
+        type="button"
+        onClick={toggle}
+        title={dark ? '切换到浅色主题' : '切换到暗色主题'}
+        aria-label={dark ? '切换到浅色主题' : '切换到暗色主题'}
+        className="nav-fg-muted inline-flex h-11 w-11 items-center justify-center rounded-full border border-transparent transition-colors hover:bg-[var(--nav-hover-bg)] hover:text-[var(--nav-fg)]"
+      >
+        {dark ? <SunIcon size={16} weight="bold" aria-hidden="true" /> : <MoonIcon size={16} weight="bold" aria-hidden="true" />}
+      </button>
+    );
+  }
 
   return (
     <button

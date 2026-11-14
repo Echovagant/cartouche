@@ -101,13 +101,15 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="zh-CN" className={`${geist.variable} ${geistMono.variable}`}>
       <head>
         {/*
-          主题必须在**首帧之前**落到 <html> 上，否则暗色用户会先看到一帧浅色再跳过去。
+          主题必须在**首帧之前**落到 <html> 上，否则另一套主题的用户会先闪一帧再跳过去。
           用内联脚本（而不是 React effect）是因为它跑在 hydration 之前。
-          没有存储值时默认暗色——画布的默认观感就是"制图台"。
+          全站一个存储键（cartouche.theme）；没有存储值时按**路由**给默认：
+          画布 / AI 工作台是暗色的"制图台"，官网保持浅色的品牌面。
+          手动切过之后就跟着用户走，全站一致。
         */}
         <script
           dangerouslySetInnerHTML={{
-            __html: `(function(){try{var t=localStorage.getItem('cartouche.canvas.theme');if(t==='light'||t==='dark'){document.documentElement.dataset.theme=t;}}catch(e){}})();`,
+            __html: `(function(){try{var t=localStorage.getItem('cartouche.theme');if(t!=='light'&&t!=='dark'){var p=location.pathname;t=(p.indexOf('canvas')>=0||p.indexOf('ai')>=0)?'dark':'light';}document.documentElement.dataset.theme=t;}catch(e){document.documentElement.dataset.theme='light'}})();`,
           }}
         />
 

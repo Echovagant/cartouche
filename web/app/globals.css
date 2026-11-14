@@ -68,6 +68,19 @@
  * （浅=纸面段，深=墨面段）——它是官网唯一的分段开关。
  */
 :root {
+  /* 纸面/墨面运行时真值（浅色为默认）。暗色值在文件末尾的 [data-theme='dark']，
+     与 --studio-* 同一套 data-theme 机制 —— 全站一个主题开关。 */
+  --paper: #f4f1ea;
+  --paper-deep: #e9e4d7;
+  --surface: #fcfaf5;
+  --surface-raised: #ffffff;
+  --ink: #1c1a16;
+  --ink-2: #4a463d;
+  --ink-3: #6f695c;
+  --ink-4: #a49d8c;
+  --line: #e2dbcb;
+  --line-2: #cfc6b1;
+
   /* 段与容器 */
   --page-margin: clamp(1.25rem, 4vw, 4rem);
 
@@ -110,21 +123,22 @@
 }
 
 @theme {
-  --color-paper: #f4f1ea;
-  --color-paper-deep: #e9e4d7;
-  --color-surface: #fcfaf5;
-  --color-surface-raised: #ffffff;
+  /* 纸面/墨面这组是**运行时**可切的（与 --studio-* 同一套机制）：
+     @theme 里放 var() 引用，真值在 :root / [data-theme='dark'] ——
+     Tailwind 的 @theme 值在构建期就固定，写死颜色就没法切主题了。 */
+  --color-paper: var(--paper);
+  --color-paper-deep: var(--paper-deep);
+  --color-surface: var(--surface);
+  --color-surface-raised: var(--surface-raised);
 
-  --color-ink: #1c1a16;
-  --color-ink-2: #4a463d;
-  /* 次级说明文字。#7c7668 在纸面(#f4f1ea)上只有 4.01:1、在 surface(#fcfaf5)上
-     4.33:1，都差 WCAG AA 的 4.5:1 一截；压深到 #6f695c 之后是 4.83 / 5.23:1，
-     色相与暖调不变。 */
-  --color-ink-3: #6f695c;
-  --color-ink-4: #a49d8c;
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  /* 次级说明文字。浅色档 #6f695c 在纸面(#f4f1ea)上 4.83:1（WCAG AA ✓）。 */
+  --color-ink-3: var(--ink-3);
+  --color-ink-4: var(--ink-4);
 
-  --color-line: #e2dbcb;
-  --color-line-2: #cfc6b1;
+  --color-line: var(--line);
+  --color-line-2: var(--line-2);
 
   /* 深墨段（bg-ink #1c1a16）上的表面阶梯与描边。
      深段的 hairline 一律用 paper/12，不用浅段的 line —— 浅色描边在墨底上
@@ -250,16 +264,16 @@
   /* P3 屏上的同一组颜色（sRGB 基准值见下方注释，换算自 Ottosson OKLab 矩阵，
      往返误差 0.00000）。放在 @theme 之后：同特异度、后声明者胜。 */
   :root {
-    --color-paper: oklch(0.9585 0.0098 87.47); /* #f4f1ea */
-    --color-paper-deep: oklch(0.9192 0.0182 89.36); /* #e9e4d7 */
-    --color-surface: oklch(0.9853 0.0069 88.64); /* #fcfaf5 */
-    --color-surface-raised: oklch(1 0 0); /* #ffffff */
-    --color-ink: oklch(0.2186 0.0082 84.59); /* #1c1a16 */
-    --color-ink-2: oklch(0.3952 0.0157 86.89); /* #4a463d */
-    --color-ink-3: oklch(0.5224 0.0212 86.17); /* #6f695c */
-    --color-ink-4: oklch(0.6971 0.0255 88.27); /* #a49d8c */
-    --color-line: oklch(0.8926 0.0228 87.16); /* #e2dbcb */
-    --color-line-2: oklch(0.8282 0.0303 87.56); /* #cfc6b1 */
+    --paper: oklch(0.9585 0.0098 87.47); /* #f4f1ea */
+    --paper-deep: oklch(0.9192 0.0182 89.36); /* #e9e4d7 */
+    --surface: oklch(0.9853 0.0069 88.64); /* #fcfaf5 */
+    --surface-raised: oklch(1 0 0); /* #ffffff */
+    --ink: oklch(0.2186 0.0082 84.59); /* #1c1a16 */
+    --ink-2: oklch(0.3952 0.0157 86.89); /* #4a463d */
+    --ink-3: oklch(0.5224 0.0212 86.17); /* #6f695c */
+    --ink-4: oklch(0.6971 0.0255 88.27); /* #a49d8c */
+    --line: oklch(0.8926 0.0228 87.16); /* #e2dbcb */
+    --line-2: oklch(0.8282 0.0303 87.56); /* #cfc6b1 */
     --color-accent: oklch(0.4947 0.0715 173.27); /* #2f6f5e */
     --color-accent-deep: oklch(0.4117 0.0572 175.01); /* #245549 */
     --color-accent-soft: oklch(0.9452 0.0094 171.79); /* #e7efec */
@@ -754,4 +768,23 @@
     visibility: visible !important;
     transform: none !important;
   }
+}
+
+
+/* ── 暗色主题（全站） ─────────────────────────────────────────────
+   与 --studio-* 的暗色同一族：暖黑底、纸色文字。accent/warn 不随主题翻 ——
+   它们在深浅两档底上都够对比（深底强调用 accent-lit / warn-lit）。
+   写在文件**最末尾**：上面 oklch 的 :root 块与本块同特异性（0,1,0），
+   后声明者胜 —— 放前面会被 P3 屏的浅色值压掉。 */
+[data-theme='dark'] {
+  --paper: #171512;
+  --paper-deep: #1d1a16;
+  --surface: #201c18;
+  --surface-raised: #272320;
+  --ink: #f3eee4;
+  --ink-2: #c9c1b2;
+  --ink-3: #9a9284;
+  --ink-4: #6f695c;
+  --line: #322c24;
+  --line-2: #453d33;
 }

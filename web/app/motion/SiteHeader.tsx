@@ -16,6 +16,7 @@
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { CompassIcon, ListIcon, XIcon } from '@phosphor-icons/react';
+import { ThemeToggle } from '../canvas/ThemeToggle';
 
 export interface NavItem {
   readonly href: string;
@@ -110,6 +111,7 @@ export function SiteHeader({ items }: { items: readonly NavItem[] }) {
           >
             AI 接入
           </a>
+          <ThemeToggle variant="nav" />
         </div>
 
         {/* <900px：汉堡 */}
@@ -166,6 +168,10 @@ export function SiteHeader({ items }: { items: readonly NavItem[] }) {
           >
             AI 接入
           </a>
+          <div className="flex items-center justify-between px-4 py-1">
+            <span className="text-[13px] text-[var(--nav-fg-muted)]">主题</span>
+            <ThemeToggle variant="nav" />
+          </div>
         </div>
       ) : null}
     </header>
