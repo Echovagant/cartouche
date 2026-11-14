@@ -360,7 +360,10 @@ function prepareOps(
     } else if (rid !== chosenRootId) {
       throw new Error('一次操作里的所有目标必须在同一个已登记根之下');
     }
-    rewritten.push({ ...op, params: { ...op.params, target: t.relative } });
+    // 归一成 / 分隔（与 store 路径契约一致）：path.relative() 在 Windows 上给反斜杠，
+    // 而写回层的 dirOf/路径拼装只认 / —— 不归一的话写回产物会落到工作区根目录
+    // （2026-11-14 实测事故：矢量写回的文件全部落到根目录顶层，原文件没被替换）。
+    rewritten.push({ ...op, params: { ...op.params, target: t.relative.split(sep).join('/') } });
   }
 
   return { store: chosen ?? store, ops: rewritten };
