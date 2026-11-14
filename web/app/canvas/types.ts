@@ -238,10 +238,28 @@ export interface ProjectOutput {
   readonly mtimeMs: number;
 }
 
+/**
+ * 项目的定位方式：要么是绝对路径（手填的），要么是引擎代号（弹窗选的）。
+ *
+ * 为什么允许两者：弹窗选出来的目录前端**只有代号**（folder-N，见
+ * server/src/folder-picker.ts 的隐私约定），路径留在引擎里；
+ * 手填路径的场景仍然存在（远程机器、图形对话框不可用）。
+ */
+export type ProjectRef = {
+  /** 项目根的绝对路径（**仅用于调用引擎**，不要显示在界面上） */
+  readonly path?: string;
+  /** 引擎侧的项目目录代号（folder-N）。代号表落盘了，引擎重启后依然有效 */
+  readonly handle?: string;
+  /** 弹窗选出来时的文件夹名（建项目时当默认项目名用） */
+  readonly label?: string;
+};
+
 /** 「最近打开的项目」列表里的一项 */
 export interface ProjectSummary {
-  /** 项目根的绝对路径（**仅用于调用引擎**，不要显示在界面上） */
-  readonly path: string;
+  /** 项目根的绝对路径（**仅用于调用引擎**，不要显示在界面上）。弹窗选的项目可以缺省 */
+  readonly path?: string;
+  /** 弹窗选出来的项目目录代号。引擎重启后依然有效（代号表落盘了） */
+  readonly handle?: string;
   readonly name: string;
   readonly updatedAt: string;
   readonly layerCount: number;

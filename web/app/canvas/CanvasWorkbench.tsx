@@ -13,7 +13,8 @@
  * 两边各存一份状态，是这类工具最容易出现的 bug 来源。
  *
  * **两态**。
- *   - 没打开项目（projectPath === null）：只显示项目列表，不列文件、不请求路径接口；
+ *   - 没打开项目（projectRef === null）：侧栏停在「项目」视图，编辑区是欢迎页，
+ *     不列文件、不请求路径接口；
  *   - 打开了项目：画布里的一切路径都相对**项目根**，清单自动保存，关掉再开能恢复。
  */
 
@@ -25,11 +26,14 @@ import EditToolbar from './EditToolbar';
 import LayerPanel from './LayerPanel';
 import LayoutPanel, { type LayoutPreviewInput } from './LayoutPanel';
 import MapCanvas, { type MapCanvasHandle } from './MapCanvas';
-import ProjectPicker from './ProjectPicker';
 import Toolbar from './Toolbar';
 import { MarkdownView } from './markdown';
-import { ThemeToggle } from './ThemeToggle';
 import { ActionButton, TextField } from './ui';
+import { ActivityBar, type WorkbenchView } from './workbench/ActivityBar';
+import { StatusBar } from './workbench/StatusBar';
+import { Welcome } from './workbench/Welcome';
+import { ProjectSidebar } from './workbench/ProjectSidebar';
+import { pickFolder } from './useProjects';
 import { setActiveSheetState, metersPerPixelAt } from './sheet';
 import {
   DEFAULT_LAYOUT,
@@ -53,6 +57,7 @@ import {
   type MapLayer,
   type OpPreview,
   type ProjectManifest,
+  type ProjectRef,
   type SelectedFeature,
 } from './types';
 
@@ -107,12 +112,13 @@ function downloadBlob(blob: Blob, filename: string): void {
 }
 
 export default function CanvasWorkbench() {
-  // 项目根。
+  // 项目的定位方式：手填的绝对路径，或弹窗选出来的引擎代号（folder-N）。
   // **必须声明在 useEngine 之前**——useEngine 要拿它当 root（hook 调用顺序不能变）。
-  const [projectPath, setProjectPath] = useState<string | null>(null);
+  const [projectRef, setProjectRef] = useState<ProjectRef | null>(null);
   const [manifest, setManifest] = useState<ProjectManifest | null>(null);
 
-  const engine = useEngine(projectPath);
+  // 引擎请求里的 root：绝对路径与代号引擎都认（resolveTarget 统一换算）
+  const engine = useEngine(projectRef ? (projectRef.path ?? projectRef.handle ?? null) : null);
   const projects = useProjects();
   // 这几个是 useCallback 包出来的稳定引用：放进 useEffect 的依赖数组里不会每次渲染都重置
   const { createProject: createProjectRequest, openProject: openProjectRequest } = projects;
@@ -121,14 +127,17 @@ export default function CanvasWorkbench() {
   const mapHandleRef = useRef<MapCanvasHandle | null>(null);
   const idRef = useRef(0);
   /**
-   * 当前项目根的"代号"。
+   * 当前项目的"钥匙"（路径或代号）。
    *
    * 图层数据是异步回来的：用户可能在数据回来之前就换项目了。
    * 不做这个校验的话，旧项目的数据会落进新项目的数据表
    * （两个项目都叫 layer-1 时，地图上会出现另一个项目的图层）。
    */
-  const projectPathRef = useRef<string | null>(null);
-  projectPathRef.current = projectPath;
+  const projectKeyRef = useRef<string | null>(null);
+  projectKeyRef.current = projectRef ? (projectRef.path ?? projectRef.handle ?? null) : null;
+
+  /** 活动栏当前指向的侧栏视图 */
+  const [view, setView] = useState<WorkbenchView>('project');
 
   const [layers, setLayers] = useState<MapLayer[]>([]);
   const [activeLayerId, setActiveLayerId] = useState<string | null>(null);
@@ -242,21 +251,21 @@ export default function CanvasWorkbench() {
   /* ───────── 打开 / 新建 / 退回项目列表 ───────── */
 
   const openProject = useCallback(
-    async (path: string) => {
+    async (ref: ProjectRef) => {
       setProjectBusy(true);
       try {
-        const m = await openProjectRequest(path);
-        if (!m) {
-          setBanner('这个文件夹里还没有项目清单。用「登记并新建」建一个。');
-          return;
-        }
+        const m = await openProjectRequest(ref);
+        if (!m) return null;
         // 两个 state 一起设：React 会批处理，
-        // 所以第一帧就同时有 projectPath 和 manifest（MapCanvas 建图时就能拿到 initialView）
-        setProjectPath(path);
+        // 所以第一帧就同时有 projectRef 和 manifest（MapCanvas 建图时就能拿到 initialView）
+        setProjectRef(ref);
         setManifest(m);
         setBanner(null);
+        setView('layers');
+        return m;
       } catch (err) {
         setBanner(`打开项目失败：${(err as Error).message}`);
+        return null;
       } finally {
         setProjectBusy(false);
       }
@@ -265,15 +274,18 @@ export default function CanvasWorkbench() {
   );
 
   const createProject = useCallback(
-    async (path: string) => {
+    async (ref: ProjectRef) => {
       setProjectBusy(true);
       try {
-        const m = await createProjectRequest(path);
-        setProjectPath(path);
+        const m = await createProjectRequest(ref);
+        setProjectRef(ref);
         setManifest(m);
         setBanner(null);
+        setView('layers');
+        return m;
       } catch (err) {
         setBanner(`新建项目失败：${(err as Error).message}`);
+        return null;
       } finally {
         setProjectBusy(false);
       }
@@ -281,12 +293,47 @@ export default function CanvasWorkbench() {
     [createProjectRequest],
   );
 
+  /**
+   * 选完文件夹就进来：有项目清单就打开，没有就当场建一个。
+   * 一个动作走完「选 → 开」，不让人在「打开 / 新建」两个词里做选择题。
+   */
+  const openOrCreate = useCallback(
+    async (ref: ProjectRef) => {
+      setProjectBusy(true);
+      try {
+        const existing = await openProjectRequest(ref);
+        const m = existing ?? (await createProjectRequest(ref));
+        setProjectRef(ref);
+        setManifest(m);
+        setBanner(null);
+        setView('layers');
+      } catch (err) {
+        setBanner(`没能打开这个文件夹：${(err as Error).message}`);
+      } finally {
+        setProjectBusy(false);
+      }
+    },
+    [openProjectRequest, createProjectRequest],
+  );
+
+  /** 弹系统的文件夹选择框；取消不算错误 */
+  const handlePickFolder = useCallback(async () => {
+    if (projectBusy) return;
+    try {
+      const picked = await pickFolder();
+      if (!picked) return;
+      await openOrCreate({ handle: picked.handle, label: picked.label });
+    } catch (err) {
+      setBanner(`选文件夹失败：${(err as Error).message}`);
+    }
+  }, [projectBusy, openOrCreate]);
+
   /* ───────── 工作区文件列表 ───────── */
 
   const listDir = engine.listDir;
   useEffect(() => {
     // 没打开项目时不该去列默认工作区：那时候用户还没选项目
-    if (!engineReady || !projectPath) return;
+    if (!engineReady || !projectRef) return;
     let cancelled = false;
     void listDir(dir).then((res) => {
       if (cancelled) return;
@@ -295,12 +342,12 @@ export default function CanvasWorkbench() {
     return () => {
       cancelled = true;
     };
-  }, [engineReady, projectPath, dir, listDir]);
+  }, [engineReady, projectRef, dir, listDir]);
 
   // 换项目时把浏览位置清回项目根（上一个项目的子目录在新项目里多半不存在）
   useEffect(() => {
     setDir('');
-  }, [projectPath]);
+  }, [projectRef]);
 
   /* ───────── 图层数据 ───────── */
 
@@ -316,8 +363,8 @@ export default function CanvasWorkbench() {
     async (target: readonly MapLayer[]): Promise<boolean> => {
       let ok = true;
       // 记下这次请求属于哪个项目：中途换了项目就不要再往回写数据了
-      const owner = projectPathRef.current;
-      const stillMine = (): boolean => projectPathRef.current === owner;
+      const owner = projectKeyRef.current;
+      const stillMine = (): boolean => projectKeyRef.current === owner;
       for (const layer of target) {
         if (layer.kind === 'vector') {
           const res = await engine.fetchGeoJson(layer.path);
@@ -472,37 +519,37 @@ export default function CanvasWorkbench() {
   }, [manifest, title, operator, layers]);
 
   useEffect(() => {
-    if (!projectPath || !manifest) return;
+    if (!projectRef || !manifest) return;
     // 防抖 800ms：改一次顺序、拖一次透明度不该写一次盘
     const t = setTimeout(() => {
       const next = buildManifest();
       if (!next) return;
-      void saveManifest(projectPath, next)
+      void saveManifest(projectRef, next)
         .then(() => {
           // 存好了就把"最近项目"里的摘要也刷新一下：
           // 否则列表里显示的还是打开那一刻的图层数，用户会以为改动没存上
-          rememberProject(projectPath, next);
+          rememberProject(projectRef, next);
         })
         .catch((err) => {
           setBanner(`项目清单未保存：${(err as Error).message}`);
         });
     }, 800);
     return () => clearTimeout(t);
-  }, [projectPath, manifest, buildManifest, saveManifest, rememberProject]);
+  }, [projectRef, manifest, buildManifest, saveManifest, rememberProject]);
 
-  /** 回到项目列表：先把当前状态存下去（否则最后 800ms 的防抖会被清掉） */
+  /** 回到项目列表（侧栏的项目视图）：先把当前状态存下去（否则最后 800ms 的防抖会被清掉） */
   const leaveProject = useCallback(() => {
     const next = buildManifest();
-    if (projectPath && next) {
-      void saveManifest(projectPath, next)
+    if (projectRef && next) {
+      void saveManifest(projectRef, next)
         .then(() => {
-          rememberProject(projectPath, next);
+          rememberProject(projectRef, next);
         })
         .catch((err) => {
           setBanner(`项目清单未保存：${(err as Error).message}`);
         });
     }
-    setProjectPath(null);
+    setProjectRef(null);
     setManifest(null);
     setLayers([]);
     setVectorData(new Map());
@@ -512,7 +559,8 @@ export default function CanvasWorkbench() {
     setDir('');
     setFiles([]);
     setBanner(null);
-  }, [buildManifest, projectPath, saveManifest, rememberProject]);
+    setView('project');
+  }, [buildManifest, projectRef, saveManifest, rememberProject]);
 
   /* ───────── 导出 PDF ───────── */
 
@@ -549,13 +597,13 @@ export default function CanvasWorkbench() {
     const filename = `cartouche-${fileStamp()}.pdf`;
     downloadBlob(res.data, filename);
     // 既存进项目目录（.cartouche/outputs/），再触发下载 —— 交差时能直接找到上一版
-    if (projectPath) {
-      void writeOutput(projectPath, filename, res.data).catch((err) => {
+    if (projectRef) {
+      void writeOutput(projectRef, filename, res.data).catch((err) => {
         setBanner(`PDF 已下载，但没存进项目目录：${(err as Error).message}`);
       });
     }
     return { ok: true, filename };
-  }, [exportPdf, title, operator, projectPath, writeOutput, layout]);
+  }, [exportPdf, title, operator, projectRef, writeOutput, layout]);
 
   const handleExportPdf = useCallback(async () => {
     const res = await exportView();
@@ -584,14 +632,15 @@ export default function CanvasWorkbench() {
    */
   const aiEntryContext = useMemo(
     (): AiEntryContext => ({
-      root: projectPath,
+      // 代号与路径引擎都认（resolveTarget 统一换算）；弹窗流程下前端只有代号
+      root: projectRef ? (projectRef.path ?? projectRef.handle ?? null) : null,
       projectName: manifest?.name ?? null,
       layerId: activeLayer?.id ?? null,
       layerName: activeLayer?.name ?? null,
       layerCount: layers.length,
       fromCanvas: true,
     }),
-    [projectPath, manifest?.name, activeLayer?.id, activeLayer?.name, layers.length],
+    [projectRef, manifest?.name, activeLayer?.id, activeLayer?.name, layers.length],
   );
 
   const aiEntry = useMemo(() => describeAiEntry(aiEntryContext), [aiEntryContext]);
@@ -773,7 +822,7 @@ export default function CanvasWorkbench() {
     await mapHandleRef.current?.refresh();
     const exported = await exportView();
     const next = buildManifest();
-    if (projectPath && next) rememberProject(projectPath, next);
+    if (projectRef && next) rememberProject(projectRef, next);
     editToolsRef.current.resetGesture();
     setConfirmState((prev) =>
       prev
@@ -789,7 +838,7 @@ export default function CanvasWorkbench() {
           }
         : prev,
     );
-  }, [confirmState, engine.executeOp, exportView, projectPath, rememberProject]);
+  }, [confirmState, engine.executeOp, exportView, projectRef, rememberProject]);
 
   const closeConfirm = useCallback(() => {
     setConfirmState(null);
@@ -798,278 +847,330 @@ export default function CanvasWorkbench() {
   /* ───────── 渲染 ───────── */
 
   const engineError = engine.health.status === 'offline' ? engine.health.error : null;
+  const engineOffline = engine.health.status === 'offline';
 
   /**
-   * 两态分叉。
+   * 统一的工作台壳（VS Code 的版式）：
+   * 活动栏 → 侧栏（按视图切换）→ 编辑区（欢迎页 / 地图）→ 状态栏。
    *
-   * 放在**所有 hook 之后**：hook 的调用顺序不能变，
-   * 少写一个 useState 在早退之后，下一次渲染就会炸。
+   * 没打开项目时壳子照常在：欢迎页待在编辑区里，侧栏停在「项目」视图 ——
+   * 不再像旧版那样整个换成一屏选择页。屏上少了什么、多了什么，一眼能对上。
    */
-  if (!projectPath) {
-    return (
-      <ProjectPicker
-        recent={projects.recent}
-        error={banner ?? projects.error}
-        engineOffline={engine.health.status === 'offline'}
-        busy={projectBusy}
-        onOpenExisting={(p) => {
-          void openProject(p);
-        }}
-        onCreateFromFolder={(p) => {
-          void createProject(p);
-        }}
-      />
-    );
-  }
-
   return (
     <>
       <CanvasBoot leftRef={leftRef} rightRef={rightRef} stageRef={stageRef} />
       <div className="flex h-[100dvh] flex-col overflow-hidden bg-studio text-studio-ink">
-      <header className="flex items-center gap-3 border-b border-studio-line bg-studio-2/80 px-4 py-2.5 backdrop-blur">
-        <a
-          href={HOME_HREF}
-          className="rounded-md px-1.5 py-1 text-[12.5px] text-studio-ink-2 transition-colors hover:bg-studio-3 hover:text-studio-ink"
-        >
-          ← 返回首页
-        </a>
-        <span className="h-4 w-px bg-studio-line" />
-        <strong className="font-display text-[14px] font-semibold tracking-tight text-studio-ink">
-          地图画布
-        </strong>
-        <span className="font-mono text-[11.5px] text-studio-ink-3">图签 Cartouche</span>
-
-        <span className="h-4 w-px bg-studio-line" />
-        <button
-          type="button"
-          onClick={leaveProject}
-          title="回到项目列表"
-          className="max-w-[280px] truncate rounded-md px-1.5 py-1 font-mono text-[11.5px] text-studio-ink-2 transition-colors hover:bg-studio-3 hover:text-studio-ink"
-        >
-          {manifest?.name ?? '项目'} ▾
-        </button>
-
-        <span className="flex-1" />
-
-        <ThemeToggle />
-
-        <span className="h-4 w-px bg-studio-line" />
-
-        <label className="flex items-center gap-2 text-[11.5px] text-studio-ink-3">
-          图名
-          <TextField
-            value={title}
-            onChange={(event) => setTitle(event.target.value)}
-            className="w-52"
+        <div className="flex min-h-0 flex-1">
+          <ActivityBar
+            activeView={view}
+            onViewChange={setView}
+            projectOpen={Boolean(projectRef)}
+            onOpenAi={openAiWorkbench}
+            aiEnabled={aiEntry.enabled}
+            aiBlockedReason={aiEntry.reason}
           />
-        </label>
-        <label className="flex items-center gap-2 text-[11.5px] text-studio-ink-3">
-          操作人
-          <TextField
-            value={operator}
-            onChange={(event) => setOperator(event.target.value)}
-            placeholder="姓名"
-            className="w-28"
-          />
-        </label>
-      </header>
 
-      <Toolbar
-        onExportPdf={() => {
-          void handleExportPdf();
-        }}
-        onCompatReport={() => {
-          void handleCompatReport();
-        }}
-        exporting={engine.isPending('export')}
-        reporting={engine.isPending('report')}
-        canReport={Boolean(activeLayer)}
-        health={engine.health.status}
-        onReloadHealth={engine.reloadHealth}
-        stretch={stretch}
-        onStretchChange={setStretch}
-        onOpenAi={openAiWorkbench}
-        aiBlockedReason={aiEntry.enabled ? '' : aiEntry.reason}
-      />
-
-      <EditToolbar
-        tool={editTools.tool}
-        onToolChange={editTools.setTool}
-        blockedByTool={editTools.blockedByTool}
-        color={editColor}
-        onColorChange={setEditColor}
-        brushWidth={brushWidth}
-        onBrushWidthChange={setBrushWidth}
-        hasBox={editTools.hasBox}
-        onBoxAction={(kind) => {
-          handleBoxAction(kind);
-        }}
-        levels={levels}
-        onLevelsChange={setLevels}
-        onPreviewLevels={() => {
-          handlePreviewLevels();
-        }}
-        busy={
-          engine.isPending('preview') ||
-          engine.isPending('execute') ||
-          (confirmState?.previewing ?? false) ||
-          (confirmState?.executing ?? false)
-        }
-      />
-
-      {fileProtocol ? (
-        <div className="border-b border-amber/35 bg-amber/10 px-4 py-2.5 text-[12.5px] leading-relaxed text-studio-ink-2">
-          <strong className="text-studio-ink">当前是用 file:// 直接打开的，地图画不出来。</strong>
-          Chrome 不允许从本地文件构造 Web Worker，MapLibre 的 worker 起不来。
-          请在仓库根目录运行 <code className="rounded bg-studio-3 px-1 font-mono">npm run serve:web</code>，
-          然后访问 <code className="rounded bg-studio-3 px-1 font-mono">http://127.0.0.1:8080/canvas.html</code>。
-        </div>
-      ) : null}
-
-      {banner || engine.error ? (
-        <div className="border-b border-warn/30 bg-warn/12 px-4 py-2 text-[12.5px] text-warn">
-          {banner ?? engine.error}
-        </div>
-      ) : null}
-
-      <div className="flex min-h-0 flex-1">
-        <aside
-          ref={leftRef}
-          className="w-[300px] shrink-0 overflow-y-auto border-r border-studio-line bg-studio-2/70 p-4"
-        >
-          <LayerPanel
-            layers={layers}
-            files={files}
-            dir={dir}
-            filesLoading={engine.isPending('list')}
-            activeLayerId={activeLayerId}
-            onAddLayer={(name, kind) => {
-              void addLayer(name, kind);
-            }}
-            onRemoveLayer={removeLayer}
-            onToggleVisibility={toggleVisibility}
-            onOpacityChange={changeOpacity}
-            onMoveLayer={moveLayer}
-            onSelectLayer={setActiveLayerId}
-            onEnterDirectory={(name) => setDir((prev) => (prev ? `${prev}/${name}` : name))}
-            onGoUp={() => setDir((prev) => (prev.includes('/') ? prev.slice(0, prev.lastIndexOf('/')) : ''))}
-          />
-        </aside>
-
-        <main className="relative min-w-0 flex-1 p-3">
-          <div
-            ref={stageRef}
-            className="film-grain vignette crop-marks relative h-full w-full overflow-hidden rounded-xl bg-studio-3"
-            style={{ boxShadow: 'var(--studio-stage-shadow)' }}
+          {/* ── 侧栏：按活动栏的视图切换内容 ── */}
+          <aside
+            ref={leftRef}
+            className="flex w-[264px] shrink-0 flex-col border-r border-studio-line bg-studio-2/70"
           >
-            <MapCanvas
-              ref={mapHandleRef}
-              engineBase={engine.base}
-              buildRasterUrl={engine.rasterUrl}
-              layers={layers}
-              engineError={engineError}
-              sheetMeta={sheetMeta}
-              selectedFeatures={selected}
-              vectorData={vectorData}
-              extents={extents}
-              initialView={
-                manifest?.view ? { center: [manifest.view.center[0], manifest.view.center[1]], zoom: manifest.view.zoom } : undefined
-              }
-              preserveViewLayerIds={manifest?.layers.map((l) => l.id)}
-              onSelectFeatures={(features) => {
-                setSelected(features);
-                setSelectedIndex(0);
-              }}
-              editTool={editTools.tool}
-              editPreview={editTools.preview}
-              stretch={stretch}
-              onEditGesture={editTools.onGesture}
-            />
-            <LayerArrival layerCount={layers.length} />
-            <SelectionShutter stageRef={stageRef} selectedCount={selected.length} />
-            <ExportDevelop active={engine.isPending('export')} />
-          </div>
-        </main>
-
-        <aside
-          ref={rightRef}
-          className="w-[320px] shrink-0 overflow-y-auto border-l border-studio-line bg-studio-2/70"
-        >
-          <LayoutPanel
-            layout={layout}
-            onChange={setLayout}
-            projectRoot={projectPath}
-            getPreview={getLayoutPreview}
-            suggestedLegend={suggestedLegend}
-            onError={setLayoutError}
-          />
-          {layoutError ? (
-            <div className="mx-4 mb-4 rounded-lg border border-warn/35 bg-warn/10 px-3 py-2 text-[12px] leading-relaxed text-warn">
-              {layoutError}
-            </div>
-          ) : null}
-          <AttributeTable
-            features={selected}
-            activeIndex={selectedIndex}
-            onSelect={setSelectedIndex}
-            onClose={() => setSelected([])}
-          />
-        </aside>
-      </div>
-
-      {reportOpen && report ? (
-        <aside
-          className="fixed inset-y-0 right-0 z-50 flex w-[560px] max-w-[92vw] flex-col border-l border-studio-line bg-studio-2/95 backdrop-blur-xl"
-          style={{ boxShadow: 'var(--studio-panel-shadow)' }}
-        >
-          <div className="flex items-center gap-2.5 border-b border-studio-line px-4 py-3">
-            <strong className="font-display text-[14px] font-semibold text-studio-ink">
-              兼容性自检报告
-            </strong>
-            {report.hasBlocker ? (
-              <span className="rounded border border-warn/40 bg-warn/12 px-1.5 py-0.5 font-mono text-[11px] text-warn">
-                有阻断问题
-              </span>
+            {view === 'project' || !projectRef ? (
+              <ProjectSidebar
+                recent={projects.recent}
+                busy={projectBusy}
+                error={banner ?? projects.error}
+                engineOffline={engineOffline}
+                onPickFolder={() => {
+                  void handlePickFolder();
+                }}
+                onOpenProject={(project) => {
+                  void openOrCreate(
+                    project.path
+                      ? { path: project.path }
+                      : { handle: project.handle ?? '', label: project.name },
+                  );
+                }}
+                onCreateFromPath={(p) => {
+                  void openOrCreate({ path: p });
+                }}
+              />
+            ) : view === 'layers' ? (
+              <div className="min-h-0 flex-1 overflow-y-auto p-3">
+                <LayerPanel
+                  layers={layers}
+                  files={files}
+                  dir={dir}
+                  filesLoading={engine.isPending('list')}
+                  activeLayerId={activeLayerId}
+                  onAddLayer={(name, kind) => {
+                    void addLayer(name, kind);
+                  }}
+                  onRemoveLayer={removeLayer}
+                  onToggleVisibility={toggleVisibility}
+                  onOpacityChange={changeOpacity}
+                  onMoveLayer={moveLayer}
+                  onSelectLayer={setActiveLayerId}
+                  onEnterDirectory={(name) => setDir((prev) => (prev ? prev + '/' + name : name))}
+                  onGoUp={() =>
+                    setDir((prev) => (prev.includes('/') ? prev.slice(0, prev.lastIndexOf('/')) : ''))
+                  }
+                />
+              </div>
             ) : (
-              <span className="rounded border border-accent/40 bg-accent/12 px-1.5 py-0.5 font-mono text-[11px] text-accent">
-                未发现阻断问题
-              </span>
+              <div className="min-h-0 flex-1 overflow-y-auto p-3">
+                <h2 className="mb-3 border-b border-studio-line pb-2 font-mono text-[11px] font-medium tracking-[0.12em] text-studio-ink-3">
+                  图面信息
+                </h2>
+                <div className="flex flex-col gap-2.5">
+                  <label className="flex items-center gap-2 text-[12px] text-studio-ink-2">
+                    <span className="w-12 shrink-0">图名</span>
+                    <TextField
+                      value={title}
+                      onChange={(event) => setTitle(event.target.value)}
+                      className="h-9 min-w-0 flex-1"
+                    />
+                  </label>
+                  <label className="flex items-center gap-2 text-[12px] text-studio-ink-2">
+                    <span className="w-12 shrink-0">操作人</span>
+                    <TextField
+                      value={operator}
+                      onChange={(event) => setOperator(event.target.value)}
+                      placeholder="姓名"
+                      className="h-9 min-w-0 flex-1"
+                    />
+                  </label>
+                </div>
+                <div className="mt-4">
+                  <LayoutPanel
+                    layout={layout}
+                    onChange={setLayout}
+                    projectRoot={projectRef ? (projectRef.path ?? projectRef.handle ?? null) : null}
+                    getPreview={getLayoutPreview}
+                    suggestedLegend={suggestedLegend}
+                    onError={setLayoutError}
+                  />
+                </div>
+                {layoutError ? (
+                  <div className="mt-3 rounded-lg border border-warn/35 bg-warn/10 px-3 py-2 text-[12px] leading-relaxed text-warn">
+                    {layoutError}
+                  </div>
+                ) : null}
+              </div>
             )}
-            <span className="flex-1" />
-            <ActionButton variant="quiet" onClick={() => setReportOpen(false)} className="!px-2 !py-1">
-              关闭
-            </ActionButton>
-          </div>
-          <div className="overflow-y-auto px-4 pt-3 pb-7">
-            {report.manualChecks.length > 0 ? (
-              <div className="mt-2 mb-3 rounded-lg border border-amber/30 bg-amber/10 px-3 py-2.5 text-[12.5px] leading-relaxed text-studio-ink-2">
-                <strong className="text-studio-ink">需要人工确认</strong>
-                <ul className="mt-1 list-disc pl-5">
-                  {report.manualChecks.map((check) => (
-                    <li key={check}>{check}</li>
-                  ))}
-                </ul>
+          </aside>
+
+          {/* ── 编辑区：标签条 + 工具行 + 内容 ── */}
+          <main className="relative flex min-w-0 flex-1 flex-col">
+            <div className="flex h-9 shrink-0 items-stretch border-b border-studio-line bg-studio-2/60 px-1.5">
+              <button
+                type="button"
+                onClick={leaveProject}
+                title="回到项目视图"
+                className="mr-1 flex items-center px-2 text-[12px] text-studio-ink-3 transition-colors hover:text-studio-ink"
+              >
+                ← 项目
+              </button>
+              <div className="flex items-center border-x border-studio-line bg-studio-3 px-3.5 text-[12.5px] text-studio-ink">
+                {projectRef ? (manifest?.name ?? '地图') : '欢迎'}
+              </div>
+            </div>
+
+            {fileProtocol ? (
+              <div className="border-b border-amber/35 bg-amber/10 px-4 py-2.5 text-[12.5px] leading-relaxed text-studio-ink-2">
+                <strong className="text-studio-ink">当前是用 file:// 直接打开的，地图画不出来。</strong>
+                Chrome 不允许从本地文件构造 Web Worker，MapLibre 的 worker 起不来。
+                请在仓库根目录运行 <code className="rounded bg-studio-3 px-1 font-mono">npm run serve:web</code>，
+                然后访问 <code className="rounded bg-studio-3 px-1 font-mono">http://127.0.0.1:8080/canvas.html</code>。
               </div>
             ) : null}
-            <MarkdownView source={report.markdown} />
-          </div>
-        </aside>
-      ) : null}
 
-      {confirmState ? (
-        <ConfirmCard
-          op={confirmState.op}
-          preview={confirmState.preview}
-          previewing={confirmState.previewing}
-          previewError={confirmState.error}
-          executing={confirmState.executing}
-          outcome={confirmState.outcome}
-          onConfirm={() => {
-            void handleConfirmExecute();
-          }}
-          onCancel={closeConfirm}
+            {banner || engine.error ? (
+              <div className="border-b border-warn/30 bg-warn/12 px-4 py-2 text-[12.5px] text-warn">
+                {banner ?? engine.error}
+              </div>
+            ) : null}
+
+            {projectRef ? (
+              <>
+                <Toolbar
+                  onExportPdf={() => {
+                    void handleExportPdf();
+                  }}
+                  onCompatReport={() => {
+                    void handleCompatReport();
+                  }}
+                  exporting={engine.isPending('export')}
+                  reporting={engine.isPending('report')}
+                  canReport={Boolean(activeLayer)}
+                  health={engine.health.status}
+                  onReloadHealth={engine.reloadHealth}
+                  stretch={stretch}
+                  onStretchChange={setStretch}
+                  onOpenAi={openAiWorkbench}
+                  aiBlockedReason={aiEntry.enabled ? '' : aiEntry.reason}
+                />
+                <EditToolbar
+                  tool={editTools.tool}
+                  onToolChange={editTools.setTool}
+                  blockedByTool={editTools.blockedByTool}
+                  color={editColor}
+                  onColorChange={setEditColor}
+                  brushWidth={brushWidth}
+                  onBrushWidthChange={setBrushWidth}
+                  hasBox={editTools.hasBox}
+                  onBoxAction={(kind) => {
+                    handleBoxAction(kind);
+                  }}
+                  levels={levels}
+                  onLevelsChange={setLevels}
+                  onPreviewLevels={() => {
+                    handlePreviewLevels();
+                  }}
+                  busy={
+                    engine.isPending('preview') ||
+                    engine.isPending('execute') ||
+                    (confirmState?.previewing ?? false) ||
+                    (confirmState?.executing ?? false)
+                  }
+                />
+                <div className="relative min-h-0 flex-1 p-3">
+                  <div
+                    ref={stageRef}
+                    className="film-grain vignette crop-marks relative h-full w-full overflow-hidden rounded-xl bg-studio-3"
+                    style={{ boxShadow: 'var(--studio-stage-shadow)' }}
+                  >
+                    <MapCanvas
+                      ref={mapHandleRef}
+                      engineBase={engine.base}
+                      buildRasterUrl={engine.rasterUrl}
+                      layers={layers}
+                      engineError={engineError}
+                      sheetMeta={sheetMeta}
+                      selectedFeatures={selected}
+                      vectorData={vectorData}
+                      extents={extents}
+                      initialView={
+                        manifest?.view
+                          ? {
+                              center: [manifest.view.center[0], manifest.view.center[1]],
+                              zoom: manifest.view.zoom,
+                            }
+                          : undefined
+                      }
+                      preserveViewLayerIds={manifest?.layers.map((l) => l.id)}
+                      onSelectFeatures={(features) => {
+                        setSelected(features);
+                        setSelectedIndex(0);
+                      }}
+                      editTool={editTools.tool}
+                      editPreview={editTools.preview}
+                      stretch={stretch}
+                      onEditGesture={editTools.onGesture}
+                    />
+                    <LayerArrival layerCount={layers.length} />
+                    <SelectionShutter stageRef={stageRef} selectedCount={selected.length} />
+                    <ExportDevelop active={engine.isPending('export')} />
+                  </div>
+                </div>
+                {/* 属性表：VS Code 的底部面板 —— 选中要素时从下面升起来 */}
+                {selected.length > 0 ? (
+                  <div className="max-h-[220px] shrink-0 overflow-y-auto border-t border-studio-line bg-studio-2/70">
+                    <AttributeTable
+                      features={selected}
+                      activeIndex={selectedIndex}
+                      onSelect={setSelectedIndex}
+                      onClose={() => setSelected([])}
+                    />
+                  </div>
+                ) : null}
+              </>
+            ) : (
+              <div className="min-h-0 flex-1">
+                <Welcome
+                  recent={projects.recent}
+                  engineOffline={engineOffline}
+                  busy={projectBusy}
+                  onPickFolder={() => {
+                    void handlePickFolder();
+                  }}
+                  onOpenProject={(project) => {
+                    void openOrCreate(
+                      project.path
+                        ? { path: project.path }
+                        : { handle: project.handle ?? '', label: project.name },
+                    );
+                  }}
+                  onCreateFromPath={(p) => {
+                    void openOrCreate({ path: p });
+                  }}
+                />
+              </div>
+            )}
+          </main>
+        </div>
+
+        <StatusBar
+          engineOffline={engineOffline}
+          engineError={engineError}
+          projectName={manifest?.name ?? null}
+          layerCount={layers.length}
+          selectedCount={selected.length}
         />
-      ) : null}
+
+        {reportOpen && report ? (
+          <aside
+            className="fixed inset-y-0 right-0 z-50 flex w-[560px] max-w-[92vw] flex-col border-l border-studio-line bg-studio-2/95 backdrop-blur-xl"
+            style={{ boxShadow: 'var(--studio-panel-shadow)' }}
+          >
+            <div className="flex items-center gap-2.5 border-b border-studio-line px-4 py-3">
+              <strong className="font-display text-[14px] font-semibold text-studio-ink">
+                兼容性自检报告
+              </strong>
+              {report.hasBlocker ? (
+                <span className="rounded border border-warn/40 bg-warn/12 px-1.5 py-0.5 font-mono text-[11px] text-warn">
+                  有阻断问题
+                </span>
+              ) : (
+                <span className="rounded border border-accent/40 bg-accent/12 px-1.5 py-0.5 font-mono text-[11px] text-accent">
+                  未发现阻断问题
+                </span>
+              )}
+              <span className="flex-1" />
+              <ActionButton variant="quiet" onClick={() => setReportOpen(false)} className="!px-2 !py-1">
+                关闭
+              </ActionButton>
+            </div>
+            <div className="overflow-y-auto px-4 pt-3 pb-7">
+              {report.manualChecks.length > 0 ? (
+                <div className="mt-2 mb-3 rounded-lg border border-amber/30 bg-amber/10 px-3 py-2.5 text-[12.5px] leading-relaxed text-studio-ink-2">
+                  <strong className="text-studio-ink">需要人工确认</strong>
+                  <ul className="mt-1 list-disc pl-5">
+                    {report.manualChecks.map((check) => (
+                      <li key={check}>{check}</li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+              <MarkdownView source={report.markdown} />
+            </div>
+          </aside>
+        ) : null}
+
+        {confirmState ? (
+          <ConfirmCard
+            op={confirmState.op}
+            preview={confirmState.preview}
+            previewing={confirmState.previewing}
+            previewError={confirmState.error}
+            executing={confirmState.executing}
+            outcome={confirmState.outcome}
+            onConfirm={() => {
+              void handleConfirmExecute();
+            }}
+            onCancel={closeConfirm}
+          />
+        ) : null}
       </div>
     </>
   );

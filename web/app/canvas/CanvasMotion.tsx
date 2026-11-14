@@ -38,14 +38,15 @@ export function CanvasBoot({
     if (reduced) return;
 
     const left = leftRef.current;
+    // 右栏是**可选**的：新版工作台没有右侧面板，没挂 ref 就跳过那一段
     const right = rightRef.current;
     const stage = stageRef.current;
-    if (!left || !right || !stage) return;
+    if (!left || !stage) return;
 
     const tl = gsap.timeline({ defaults: { ease: 'power3.out' } });
     tl.from(left, { xPercent: -6, autoAlpha: 0, duration: 0.7 })
-      .from(stage, { scale: 0.985, autoAlpha: 0, duration: 0.9, ease: 'power4.out' }, '-=0.5')
-      .from(right, { xPercent: 6, autoAlpha: 0, duration: 0.7 }, '-=0.75');
+      .from(stage, { scale: 0.985, autoAlpha: 0, duration: 0.9, ease: 'power4.out' }, '-=0.5');
+    if (right) tl.from(right, { xPercent: 6, autoAlpha: 0, duration: 0.7 }, '-=0.75');
   });
 
   return null;

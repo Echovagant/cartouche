@@ -42,17 +42,23 @@ function pathHash(text: string): number {
  * 图号：图签框上那个编号（形如 `CH-2026-1108-01`）。
  *
  * - 年月日取项目最后修改时间 —— 图号要能对着交差日期读；
- * - 末两位取路径散列 —— 同一个项目永远同一个号，重新排序也不会变；
+ * - 末两位取**项目定位串**的散列（路径，弹窗选的用代号）——
+ *   同一个项目永远同一个号，重新排序也不会变；
  * - 时间不可用时退化成 `CH-01`（宁可少信息，也不要编一个假日期）。
  */
-export function sheetNumber(path: string, updatedAt: string): string {
-  const seq = pad2(pathHash(path) % 100);
+export function sheetNumber(key: string, updatedAt: string): string {
+  const seq = pad2(pathHash(key) % 100);
   const d = updatedAt ? new Date(updatedAt) : null;
   if (!d || Number.isNaN(d.getTime())) return `CH-${seq}`;
   return `CH-${d.getFullYear()}-${pad2(d.getMonth() + 1)}${pad2(d.getDate())}-${seq}`;
 }
 
-/** 按名称或路径过滤（大小写不敏感） */
+/** 项目的定位串：有路径用路径，弹窗选的用代号 */
+export function projectKey(p: ProjectSummary): string {
+  return p.path ?? p.handle ?? p.name;
+}
+
+/** 按名称或定位串过滤（大小写不敏感） */
 export function filterProjects(
   list: readonly ProjectSummary[],
   query: string,
@@ -60,7 +66,10 @@ export function filterProjects(
   const q = query.trim().toLowerCase();
   if (!q) return [...list];
   return list.filter(
-    (p) => p.name.toLowerCase().includes(q) || p.path.toLowerCase().includes(q),
+    (p) =>
+      p.name.toLowerCase().includes(q) ||
+      (p.path ?? '').toLowerCase().includes(q) ||
+      (p.handle ?? '').toLowerCase().includes(q),
   );
 }
 
