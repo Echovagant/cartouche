@@ -1,6 +1,6 @@
 {
   "name": "@cartouche/web",
-  "version": "0.2.1",
+  "version": "0.1.0",
   "private": true,
   "scripts": {
     "predev": "node ../scripts/copy-maplibre-worker.mjs",
