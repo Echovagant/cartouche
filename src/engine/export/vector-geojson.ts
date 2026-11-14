@@ -82,7 +82,12 @@ export async function vectorToGeoJson(
   const res = await gdal.ogr2ogr(args);
   if (!res.ok) {
     rmSync(outDir, { recursive: true, force: true });
-    throw new VectorConvertError(`矢量转 GeoJSON 失败：${options.path}`, res.stderr);
+    // .json 的失败要单独说人话：不是所有 .json 都是 GeoJSON，
+    // 工具自己的 project.json 就不是 —— 不提示的话用户会以为是转换器坏了。
+    const hint = options.path.toLowerCase().endsWith('.json')
+      ? '（不是所有 .json 都是 GeoJSON：只有带要素几何的 FeatureCollection 才能当图层加载）'
+      : '';
+    throw new VectorConvertError(`矢量转 GeoJSON 失败：${options.path}${hint}`, res.stderr);
   }
   if (!existsSync(out)) {
     rmSync(outDir, { recursive: true, force: true });

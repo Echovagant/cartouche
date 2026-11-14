@@ -17,7 +17,7 @@
  */
 import { test, before, after, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -211,6 +211,24 @@ describe('代号全链路（folder-N）', () => {
       body: JSON.stringify({ handle: 'folder-999', create: true }),
     });
     assert.notEqual(put.status, 200, '死代号不该静默成功');
+  });
+
+  test('文件列表不出现点开头条目（.cartouche 不能被当成图层）', async () => {
+    // 2026-11-14 实测事故：.cartouche/project.json 出现在加载列表里，
+    // 用户点「加载」后清单被当矢量去转，失败还污染了项目清单。
+    // 工具目录是隐藏语义，这里钉死它不许再出现在列表里。
+    await mkdir(join(handleDir, '.cartouche'), { recursive: true });
+    await writeFile(join(handleDir, '.cartouche', 'project.json'), '{}', 'utf8');
+
+    const res = await fetch(`${base}/api/fs/list?root=folder-1`);
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(Array.isArray(body.entries), true);
+    assert.equal(
+      body.entries.some((n) => String(n).startsWith('.')),
+      false,
+      `列表里出现了点开头条目：${JSON.stringify(body.entries).slice(0, 200)}`,
+    );
   });
 });
 

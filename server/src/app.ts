@@ -1689,7 +1689,12 @@ function foldCasePath(p: string): string {
           if (req.method === 'GET' && url.pathname === '/api/fs/list') {
             const p = url.searchParams.get('path') ?? '';
             const s = storeFor(url.searchParams.get('root'), p);
-            json(200, { entries: await s.store.list(s.relative) });
+            // 点开头的条目不进加载列表：`.cartouche/` 是工具自己的状态目录，
+            // 把它列出来，用户就会把 project.json 当图层加载（2026-11-14 实测事故：
+            // 清单被当矢量去转，失败报错还污染了项目清单）。这不是文件管理器，
+            // 是数据加载器 —— 系统文件/工具目录没有出现在这里的理由。
+            const entries = (await s.store.list(s.relative)).filter((name) => !name.startsWith('.'));
+            json(200, { entries });
             return;
           }
           if (req.method === 'POST') {
