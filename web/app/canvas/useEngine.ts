@@ -30,9 +30,7 @@ import type {
   OpPreview,
   RasterGrid,
 } from './types';
-
-/** 引擎服务地址；next.config.mjs 已通过 env 注入，静态导出后仍是硬编码值 */
-export const ENGINE_BASE = process.env.NEXT_PUBLIC_ENGINE_BASE_URL ?? 'http://127.0.0.1:8787';
+import { ENGINE_BASE } from '../engine-base';
 
 export interface EngineInfo {
   readonly ok: boolean;

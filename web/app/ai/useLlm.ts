@@ -15,9 +15,7 @@
  */
 import { useCallback, useState } from 'react';
 import { classifyPlanFailure, type PlanFailure } from './failures';
-
-/** 引擎服务地址；next.config.mjs 已通过 env 注入，静态导出后仍是硬编码值 */
-export const ENGINE_BASE = process.env.NEXT_PUBLIC_ENGINE_BASE_URL ?? 'http://127.0.0.1:8787';
+import { ENGINE_BASE } from '../engine-base';
 
 /** 密钥来源：none = 还没配；env = 启动脚本注入；session = 这次会话里粘贴的 */
 export type LlmSource = 'none' | 'env' | 'session';

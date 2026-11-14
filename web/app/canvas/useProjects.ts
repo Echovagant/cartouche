@@ -18,7 +18,7 @@
  */
 
 import { useCallback, useEffect, useState } from 'react';
-import { ENGINE_BASE } from './useEngine';
+import { ENGINE_BASE } from '../engine-base';
 import type { ProjectManifest, ProjectOutput, ProjectSummary, WorkspaceRoot } from './types';
 
 export type { ProjectManifest, ProjectOutput, ProjectSummary, WorkspaceRoot } from './types';
