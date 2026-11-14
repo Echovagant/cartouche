@@ -1023,48 +1023,54 @@ export default function CanvasWorkbench() {
 
             {projectRef ? (
               <>
-                <Toolbar
-                  onExportPdf={() => {
-                    void handleExportPdf();
-                  }}
-                  onCompatReport={() => {
-                    void handleCompatReport();
-                  }}
-                  exporting={engine.isPending('export')}
-                  reporting={engine.isPending('report')}
-                  canReport={Boolean(activeLayer)}
-                  health={engine.health.status}
-                  onReloadHealth={engine.reloadHealth}
-                  stretch={stretch}
-                  onStretchChange={setStretch}
-                  hasRaster={layers.some((l) => l.kind === 'raster')}
-                  onOpenAi={openAiWorkbench}
-                  aiBlockedReason={aiEntry.enabled ? '' : aiEntry.reason}
-                />
-                <EditToolbar
-                  tool={editTools.tool}
-                  onToolChange={editTools.setTool}
-                  blockedByTool={editTools.blockedByTool}
-                  color={editColor}
-                  onColorChange={setEditColor}
-                  brushWidth={brushWidth}
-                  onBrushWidthChange={setBrushWidth}
-                  hasBox={editTools.hasBox}
-                  onBoxAction={(kind) => {
-                    handleBoxAction(kind);
-                  }}
-                  levels={levels}
-                  onLevelsChange={setLevels}
-                  onPreviewLevels={() => {
-                    handlePreviewLevels();
-                  }}
-                  busy={
-                    engine.isPending('preview') ||
-                    engine.isPending('execute') ||
-                    (confirmState?.previewing ?? false) ||
-                    (confirmState?.executing ?? false)
-                  }
-                />
+                {/* 两组工具条合成**一行**：交差动作 + 改图工具 + 状态，
+                    画布高度是干活的地盘，功能栏越薄越好（用户裁定 2026-11-14） */}
+                <div className="flex flex-wrap items-center gap-2 border-b border-studio-line bg-studio-2/60 px-4 py-1.5">
+                  <Toolbar
+                    inline
+                    onExportPdf={() => {
+                      void handleExportPdf();
+                    }}
+                    onCompatReport={() => {
+                      void handleCompatReport();
+                    }}
+                    exporting={engine.isPending('export')}
+                    reporting={engine.isPending('report')}
+                    canReport={Boolean(activeLayer)}
+                    health={engine.health.status}
+                    onReloadHealth={engine.reloadHealth}
+                    stretch={stretch}
+                    onStretchChange={setStretch}
+                    hasRaster={layers.some((l) => l.kind === 'raster')}
+                    onOpenAi={openAiWorkbench}
+                    aiBlockedReason={aiEntry.enabled ? '' : aiEntry.reason}
+                  />
+                  <EditToolbar
+                    inline
+                    tool={editTools.tool}
+                    onToolChange={editTools.setTool}
+                    blockedByTool={editTools.blockedByTool}
+                    color={editColor}
+                    onColorChange={setEditColor}
+                    brushWidth={brushWidth}
+                    onBrushWidthChange={setBrushWidth}
+                    hasBox={editTools.hasBox}
+                    onBoxAction={(kind) => {
+                      handleBoxAction(kind);
+                    }}
+                    levels={levels}
+                    onLevelsChange={setLevels}
+                    onPreviewLevels={() => {
+                      handlePreviewLevels();
+                    }}
+                    busy={
+                      engine.isPending('preview') ||
+                      engine.isPending('execute') ||
+                      (confirmState?.previewing ?? false) ||
+                      (confirmState?.executing ?? false)
+                    }
+                  />
+                </div>
                 <div className="relative min-h-0 flex-1 p-3">
                   <div
                     ref={stageRef}

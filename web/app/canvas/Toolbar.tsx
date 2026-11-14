@@ -38,6 +38,11 @@ export interface ToolbarProps {
   onOpenAi: () => void;
   /** 为什么现在点不了（空 = 可以点） */
   aiBlockedReason: string;
+  /**
+   * 内嵌形态：去掉自己的条状外壳（边框/底色/内边距），
+   * 让两组工具条合成**一行**。外壳由外层容器统一出。
+   */
+  inline?: boolean;
 }
 
 const HEALTH_TEXT: Record<HealthStatus, string> = {
@@ -91,6 +96,7 @@ export default function Toolbar({
   hasRaster,
   onOpenAi,
   aiBlockedReason,
+  inline = false,
 }: ToolbarProps) {
   const exportDisabled = exporting || health !== 'ready';
   const reportDisabled = reporting || !canReport || health !== 'ready';
@@ -132,7 +138,13 @@ export default function Toolbar({
   };
 
   return (
-    <div className="flex items-center gap-2 border-b border-studio-line bg-studio-2/60 px-4 py-2.5">
+    <div
+      className={
+        inline
+          ? 'contents'
+          : 'flex items-center gap-2 border-b border-studio-line bg-studio-2/60 px-4 py-2.5'
+      }
+    >
       {/* 工具按钮**不带动画**：这是干活的地方，按钮就是按钮（用户裁定，2026-11-14） */}
       <button
         type="button"
