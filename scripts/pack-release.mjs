@@ -440,6 +440,8 @@ async function main() {
     'web/fonts/geist.woff2',
     'web/fonts/geist-mono.woff2',
     'test/helpers/listen-safe.mjs',
+    'web/out/NOTICE',
+    'web/out/LICENSE',
   ];
   const have = new Set(entries.map((e) => e.name));
   const missing = required.filter((r) => !have.has(r));
@@ -447,7 +449,7 @@ async function main() {
     console.error(`[pack] 拒绝出包：包里缺少 ${missing.length} 个必需文件`);
     for (const m of missing) console.error(`        ${m}`);
     console.error(
-      '        这些文件是引擎能跑起来的前提。\n' +
+      '        这些文件是引擎能跑起来、分发义务能兑现的前提。\n' +
         '        多半是 SKIP_DIR / INCLUDE 的规则把它们漏掉了（见 shouldSkip 的说明）。',
     );
     process.exitCode = 1;
