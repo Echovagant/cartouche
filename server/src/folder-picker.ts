@@ -13,14 +13,44 @@
  * 但这个工具是**跑在用户自己电脑上的本机服务**（127.0.0.1:8787）——
  * 让它弹一个 Windows 原生的文件夹选择框，是最合身也最省事的做法。
  *
- * ## 用哪个对话框（都实测过）
+ * ## 用哪个对话框（2026-11-15 全部实测过，别凭记忆改）
  *
- * - ✅ `.NET FolderBrowserDialog`（WinForms）—— **本实现用的**。
- *   弹出来就是资源管理器里那个「选择文件夹」框：左侧导航树、右上角
- *   「新建文件夹」、底部「选择文件夹 / 取消」。实测：能创建、能弹、能拿到路径。
+ * 目标是「资源管理器里那个现代对话框」：地址栏、面包屑、搜索框都在，
+ * 跟 VS Code / Chrome 的文件选择器长得一样。
+ *
+ * - ✅ **WinForms `OpenFileDialog` + `ValidateNames = false`** —— **本实现用的**。
+ *   把对话框切到「选文件夹」模式：路径从对话框自己的编辑框读回来，
+ *   实测能拿到绝对路径（`C:\Users\<用户名>\Documents`）。
+ * - ❌ **手写 COM `IFileOpenDialog`** —— 实测**在这台机器上根本创建不出来**：
+ *   `CoCreateInstance` 返回 `E_NOINTERFACE (0x80004002)`，
+ *   `CLSID_FileOpenDialog` **不实现 `IID_IFileOpenDialog`**，只实现 `IID_IFileDialog`。
+ *   （`IID_IUnknown` / `IID_IFileDialog` 都查得到，只有 `IID_IFileOpenDialog` 查不到。）
+ *   于是 `dialog` 是 null，下一行就 NullReferenceException，
+ *   引擎把它当成「用户取消」→ **前端什么都不显示，用户只看到「点了没反应」**。
+ *   顺带一提：那段代码的 vtable 也漏了 `GetFileName`（第 13 格），
+ *   导致 `SetTitle` 之后的每个方法都错位一格；`IShellItem.GetDisplayName`
+ *   还按 `out string` 封送，参数形状也不对。三处都得改，不是改一处就行的。
+ * - ❌ **`IShellItem::GetDisplayName` 这台机器上是坏的** —— 实测对任何 shell item
+ *   （连 `SHCreateItemFromParsingName("C:\Windows")` 拿到的普通项）都返回
+ *   `RPC_E_INVALID_REFERENCE (0x800401E5)`，走裸 vtable 直接访问冲突。
+ *   而同一个进程里 `SHGetKnownFolderPath`（PWSTR* 出参）完全正常，
+ *   所以坏的不是出参封送，是**这台机器上的 shell item 这一层**。
+ *   结论：**路径不能从 `IShellItem` 取**，只能从对话框自己的编辑框取。
  * - ❌ `Shell.Application` 的 `BrowseForFolder` —— 实测在 PowerShell 5.1 下
  *   **调不起来**（New-Object 成功，但调用时进程挂死/失败）。
  * - ❌ `UseDescriptionForTitle` —— 本机的 .NET 版本没有这个属性，设了会直接报错。
+ *
+ * ## 两个必须记住的坑
+ *
+ * 1. **C# 源码里不能有中文。** `Add-Type` 把源码写成临时 .cs 文件，
+ *    `csc` 在没有 BOM 时按**系统 ANSI 代码页**读它 —— 中文会被拆成乱码，
+ *    乱码里可能出现让编译器误判的字节，直接**编译失败**（实测报
+ *    「类、结构或接口成员声明中的标记"catch"无效」这种看不懂的错）。
+ *    所以本文件里的 C# 一律 ASCII；中文标题走**环境变量**传进去（UTF-16，无损）。
+ * 2. **对话框会被浏览器窗口压住。** 引擎是隐藏启动的独立进程，
+ *    新弹的窗口默认不一定抢到前台，用户就只看到「点了没反应」。
+ *    解法：把**点击那一刻的前台窗口**（就是用户的浏览器）当作对话框的 owner，
+ *    对话框就成了它的模态子窗口，必然浮在它上面。实测前台窗口就是对话框本身。
  *
  * ## 隐私：不把绝对路径交给前端
  *
@@ -98,94 +128,94 @@ function saveHandles(): void {
 /**
  * 生成弹文件夹选择框的 PowerShell 脚本。
  *
- * ⚠️ 输出编码：脚本里 `chcp 65001` + `[Console]::OutputEncoding`，
- * 否则中文路径经过 GBK 解码会变成乱码 —— 路径乱了就选错目录。
+ * ⚠️ **整个脚本必须只有 ASCII**（包括注释）：
+ * 脚本里有 C#（`Add-Type`），而 `csc` 读没有 BOM 的源码时按系统 ANSI 代码页解码 ——
+ * 中文会变成乱码，乱码里的字节可能让编译器报错（实测直接编译失败）；
+ * 同样的道理，PowerShell 自己读中文时也可能把行尾吃掉。
+ * 中文标题与提示语走**环境变量**（`CARTOUCHE_PICK_TITLE` / `CARTOUCHE_PICK_HINT`），
+ * 那是 UTF-16，不会有这个问题。
+ *
+ * 界面用 WinForms 的 `OpenFileDialog`，靠 `ValidateNames = false` +
+ * `CheckFileExists = false` 切到「选文件夹」模式：弹出来是资源管理器那套
+ * 现代界面（地址栏 / 面包屑 / 搜索框），路径从对话框自己的编辑框读回来。
+ *
+ * ⚠️ 别改回手写 COM `IFileOpenDialog`：实测这台机器上 `CoCreateInstance`
+ * 返回 `E_NOINTERFACE`，对话框根本创建不出来（详见文件头的实测记录）。
  */
 export function buildFolderPickerScript(): string {
-  // ⚠️ 2026-11-15 裁定：不用 .NET FolderBrowserDialog（旧树形界面，用户说"廉价"），
-  // 改用 Windows 原生 IFileOpenDialog COM —— 与 VS Code / Chrome 文件选择器完全相同的
-  // 现代界面（有地址栏、快速访问、搜索框）。通过 Add-Type 加载 C# 代码调用 COM。
-  // 对话框以非模态方式弹出（Show(IntPtr.Zero)），独立于引擎进程窗口，出现在前台。
-  const cs = [
+  return [
+    "$ErrorActionPreference = 'Stop'",
+    'Add-Type -AssemblyName System.Windows.Forms',
+    "Add-Type -TypeDefinition @'",
     'using System;',
     'using System.Runtime.InteropServices;',
-    'public class ModernFolderPicker {',
-    '  [DllImport("ole32.dll")]',
-    '  static extern int CoCreateInstance(ref Guid clsid, IntPtr pUnkOuter, uint dwClsContext, ref Guid riid, [MarshalAs(UnmanagedType.Interface)] out IFileOpenDialog ppv);',
-    '  [ComImport, Guid("DC1C5A9C-E88A-4dde-A5A1-60F82A20AEF7")]',
-    '  class FileOpenDialogCOM { }',
-    '  [ComImport, Guid("D57C7288-D4AD-4768-BE02-9D96953287B4"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]',
-    '  interface IFileOpenDialog {',
-    '    [PreserveSig] int Show(IntPtr hwndOwner);',
-    '    [PreserveSig] int SetFileTypes(uint c, IntPtr p);',
-    '    [PreserveSig] int SetFileTypeIndex(uint i);',
-    '    [PreserveSig] int GetFileTypeIndex(out uint i);',
-    '    [PreserveSig] int Advise(IntPtr f, out uint c);',
-    '    [PreserveSig] int Unadvise(uint c);',
-    '    [PreserveSig] int SetOptions(uint o);',
-    '    [PreserveSig] int GetOptions(out uint o);',
-    '    [PreserveSig] int SetDefaultFolder(IntPtr i);',
-    '    [PreserveSig] int SetFolder(IntPtr i);',
-    '    [PreserveSig] int GetFolder(out IntPtr i);',
-    '    [PreserveSig] int GetCurrentSelection(IntPtr i);',
-    '    [PreserveSig] int SetFileName([MarshalAs(UnmanagedType.LPWStr)] string n);',
-    '    [PreserveSig] int SetTitle([MarshalAs(UnmanagedType.LPWStr)] string t);',
-    '    [PreserveSig] int SetOkButtonLabel([MarshalAs(UnmanagedType.LPWStr)] string t);',
-    '    [PreserveSig] int SetFileNameLabel([MarshalAs(UnmanagedType.LPWStr)] string t);',
-    '    [PreserveSig] int GetResult(out IntPtr i);',
-    '    [PreserveSig] int AddPlace(IntPtr i, int f);',
-    '    [PreserveSig] int SetNavigationRoot(IntPtr i);',
-    '  }',
-    '  [ComImport, Guid("43826D1E-E718-42EE-BC55-A1E261C37BFE"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]',
-    '  interface IShellItem {',
-    '    [PreserveSig] int GetDisplayName(uint n, [MarshalAs(UnmanagedType.LPWStr)] out string p);',
-    '  }',
-    '  public static string Pick(string title) {',
-    '    var clsid = new Guid("DC1C5A9C-E88A-4dde-A5A1-60F82A20AEF7");',
-    '    var iid = new Guid("D57C7288-D4AD-4768-BE02-9D96953287B4");',
-    '    IFileOpenDialog dialog;',
-    '    CoCreateInstance(ref clsid, IntPtr.Zero, 1, ref iid, out dialog);',
-    '    dialog.SetTitle(title);',
-    '    dialog.SetOptions(0x60);',
-    '    // 对话框可能被浏览器窗口压住（引擎进程是隐藏启动的）——',
-    '    // 弹出前先取当前前台窗口的线程并 AttachThreadInput，把对话框强制带到前台。',
-    '    // 这是 Windows 弹窗被"吞"的经典修复方式。',
-    '    var fg = GetForegroundWindow();',
-    '    var fgThread = GetWindowThreadProcessId(fg, IntPtr.Zero);',
-    '    var myThread = GetCurrentThreadId();',
-    '    AttachThreadInput(myThread, fgThread, true);',
-    '    SetForegroundWindow(fg);',
-    '    AttachThreadInput(myThread, fgThread, false);',
-    '    if (dialog.Show(IntPtr.Zero) != 0) return null;',
-    '    IntPtr ppsi;',
-    '    dialog.GetResult(out ppsi);',
-    '    var item = (IShellItem)Marshal.GetObjectForIUnknown(ppsi);',
-    '    string path;',
-    '    item.GetDisplayName(0x80058000, out path);',
-    '    return path;',
-    '  }',
-    '  [DllImport("user32.dll")]',
-    '  static extern IntPtr GetForegroundWindow();',
-    '  [DllImport("user32.dll")]',
-    '  static extern uint GetWindowThreadProcessId(IntPtr hWnd, IntPtr ProcessId);',
-    '  [DllImport("kernel32.dll")]',
-    '  static extern uint GetCurrentThreadId();',
-    '  [DllImport("user32.dll")]',
-    '  static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);',
-    '  [DllImport("user32.dll")]',
-    '  static extern bool SetForegroundWindow(IntPtr hWnd);',
+    '',
+    'public class CartouchePickerOwner',
+    '{',
+    '    [DllImport("user32.dll")]',
+    '    public static extern IntPtr GetForegroundWindow();',
+    '',
+    '    // IWin32Window only needs a Handle property, so the dialog can be owned',
+    '    // by any existing window (the browser the user just clicked in).',
+    '    public class OwnerWindow : System.Windows.Forms.IWin32Window',
+    '    {',
+    '        private readonly IntPtr _handle;',
+    '        public OwnerWindow(IntPtr handle) { _handle = handle; }',
+    '        public IntPtr Handle { get { return _handle; } }',
+    '    }',
     '}',
-  ].join('\n');
-
-  return [
-    "$cs = @'",
-    cs,
-    "'@",
-    'Add-Type -TypeDefinition $cs',
-    'chcp 65001 > $null',
+    "'@ -ReferencedAssemblies System.Windows.Forms",
+    '',
+    // 标题与提示语从环境变量来（UTF-16），不写进源码（源码必须是 ASCII）
+    "$title = $env:CARTOUCHE_PICK_TITLE",
+    "if (-not $title) { $title = 'Pick a folder' }",
+    "$hint = $env:CARTOUCHE_PICK_HINT",
+    "if (-not $hint) { $hint = 'choose this folder' }",
+    '',
+    '$dlg = New-Object System.Windows.Forms.OpenFileDialog',
+    '$dlg.Title = $title',
+    // ValidateNames=false + CheckFileExists=false = 「选文件夹」模式：
+    // 可以停在文件夹上直接确定，路径从编辑框回读。
+    '$dlg.ValidateNames = $false',
+    '$dlg.CheckFileExists = $false',
+    '$dlg.CheckPathExists = $true',
+    '$dlg.Multiselect = $false',
+    '$dlg.FileName = $hint',
+    '$dlg.RestoreDirectory = $true',
+    '',
+    '# Own the dialog by the window that was foreground when the user clicked',
+    '# (the browser). Then it is a modal child of that window, so it shows up',
+    '# on top of it instead of being buried behind every other window.',
+    '$owner = [CartouchePickerOwner]::GetForegroundWindow()',
+    'try {',
+    '  if ($owner -ne [IntPtr]::Zero) {',
+    '    $r = $dlg.ShowDialog([CartouchePickerOwner+OwnerWindow]::new($owner))',
+    '  } else {',
+    '    $r = $dlg.ShowDialog()',
+    '  }',
+    '} finally {',
+    '  $dlg.Dispose()',
+    '}',
+    '',
+    '# Exit codes: 0 = a folder was picked; 3 = the user closed the dialog',
+    '# (not an error); anything else means the script itself broke and PowerShell',
+    '# exits with 1 plus a message on stderr - the engine must report that.',
+    'if ($r -ne [System.Windows.Forms.DialogResult]::OK) { exit 3 }',
+    '',
+    '$full = $dlg.FileName',
+    'if (-not $full) { exit 3 }',
+    '',
+    '# The user picked a folder in the list -> that is the path.',
+    '# The user typed a name instead -> the folder they are standing in is it.',
+    'if (Test-Path -LiteralPath $full -PathType Container) {',
+    '  $path = $full',
+    '} else {',
+    '  $path = [System.IO.Path]::GetDirectoryName($full)',
+    '}',
+    'if (-not $path) { exit 3 }',
+    '',
     '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8',
-    '$r = [ModernFolderPicker]::Pick("选一个放图件的文件夹")',
-    'if ($r) { [Console]::Out.Write($r) } else { exit 1 }',
+    '[Console]::Out.Write($path)',
     'exit 0',
   ].join('\n');
 }
@@ -211,6 +241,41 @@ export function isFolderPickerSupported(platform: string = process.platform): bo
 }
 
 /**
+ * 对话框脚本退出码 → 结果。
+ *
+ * ⚠️ 这条区分是实测换来的：早期版本把**所有**非 0 退出码都当成「用户取消」，
+ * 结果 PowerShell 自己报错（连 `//` 不是 PowerShell 注释这种低级错）被吞成
+ * 「用户取消」，用户点按钮只看到「点了没反应」，没有任何线索。
+ * 现在：只有退出码 3 是取消；别的都是出错，**必须把原因带出去**。
+ */
+export type PickerExit =
+  | { kind: 'cancelled' }
+  | { kind: 'failed'; message: string };
+
+/**
+ * 解释对话框脚本的退出码。
+ *
+ * @param code   进程退出码（0 = 成功，不走这里）
+ * @param stderr 脚本写到 stderr 的内容
+ */
+export function interpretPickerExit(code: number, stderr: string): PickerExit {
+  if (code === 3) return { kind: 'cancelled' };
+  const lines = stderr
+    .split(/\r?\n/)
+    .map((s) => s.trim())
+    .filter((s) => s !== '');
+  // 取最后几行：PowerShell 的报错是「异常行 + 位置行 + 分类行」，原因在头几行，
+  // 但头几行常带一堆路径噪声；这里留最后 3 行，前端看个大概。
+  const detail = lines.slice(-3).join(' ');
+  return {
+    kind: 'failed',
+    message: detail
+      ? `文件夹选择对话框没能正常打开：${detail}`
+      : `文件夹选择对话框没能正常打开（脚本退出码 ${code}）`,
+  };
+}
+
+/**
  * 弹对话框让用户选一个文件夹，返回**代号**。
  *
  * @returns {Promise<{ handle: string; label: string } | null>}
@@ -218,28 +283,43 @@ export function isFolderPickerSupported(platform: string = process.platform): bo
  */
 export async function pickFolder(
   title = '选一个放图件的文件夹',
+  hint = '选择此文件夹',
 ): Promise<{ handle: string; label: string } | null> {
   if (!isFolderPickerSupported()) {
     throw new Error('这个系统暂时不支持图形化的文件夹选择，请手动填写路径');
   }
-  const ps = buildFolderPickerScript().replace('选一个放图件的文件夹', title);
+  const ps = buildFolderPickerScript();
   let stdout: string;
   try {
     const r = await execFileAsync(
       'powershell',
       ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-STA', '-Command', ps],
-      // ⚠️ windowsHide 不能为 true：引擎进程本身是隐藏启动的，
-      //    子进程如果也隐藏，Windows 会把 COM 对话框放到 Z-Order 最底层 ——
-      //    用户看到的是"点击没反应"，实际上对话框被压在了所有窗口后面
-      //    （2026-11-15 实测：设为 false 后对话框正确出现在前台）。
-      { encoding: 'utf8', windowsHide: false, timeout: 600000, maxBuffer: 1024 * 1024 },
+      {
+        encoding: 'utf8',
+        // ⚠️ windowsHide 不能为 true：引擎进程本身是隐藏启动的，
+        //    子进程如果也隐藏，Windows 会把新窗口放到 Z-Order 最底层 ——
+        //    用户看到的是"点击没反应"。
+        windowsHide: false,
+        timeout: 600000,
+        maxBuffer: 1024 * 1024,
+        env: {
+          ...process.env,
+          // 中文走环境变量（UTF-16），不进源码（源码必须是 ASCII）
+          CARTOUCHE_PICK_TITLE: title,
+          CARTOUCHE_PICK_HINT: hint,
+        },
+      },
     );
     stdout = r.stdout;
   } catch (err) {
-    // 用户取消时 PowerShell 退出码 1；那不是错误
-    const code = (err as { code?: number }).code;
-    if (code === 1) return null;
-    throw err;
+    // 退出码可能是数字，也可能是超时被杀时那种非数字值（ETIMEDOUT 之类）——
+    // 统一归成 -1，别让消息里出现「退出码 NaN」。
+    const raw = (err as { code?: unknown }).code;
+    const code = typeof raw === 'number' ? raw : -1;
+    const stderr = String((err as { stderr?: string }).stderr ?? '');
+    const outcome = interpretPickerExit(code, stderr);
+    if (outcome.kind === 'cancelled') return null;
+    throw new Error(outcome.message);
   }
   const path = parseFolderPickerOutput(stdout);
   if (!path) return null;
