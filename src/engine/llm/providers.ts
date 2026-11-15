@@ -120,7 +120,7 @@ export const LLM_PROVIDERS: readonly LlmProviderEntry[] = [
     effortSupported: true,
     effortLevels: MINIMAX_EFFORT_LEVELS,
     fallbackModels: MINIMAX_MODELS,
-    note: '与 MiniMax 国际版是两套账号体系，key 不通用。M2.7/M2.5/M2.1/M2 将于 2026-11-18 退役（自动路由到 M3.1 Flash）。',
+    note: '与 MiniMax 国际版是两套账号体系，key 不通用。计费两把 key：M Plan（订阅积分池，minimax.cn/m-plan）与按量 API（积分制）——粘哪把就按哪把扣费，M Plan 可在平台设置里开「额度用完自动扣积分」。M2.7/M2.5/M2.1/M2 将于 2026-11-18 退役。',
   },
   {
     id: 'minimax-intl',
@@ -131,7 +131,7 @@ export const LLM_PROVIDERS: readonly LlmProviderEntry[] = [
     keyPrefixes: ['sk-cp-', 'sk-api-'],
     effortSupported: true,
     fallbackModels: MINIMAX_MODELS,
-    note: '与国内版是两套账号体系，key 不通用。M2.7/M2.5/M2.1/M2 将于 2026-11-18 退役（自动路由到 M3.1 Flash）。',
+    note: '与国内版是两套账号体系，key 不通用。M2.7/M2.5/M2.1/M2 将于 2026-11-18 退役（自动路由到 M3.1 Flash）。计费请看 minimax.io 官方定价页。',
   },
   {
     id: 'glm',
@@ -141,7 +141,7 @@ export const LLM_PROVIDERS: readonly LlmProviderEntry[] = [
     family: 'glm',
     keyPrefixes: [],
     fallbackModels: ['glm-5.3', 'glm-5.3-flash', 'glm-5.3-flashx', 'glm-5.2', 'glm-5.1'],
-    note: '思考开关是布尔型（enable_thinking），不是档位；现役为 5.3 系（含 Flash / FlashX）。',
+    note: '计费两把 key：GLM Coding Plan（订阅积分池，限编程工具）与标准 API Key（按量计费，通用无限制）——粘哪把就按哪把扣费。思考开关是布尔型（enable_thinking），不是档位；现役为 5.3 系。',
   },
   {
     id: 'dashscope',
@@ -161,7 +161,7 @@ export const LLM_PROVIDERS: readonly LlmProviderEntry[] = [
     family: 'ark',
     keyPrefixes: [],
     fallbackModels: ['doubao-seed-2.1-pro', 'doubao-seed-1.8', 'doubao-seed-code'],
-    note: '只接按量计费。Coding Plan 套餐不接：条款限定在 AI 编程工具内使用，且官方只给了 Anthropic 协议路径。思考走 thinking 参数，不是档位。',
+    note: '计费两把 key：Ark Plan（订阅积分池，兼容 Anthropic 协议）与按量计费 API——本项目走 OpenAI 兼容协议，请粘按量计费的 API Key。思考走 thinking 参数，不是档位。',
   },
   {
     id: 'deepseek',
