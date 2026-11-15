@@ -544,6 +544,7 @@ export default function AiWorkbench() {
 
           <ul className="mt-4 space-y-1.5 text-[12px] leading-relaxed text-studio-ink-3">
             <li>· 密钥只在引擎内存里，重启即失效；本页永不回显</li>
+            <li>· 想长期保存：scripts\set-key.ps1 -Provider deepseek（DPAPI 密文存本机，八条接入线都支持）</li>
           </ul>
         </section>
 

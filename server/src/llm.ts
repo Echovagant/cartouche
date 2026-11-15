@@ -79,6 +79,33 @@ function sessionOf(providerId: string): ProviderSession {
   return s;
 }
 
+/**
+ * 每条接入线**持久化密钥**的环境变量名（2026-11-15 多厂商裁定）。
+ *
+ * 约定由 scripts/set-key.ps1 与 scripts/run-engine.ps1 共同遵守：
+ * DPAPI 密文存 %LOCALAPPDATA%\cartouche\keys\<接入线id>.txt，
+ * 启动时按这份表解密注入 <大写ID>_API_KEY。
+ * ollama 不用密钥、custom 的 key 跟着端点走 —— 两家都不在此表（只收会话态）。
+ */
+const PERSISTED_ENV: Readonly<Record<string, string>> = {
+  'minimax-cn': 'MINIMAX_API_KEY',
+  'minimax-intl': 'MINIMAX_INTL_API_KEY',
+  glm: 'GLM_API_KEY',
+  dashscope: 'DASHSCOPE_API_KEY',
+  ark: 'ARK_API_KEY',
+  deepseek: 'DEEPSEEK_API_KEY',
+  moonshot: 'MOONSHOT_API_KEY',
+  siliconflow: 'SILICONFLOW_API_KEY',
+};
+
+/** 从持久化环境变量读这条接入线的密钥（启动脚本注入） */
+function persistedApiKey(providerId: string): string | null {
+  const name = PERSISTED_ENV[providerId];
+  if (!name) return null;
+  const v = process.env[name];
+  return v && v.trim() ? v.trim() : null;
+}
+
 /** 环境变量里的密钥（由启动脚本注入） */
 function envApiKey(): string | null {
   const v = process.env.MINIMAX_API_KEY;
@@ -114,13 +141,14 @@ export function currentApiKey(providerId: string = activeProviderId): string | n
   const s = sessions.get(providerId);
   if (s?.key) return s.key;
   if (providerId === envProviderId()) return envApiKey();
-  return null;
+  return persistedApiKey(providerId);
 }
 
 /** 当前密钥来自哪条路径——只暴露来源，不暴露内容 */
 export function currentKeySource(providerId: string = activeProviderId): KeySource {
   if (sessions.get(providerId)?.key) return 'session';
   if (providerId === envProviderId() && envApiKey()) return 'env';
+  if (persistedApiKey(providerId)) return 'env';
   return 'none';
 }
 
