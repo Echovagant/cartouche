@@ -60,7 +60,7 @@ export async function vectorToGeoJson(
   options: VectorToGeoJsonOptions,
 ): Promise<VectorToGeoJsonResult> {
   const gdal: GdalTools = tools(loc);
-  const { mkdtempSync, readFileSync, rmSync, existsSync } = await import('node:fs');
+  const { mkdtempSync, readFileSync, rmSync, existsSync, statSync } = await import('node:fs');
   const { tmpdir } = await import('node:os');
 
   const outDir = mkdtempSync(join(tmpdir(), 'cartouche-geojson-'));
@@ -93,6 +93,23 @@ export async function vectorToGeoJson(
   if (!existsSync(out)) {
     rmSync(outDir, { recursive: true, force: true });
     throw new VectorConvertError(`转换命令成功但没有产出文件：${options.path}`, res.stderr);
+  }
+
+  // 单次加载的体积闸（2026-11-15 实测：全国山地分布 3 个要素 ≈ 140 MB GeoJSON，
+  // 上一版直接 readFileSync + JSON.parse + 序列化响应，把引擎进程压垮了 ——
+  // 连接直接重置，用户只看到「加载失败」）。转换没问题就不该崩：按字节拦，
+  // 把「为什么」和「怎么办」一起说清楚。数值定在已知事故点（140 MB）之下。
+  const MAX_LOAD_BYTES = 128 * 1024 * 1024;
+  const outBytes = statSync(out).size;
+  if (outBytes > MAX_LOAD_BYTES) {
+    rmSync(outDir, { recursive: true, force: true });
+    throw new VectorConvertError(
+      `这个图层的几何太复杂：转出来有 ${(outBytes / 1048576).toFixed(0)} MB，` +
+        `超过单次加载上限（${MAX_LOAD_BYTES / 1048576} MB）—— 整份读进内存会把引擎压垮。` +
+        `请在 ArcGIS 里先简化（要素 → 简化几何）或裁剪出需要的范围再加载；` +
+        `也可以先用 limit 参数预览前几条确认内容。`,
+      res.stderr,
+    );
   }
 
   const raw = readFileSync(out, 'utf8');
