@@ -54,11 +54,15 @@ test('认 key：Coding Plan 的 `sk-sp-` 认不出来 —— 那种套餐我们�
   // 禁止 API 调用，所以那两条接入线从目录里去掉了。
   // 它们的 key 也就**不该**被认成一条可用接入线：认出来却没有对应的线可选，更糊涂。
   assert.equal(detectProviderByKey('sk-sp-abcdef123456'), null, '认不出来才诚实');
-  // 但要在界面上说清楚为什么：理由写进厂商条目的提示里
+  // 但要在界面上说清楚为什么：理由写进厂商条目的提示里。
+  // 两家的订阅套餐各叫各的名字（百炼叫 Coding Plan、方舟叫 Ark Plan），
+  // 但要传达的是同一件事：**订阅套餐不能拿来调 API，请粘按量计费的 key**。
   const dashscope = findProvider('dashscope');
   assert.match(dashscope?.note ?? '', /Coding Plan/);
+  assert.match(dashscope?.note ?? '', /按量/);
   const ark = findProvider('ark');
-  assert.match(ark?.note ?? '', /Coding Plan/);
+  assert.match(ark?.note ?? '', /Ark Plan/);
+  assert.match(ark?.note ?? '', /按量/);
 });
 
 test('认 key：`sk-` 开头认不出是哪一家（太通用）', () => {

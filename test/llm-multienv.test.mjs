@@ -22,7 +22,7 @@ const llm = await import(llmUrl);
 
 describe('多厂商持久化密钥的取钥规则', () => {
   test('给 deepseek 的持久化 key 只对 deepseek 生效', () => {
-    process.env.DEEPSEEK_API_KEY = 'sk-test-deepseek';
+    process.env.DEEPSEEK_API_KEY = 'sk-test-deepseek'; // secret-scan:allow
     try {
       assert.equal(llm.currentKeySource('deepseek'), 'env');
       assert.equal(llm.currentApiKey('deepseek'), 'sk-test-deepseek');
@@ -59,8 +59,8 @@ describe('多厂商持久化密钥的取钥规则', () => {
   });
 
   test('ollama / custom 不在持久化表里', () => {
-    process.env.OLLAMA_API_KEY = 'should-not-count';
-    process.env.CUSTOM_API_KEY = 'should-not-count';
+    process.env.OLLAMA_API_KEY = 'should-not-count'; // secret-scan:allow
+    process.env.CUSTOM_API_KEY = 'should-not-count'; // secret-scan:allow
     try {
       assert.equal(llm.currentKeySource('ollama'), 'none');
       assert.equal(llm.currentKeySource('custom'), 'none');
