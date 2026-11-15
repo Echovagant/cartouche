@@ -79,7 +79,8 @@ export async function vectorToGeoJson(
   //    写反了会把目标当成数据源去打开，报 "Unable to open datasource <目标>"。
   args.push(out, options.path);
 
-  const res = await gdal.ogr2ogr(args);
+  // 大数据（整幅全国级矢量）转换可能远超默认 120 秒：转换给足 10 分钟。
+  const res = await gdal.ogr2ogr(args, { timeoutMs: 600_000 });
   if (!res.ok) {
     rmSync(outDir, { recursive: true, force: true });
     // .json 的失败要单独说人话：不是所有 .json 都是 GeoJSON，

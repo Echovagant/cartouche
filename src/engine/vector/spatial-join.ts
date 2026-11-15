@@ -11,7 +11,7 @@
 import { spatialJoin, toOpData, JOIN_COUNT_FIELD } from '../spatial/index.ts';
 import type { JoinAggregate, SpatialRelation } from '../spatial/index.ts';
 import { probeLayer, readFeatures } from './read.ts';
-import { writeFeatures } from './write.ts';
+import { formatForPath, writeFeatures } from './write.ts';
 import { toRelPathChecked } from './paths.ts';
 import type { FeatureRecord } from './types.ts';
 import type { OpValueResult } from '../ops/executor.ts';
@@ -138,6 +138,23 @@ export async function runVectorSpatialJoin(
       `汇总字段与目标图层已有的列重名：${clashes.join('、')}。` +
         `连接结果没写进去（原数据没动）。给 fieldPrefix 一个前缀，或先改掉目标图层里同名的列。`,
     );
+  }
+
+  // Shapefile 的 DBF 字段名上限是 **10 字节**（UTF-8 编码下中文最多 3 个字）。
+  // 与 vector.addField 的守卫同一件事：前缀 + 汇总字段拼出来的名字超长时，
+  // GDAL 会把列名清洗/丢列，用户只看到一句「写回之后没有找到这一列」
+  // （2026-11-15 真实数据实测：join_县名 11 字节，整列丢失）。在动手前拦下。
+  if (formatForPath(targetRel) === 'shapefile') {
+    const oversized = [...aggregateNames].filter(
+      (n) => Buffer.byteLength(n, 'utf8') > 10,
+    );
+    if (oversized.length > 0) {
+      throw new Error(
+        `shapefile 的字段名上限是 10 字节（UTF-8 编码下中文最多 3 个字）：` +
+          `汇总列「${oversized.join('、')}」超了（前缀 + 字段名拼在一起算）。` +
+          `请把 fieldPrefix 改短，或挑短些的汇总字段（也可以先转成 GeoPackage，那里没有这个限制）。`,
+      );
+    }
   }
 
   const nextFeatures: FeatureRecord[] = targetRead.features.map((f, i) => {
