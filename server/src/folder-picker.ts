@@ -40,6 +40,15 @@
  *   **调不起来**（New-Object 成功，但调用时进程挂死/失败）。
  * - ❌ `UseDescriptionForTitle` —— 本机的 .NET 版本没有这个属性，设了会直接报错。
  *
+ * ## 界面是原生那套，但必须先让子进程 DPI-aware
+ *
+ * 弹出来确实是资源管理器同款的现代对话框（地址栏 / 面包屑 / 搜索框 / DirectUI），
+ * 但它由 `powershell.exe` 这个子进程渲染，而它没有 manifest → 默认 **DPI-unaware**：
+ * 对话框按 96 DPI 画，再由 DWM 按显示器缩放（本机 150%）拉伸位图 → **看着发虚**。
+ * 实测：修复前对话框 `GetDpiForWindow` = 96，窗口 853x533（实际被拉到 1280x800）；
+ * 弹框前调 `SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2)` 之后 = 144，
+ * 由系统按原生分辨率绘制，字和图标都是清楚的。
+ *
  * ## 两个必须记住的坑
  *
  * 1. **C# 源码里不能有中文。** `Add-Type` 把源码写成临时 .cs 文件，
@@ -155,6 +164,23 @@ export function buildFolderPickerScript(): string {
     '    [DllImport("user32.dll")]',
     '    public static extern IntPtr GetForegroundWindow();',
     '',
+    '    // DPI: the child process (powershell.exe) has no manifest, so it starts',
+    '    // DPI-unaware. The shell dialog then renders at 96 DPI and DWM stretches',
+    '    // that bitmap by the monitor scale (150% here) -> visibly blurry.',
+    '    // Opting the process into Per-Monitor V2 before any window exists makes',
+    '    // the dialog render natively at the monitor resolution.',
+    '    [DllImport("user32.dll")]',
+    '    public static extern bool SetProcessDpiAwarenessContext(IntPtr value);',
+    '    [DllImport("user32.dll")]',
+    '    public static extern bool SetProcessDPIAware();',
+    '',
+    '    public static string MakeDpiAware() {',
+    '        // -4 == DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2',
+    '        if (SetProcessDpiAwarenessContext(new IntPtr(-4))) { return "PerMonitorAwareV2"; }',
+    '        if (SetProcessDPIAware()) { return "SystemAware"; }',
+    '        return "unaware";',
+    '    }',
+    '',
     '    // IWin32Window only needs a Handle property, so the dialog can be owned',
     '    // by any existing window (the browser the user just clicked in).',
     '    public class OwnerWindow : System.Windows.Forms.IWin32Window',
@@ -165,6 +191,9 @@ export function buildFolderPickerScript(): string {
     '    }',
     '}',
     "'@ -ReferencedAssemblies System.Windows.Forms",
+    '',
+    // 必须在创建任何窗口之前调用，否则 SetProcessDpiAwarenessContext 会失败
+    '[void][CartouchePickerOwner]::MakeDpiAware()',
     '',
     // 标题与提示语从环境变量来（UTF-16），不写进源码（源码必须是 ASCII）
     "$title = $env:CARTOUCHE_PICK_TITLE",

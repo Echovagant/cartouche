@@ -86,6 +86,17 @@ describe('文件夹选择对话框', () => {
     assert.match(ps, /ShowDialog\(\[/);
   });
 
+  test('弹框前必须先让子进程 DPI-aware，否则在 150% 屏上是拉伸出来的糊图', () => {
+    const ps = buildFolderPickerScript();
+    assert.match(ps, /SetProcessDpiAwarenessContext/, '要调 SetProcessDpiAwarenessContext');
+    assert.match(ps, /MakeDpiAware/);
+    // 必须在创建对话框之前调用：进程一旦创建过窗口，这次调用就永远失败
+    const call = ps.indexOf('MakeDpiAware()');
+    const create = ps.indexOf('New-Object System.Windows.Forms.OpenFileDialog');
+    assert.ok(call > 0 && create > 0, '脚本里要有这两步');
+    assert.ok(call < create, 'DPI 调用必须早于对话框创建');
+  });
+
   test('用户取消必须用独立退出码 3，不能和脚本出错混在一起', () => {
     const ps = buildFolderPickerScript();
     assert.match(ps, /exit 3/);
