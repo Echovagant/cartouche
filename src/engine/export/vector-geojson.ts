@@ -29,6 +29,18 @@ export interface VectorToGeoJsonOptions {
   readonly fields?: readonly string[];
   /** 要素数上限，防止一次性吐太多 */
   readonly limit?: number;
+  /**
+   * 视口裁剪（EPSG:4326 的 [minX, minY, maxX, maxY]）：
+   * 只返回与该范围相交的要素，且几何**裁剪**到范围内（-clipsrc）。
+   *
+   * 给了它，超大图层就能按视口分块加载 —— 128 MB 体积闸拦下的那种文件
+   * 也能以「每次一小块」的方式进画布（2026-11-15 分块加载工程第一阶段）。
+   *
+   * ⚠️ 性能边界（真实数据实测）：正常数据裁剪是毫秒级；但几何病态的数据
+   * （3 个要素 140 MB 那种）裁一次要约 2 分钟（CPU 空转的 GEOS 退化路径）——
+   * 那类数据的根治是预简化金字塔，见分块加载工程的后续阶段。
+   */
+  readonly bbox?: readonly [number, number, number, number];
 }
 
 /**
@@ -112,7 +124,7 @@ export async function vectorToGeoJson(
     const firstLayers = info.layerNames.slice(0, 8);
     for (const layer of firstLayers) {
       const out = join(outDir, `single-${firstLayers.indexOf(layer)}.geojson`);
-      const args: string[] = ['-f', 'GeoJSON'];
+      const args: string[] = ['-f', 'GeoJSON', ...clipArgs];
       if (options.targetCrs) args.push('-t_srs', options.targetCrs);
       if (options.limit !== undefined && options.limit > 0) args.push('-limit', String(options.limit));
       args.push(out, options.path, layer);
@@ -171,13 +183,27 @@ export async function vectorToGeoJson(
   let truncated = false;
   let remaining = options.limit !== undefined && options.limit > 0 ? options.limit : Infinity;
 
+  // 视口裁剪参数（bbox 给了就每层都带）：相交过滤 + 几何裁到范围内，
+  // 超大图层「每次一小块」的引擎侧基础（分块加载工程第一阶段）。
+  const clipArgs: string[] = [];
+  if (options.bbox) {
+    const [minX, minY, maxX, maxY] = options.bbox;
+    clipArgs.push(
+      '-clipsrc',
+      String(minX),
+      String(minY),
+      String(maxX),
+      String(maxY),
+    );
+  }
+
   for (const layer of layers) {
     if (remaining <= 0) {
       truncated = true;
       break;
     }
     const out = join(outDir, `out-${layers.indexOf(layer)}.geojson`);
-    const args: string[] = ['-f', 'GeoJSON'];
+    const args: string[] = ['-f', 'GeoJSON', ...clipArgs];
     if (options.targetCrs) args.push('-t_srs', options.targetCrs);
     // ⚠️ `-select` 只能给**一次**（逗号分隔多个字段）：
     //    重复给 GDAL 会报 `Duplicate argument -select`，多列时整个转换失败。

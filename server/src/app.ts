@@ -899,6 +899,18 @@ function foldCasePath(p: string): string {
           const rel = url.searchParams.get('path') ?? '';
           const root = url.searchParams.get('root');
           const limitParam = url.searchParams.get('limit');
+          // bbox：视口分块加载（EPSG:4326 的 minX,minY,maxX,maxY，逗号分隔）。
+          // 给了就只返回与视口相交且裁剪到视口内的要素 —— 超大图层的引擎侧基础。
+          const bboxParam = url.searchParams.get('bbox');
+          let bbox: [number, number, number, number] | undefined;
+          if (bboxParam) {
+            const nums = bboxParam.split(',').map(Number);
+            if (nums.length !== 4 || nums.some((v) => !Number.isFinite(v))) {
+              json(400, { error: 'bad_request', message: 'bbox 必须是 4 个数字（minX,minY,maxX,maxY）' });
+              return;
+            }
+            bbox = [nums[0]!, nums[1]!, nums[2]!, nums[3]!];
+          }
           const res = await vectorToGeoJson(gdalLoc, {
             path: resolveWorkspacePath(root, rel),
             // ⚠️ 必须显式换算到 4326：ogr2ogr 不给 -t_srs 时**按源 CRS 输出**。
@@ -907,6 +919,7 @@ function foldCasePath(p: string): string {
             //    实测：`-t_srs EPSG:4326` 输出的是 lon/lat 序（x=经度）。
             targetCrs: 'EPSG:4326',
             ...(limitParam ? { limit: Number(limitParam) } : {}),
+            ...(bbox ? { bbox } : {}),
           });
           json(200, res);
         } catch (err) {

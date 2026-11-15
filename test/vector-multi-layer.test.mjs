@@ -82,4 +82,14 @@ describe('多图层容器 → GeoJSON', () => {
     assert.equal(res.featureCount, 1);
     assert.equal(res.note, undefined);
   });
+
+  test('bbox 视口裁剪：范围外的要素不返回（分块加载第一阶段）', async () => {
+    // 夹具的点在 114.5~114.6/38.0 附近；一个完全无关的 bbox 应裁出 0 个要素
+    const away = await vectorToGeoJson(loc, { path: gpkg, bbox: [110, 30, 111, 31] });
+    assert.equal(away.featureCount, 0, '无关视口应当裁出 0 个要素');
+
+    // 覆盖夹具点的视口应全量返回
+    const hit = await vectorToGeoJson(loc, { path: gpkg, bbox: [114, 37, 116, 39] });
+    assert.equal(hit.featureCount, 2, '覆盖视口应返回两层的要素');
+  });
 });
