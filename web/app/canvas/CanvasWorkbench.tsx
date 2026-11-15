@@ -35,6 +35,7 @@ import { Welcome } from './workbench/Welcome';
 import { ProjectSidebar } from './workbench/ProjectSidebar';
 import { SettingsModal } from './workbench/SettingsModal';
 import { QuickOpen } from './workbench/QuickOpen';
+import { AiSidePanel } from './ai/AiSidePanel';
 import { BottomPanel, type PanelTab } from './workbench/BottomPanel';
 import { guessEntryKind } from './types';
 import { pickFolder } from './useProjects';
@@ -49,8 +50,6 @@ import { useEditTools } from './useEditTools';
 import { useEngine, type CompatReportPayload } from './useEngine';
 import { useProjects } from './useProjects';
 import {
-  aiEntryBasePath,
-  buildAiEntryHref,
   describeAiEntry,
   type AiEntryContext,
 } from '../ai/entryContext';
@@ -716,16 +715,19 @@ export default function CanvasWorkbench() {
 
   const aiEntry = useMemo(() => describeAiEntry(aiEntryContext), [aiEntryContext]);
 
-  /** 跳过去：用整页跳转而不是弹层——AI 工作台是独立页面，状态不共享 */
-  const openAiWorkbench = useCallback(() => {
+  /** AI 改图面板：不再跳页——问答与改图都在画布里完成，地图当场刷新 */
+  const [aiPanelOpen, setAiPanelOpen] = useState(false);
+  const openAiPanel = useCallback(() => {
     if (!aiEntry.enabled) return;
-    // 静态产物里 ai.html 与 canvas.html 同目录；next dev 不认 .html 后缀
-    const href = buildAiEntryHref(
-      aiEntryContext,
-      aiEntryBasePath(process.env.NODE_ENV === 'development'),
-    );
-    window.location.href = href;
-  }, [aiEntry.enabled, aiEntryContext]);
+    setAiPanelOpen(true);
+    setSidebarCollapsed(false);
+  }, [aiEntry.enabled]);
+
+  /** AI 改图落盘后：刷新地图 + 重拉图层（用户当场看到图变了） */
+  const refreshAfterAi = useCallback(async () => {
+    await mapHandleRef.current?.refresh();
+    await loadLayerData(layers);
+  }, [loadLayerData, layers]);
 
   const fetchCompatReport = engine.fetchCompatReport;
   const handleCompatReport = useCallback(async () => {
@@ -936,7 +938,7 @@ export default function CanvasWorkbench() {
             activeView={sidebarCollapsed ? null : view}
             onViewChange={handleViewChange}
             projectOpen={Boolean(projectRef)}
-            onOpenAi={openAiWorkbench}
+            onOpenAi={() => setAiPanelOpen((prev) => !prev)}
             aiEnabled={aiEntry.enabled}
             aiBlockedReason={aiEntry.reason}
             onOpenSettings={() => setSettingsOpen(true)}
@@ -1086,7 +1088,7 @@ export default function CanvasWorkbench() {
                     stretch={stretch}
                     onStretchChange={setStretch}
                     hasRaster={layers.some((l) => l.kind === 'raster')}
-                    onOpenAi={openAiWorkbench}
+                    onOpenAi={() => setAiPanelOpen(true)}
                     aiBlockedReason={aiEntry.enabled ? '' : aiEntry.reason}
                   />
                   <EditToolbar
@@ -1190,6 +1192,20 @@ export default function CanvasWorkbench() {
               </div>
             )}
           </main>
+
+          {/* ── AI 改图面板：问答、计划、确认、地图刷新都在画布里完成 ── */}
+          {aiPanelOpen ? (
+            <aside className="w-[380px] shrink-0 border-l border-studio-line bg-studio-2/70">
+              <AiSidePanel
+                projectRoot={projectRef ? (projectRef.path ?? projectRef.handle ?? null) : null}
+                activeLayerName={activeLayer?.name ?? null}
+                onClose={() => setAiPanelOpen(false)}
+                onExecuted={() => {
+                  void refreshAfterAi();
+                }}
+              />
+            </aside>
+          ) : null}
         </div>
 
         <StatusBar
