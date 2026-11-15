@@ -215,6 +215,13 @@ export interface MapCanvasProps {
   /** 点击地图上的要素时回调 */
   onSelectFeatures: (features: SelectedFeature[]) => void;
   /**
+   * 视口变化（moveend）派发：把当前 EPSG:4326 bbox 交给上层。
+   *
+   * 分块（chunked）图层的"按视口重裁补数据"由上层决定做不做 —— 这里只管
+   * 每次视口停下来时喊一声，防抖与包含判定都在上层。
+   */
+  onViewportChange?: (bbox: readonly [number, number, number, number]) => void;
+  /**
    * 当前编辑工具。
    *
    * 不是「查看」时，地图的拖拽手势交给工具（画笔 / 框选），
@@ -326,6 +333,7 @@ export default function MapCanvas({
   initialView,
   preserveViewLayerIds,
   onSelectFeatures,
+  onViewportChange,
   editTool = 'view',
   onEditGesture,
   editPreview = null,
@@ -355,6 +363,9 @@ export default function MapCanvas({
   sheetMetaRef.current = sheetMeta;
   const onSelectRef = useRef(onSelectFeatures);
   onSelectRef.current = onSelectFeatures;
+  /** 视口变化派发（moveend）：分块图层的父层在这里补拉数据，ref 挡住回调重建 */
+  const onViewportChangeRef = useRef(onViewportChange);
+  onViewportChangeRef.current = onViewportChange;
 
   /**
    * 编辑相关的最新值。
@@ -384,7 +395,6 @@ export default function MapCanvas({
     const bounds = map.getBounds();
     return [bounds.getWest(), bounds.getSouth(), bounds.getEast(), bounds.getNorth()];
   }, []);
-
   /** 图面要素的图例：图层名 + 色块 */
   const legend = useCallback((): SheetLegendItem[] => {
     return layersRef.current
@@ -729,6 +739,8 @@ export default function MapCanvas({
       refreshRaster();
       syncOverlaySize();
       paintOverlay();
+      // 视口 bbox 派发给上层：分块（chunked）图层的重裁由它决定要不要做
+      onViewportChangeRef.current?.(currentBBox(map));
     };
     map.on('moveend', onMoveEnd);
 
@@ -897,6 +909,9 @@ export default function MapCanvas({
     for (const [layerId, data] of vectorData) {
       if (fittedRef.current.has(layerId)) continue;
       if (shouldKeepView(layerId)) continue;
+      // 分块（chunked）层：手里这份只是视口裁剪出的一小块，按它 fit 等于没动；
+      // 视野交给 extents effect 按全量范围定 —— 别在这里抢先 fitted 掉
+      if (layersRef.current.find((layer) => layer.id === layerId)?.chunked) continue;
       const bounds = geoJsonBounds(data);
       if (!bounds) continue;
       const safe = clampBounds(bounds);

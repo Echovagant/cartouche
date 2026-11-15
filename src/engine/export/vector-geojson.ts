@@ -41,6 +41,14 @@ export interface VectorToGeoJsonOptions {
    * 那类数据的根治是预简化金字塔，见分块加载工程的后续阶段。
    */
   readonly bbox?: readonly [number, number, number, number];
+  /**
+   * 图层选择器：只转换这些图层（多图层容器用）。
+   *
+   * 不给 = 维持原语义（≤20 层全合并 / >20 层装第一个有内容的）。
+   * 给了就按交集转换（保持文件内顺序）；选了文件里不存在的层名 →
+   * **整体报错**而不是静默跳过 —— 用户明确点名的东西落了空，必须说出来。
+   */
+  readonly layers?: readonly string[];
 }
 
 /**
@@ -59,6 +67,8 @@ export interface VectorToGeoJsonResult {
   /** 多图层源的加载说明（只装了第一层、有几层没装之类） */
   readonly note?: string;
   readonly skippedLayers?: readonly string[];
+  /** 实际装进来的图层名（多图层源或明确选层时才有） */
+  readonly layers?: readonly string[];
 }
 
 /**
@@ -69,10 +79,18 @@ export interface VectorToGeoJsonResult {
  */
 export class VectorConvertError extends Error {
   readonly stderr: string;
-  constructor(message: string, stderr: string) {
+  /**
+   * 机器可读的失败原因（可选）。
+   *
+   * 'payload-too-large' = 撞了体积闸：前端据此**自动降级**成视口分块重试，
+   * 而不是把"去 ArcGIS 里简化几何"这句给人看的建议原样甩给用户就完事。
+   */
+  readonly code?: string;
+  constructor(message: string, stderr: string, code?: string) {
     super(message);
     this.name = 'VectorConvertError';
     this.stderr = stderr;
+    if (code) this.code = code;
   }
 }
 
@@ -132,9 +150,22 @@ export async function vectorToGeoJson(
     // 直接从原始容器逐层尝试，前几个图层里总有带要素的。
     note =
       `这个文件有 ${info.layerNames.length} 个图层，` +
-      `超过了单次合并上限（${MERGE_MAX} 层），只加载了第一个有内容的图层；` +
-      `其余图层要用时可以在 ArcGIS 里按需导出，或等图层选择器上线。`;
-    const firstLayers = info.layerNames.slice(0, 8);
+      `超过了单次合并上限（${MERGE_MAX} 层），` +
+      (options.layers?.length
+        ? `本次按所选图层加载（试到有内容为止）。`
+        : `只加载了第一个有内容的图层；其余图层要用时可以在 ArcGIS 里按需导出，或用图层选择器勾选加载。`);
+    // 指定选层就按所选来（试到有内容为止）；没指定才默认试前 8 层
+    const wantedNames = options.layers?.length
+      ? options.layers.filter((name) => info.layerNames.includes(name))
+      : info.layerNames.slice(0, 8);
+    if (options.layers?.length && wantedNames.length === 0) {
+      rmSync(outDir, { recursive: true, force: true });
+      throw new VectorConvertError(
+        `所选图层都不在这个文件里：${options.layers.join('、')}（文件实际有 ${info.layerNames.length} 个图层）`,
+        '',
+      );
+    }
+    const firstLayers = wantedNames;
     for (const layer of firstLayers) {
       const out = join(outDir, `single-${firstLayers.indexOf(layer)}.geojson`);
       const args: string[] = ['-f', 'GeoJSON', ...clipArgs];
@@ -160,6 +191,7 @@ export async function vectorToGeoJson(
         truncated:
           options.limit !== undefined && options.limit > 0 && layerFeatures.length >= options.limit,
         note: note + ` 本次加载的图层：「${layer}」（${layerFeatures.length} 个要素）。`,
+        layers: [layer],
       };
     }
     rmSync(outDir, { recursive: true, force: true });
@@ -188,9 +220,21 @@ export async function vectorToGeoJson(
     info = await probeLayer(loc, convertSrc);
     isMultiLayer = info.layerNames.length > 1;
   }
-  const layers = info.layerNames.length > 0 ? info.layerNames : [''];
+  const allLayers = info.layerNames.length > 0 ? info.layerNames : [''];
+  // 图层选择器：指定了就按交集转换（保持文件内顺序）；一个都没对上 → 整体报错，不静默
+  const chosen = options.layers;
+  const layers = chosen?.length ? allLayers.filter((name) => chosen.includes(name)) : allLayers;
+  if (chosen?.length && layers.length === 0) {
+    rmSync(outDir, { recursive: true, force: true });
+    throw new VectorConvertError(
+      `所选图层都不在这个文件里：${chosen.join('、')}` +
+        `（文件实际图层：${allLayers.slice(0, 6).join('、')}${allLayers.length > 6 ? ' …' : ''}）`,
+      '',
+    );
+  }
 
   const skippedLayers: string[] = [];
+  const converted: string[] = [];
   const features: unknown[] = [];
   let totalBytes = 0;
   let truncated = false;
@@ -262,6 +306,7 @@ export async function vectorToGeoJson(
           `请在 ArcGIS 里先简化（要素 → 简化几何）或裁剪出需要的范围再加载；` +
           `也可以先用 limit 参数预览前几条确认内容。`,
         res.stderr,
+        'payload-too-large',
       );
     }
 
@@ -283,6 +328,7 @@ export async function vectorToGeoJson(
       continue;
     }
     features.push(...layerFeatures);
+    converted.push(layer);
     remaining -= layerFeatures.length;
   }
 
@@ -307,5 +353,6 @@ export async function vectorToGeoJson(
     truncated,
     ...(note ? { note } : {}),
     ...(skippedLayers.length > 0 ? { skippedLayers } : {}),
+    ...(converted.length > 1 || options.layers?.length ? { layers: converted } : {}),
   };
 }

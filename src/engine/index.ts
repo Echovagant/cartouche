@@ -220,6 +220,9 @@ export {
   A4_PORTRAIT_PT,
   vectorToGeoJson,
   VectorConvertError,
+  buildVectorPyramid,
+  findPyramid,
+  pyramidLevelForZoom,
   datasetExtent,
   DatasetExtentError,
 } from './export/index.ts';
@@ -231,6 +234,10 @@ export type {
   PdfOptions,
   VectorToGeoJsonOptions,
   VectorToGeoJsonResult,
+  PyramidBuildResult,
+  PyramidInfo,
+  PyramidLevel,
+  PyramidLevelName,
   DatasetExtentOptions,
   DatasetExtentResult,
 } from './export/index.ts';

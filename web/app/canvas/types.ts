@@ -182,6 +182,14 @@ export interface MapLayer {
   visible: boolean;
   /** 不透明度 0~1 */
   opacity: number;
+  /**
+   * 视口分块模式：数据太大整层装不下（128MB 闸），按当前视口裁剪着装。
+   *
+   * 打了标记的层，moveend 会随视口自动重裁补齐；恢复项目时**直接走视口模式**，
+   * 不再做全量尝试（否则每开一次项目都撞一次闸、干等一场注定失败的转换）。
+   * 该标记会写进项目清单，属于层的固有属性而非临时状态。
+   */
+  chunked?: boolean;
 }
 
 /* ───────── 项目清单（`.cartouche/project.json`） ───────── */
@@ -202,6 +210,8 @@ export interface ProjectLayer {
   readonly path: string;
   readonly visible: boolean;
   readonly opacity: number;
+  /** 视口分块模式（大文件）：恢复时直接按视口加载，不再做全量尝试 */
+  readonly chunked?: boolean;
 }
 
 /** 地图视角：中心点（经度、纬度）与缩放级别 */

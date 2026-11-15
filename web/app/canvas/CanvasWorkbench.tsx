@@ -20,6 +20,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import AttributeTable from './AttributeTable';
+import { BootCinematic } from './BootCinematic';
 import { CanvasBoot, ExportDevelop, LayerArrival, SelectionShutter } from './CanvasMotion';
 import ConfirmCard, { type ExecOutcome } from './ConfirmCard';
 import EditToolbar from './EditToolbar';
@@ -34,6 +35,7 @@ import { StatusBar } from './workbench/StatusBar';
 import { Welcome } from './workbench/Welcome';
 import { ProjectSidebar } from './workbench/ProjectSidebar';
 import { SettingsModal } from './workbench/SettingsModal';
+import { LayerPickerModal } from './workbench/LayerPickerModal';
 import { QuickOpen } from './workbench/QuickOpen';
 import { AiSidePanel } from './ai/AiSidePanel';
 import { BottomPanel, type PanelTab } from './workbench/BottomPanel';
@@ -101,6 +103,29 @@ function fileStamp(): string {
   );
 }
 
+/** EPSG:4326 视口范围 [minX, minY, maxX, maxY] */
+type ViewBBox = readonly [number, number, number, number];
+
+/**
+ * 视口包含判定：inner 完全落在 outer 外扩 25% 的范围里，就算"没走出已加载范围"。
+ *
+ * 没走出就不重拉 —— 用户在小范围里反复拖拽，不该每次都触发一次 ogr2ogr 裁剪
+ * （病态数据一次要分钟级，见 engine vector-geojson 的性能边界注释）。
+ */
+function inflatedContains(outer: ViewBBox, inner: ViewBBox): boolean {
+  const w = outer[2] - outer[0];
+  const h = outer[3] - outer[1];
+  if (!(w > 0) || !(h > 0)) return false;
+  const mx = w * 0.25;
+  const my = h * 0.25;
+  return (
+    inner[0] >= outer[0] - mx &&
+    inner[1] >= outer[1] - my &&
+    inner[2] <= outer[2] + mx &&
+    inner[3] <= outer[3] + my
+  );
+}
+
 /** 触发浏览器下载 */
 function downloadBlob(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob);
@@ -153,6 +178,23 @@ export default function CanvasWorkbench() {
   const [layers, setLayers] = useState<MapLayer[]>([]);
   const [activeLayerId, setActiveLayerId] = useState<string | null>(null);
 
+  /**
+   * 启动屏是否已揭幕。CanvasBoot（面板滑入/图纸显影）被它**压到揭幕瞬间**才挂载：
+   * 开机屏盖住一切时先跑入场动画等于白跑，接力才有"幕布拉开、工作台浮现"的层次。
+   */
+  const [bootDone, setBootDone] = useState(false);
+
+  /* ───────── 图层选择器（多图层容器勾选加载） ───────── */
+
+  const [layerPicker, setLayerPicker] = useState<{
+    readonly layerId: string;
+    readonly path: string;
+    readonly name: string;
+  } | null>(null);
+  const [pickerOptions, setPickerOptions] = useState<readonly string[] | null>(null);
+  const [pickerSelected, setPickerSelected] = useState<ReadonlySet<string>>(new Set());
+  const [pickerBusy, setPickerBusy] = useState(false);
+
   // 动效用的 ref：面板滑入 + 图纸显影
   const leftRef = useRef<HTMLElement | null>(null);
   const rightRef = useRef<HTMLElement | null>(null);
@@ -164,6 +206,27 @@ export default function CanvasWorkbench() {
   );
   const [selected, setSelected] = useState<SelectedFeature[]>([]);
   const [selectedIndex, setSelectedIndex] = useState(0);
+
+  /* ───────── 视口分块（chunked）状态 ───────── */
+
+  /** 分块图层在途请求的中止器：同一层新请求打断旧请求（moveend 连续触发时） */
+  const chunkAbortRef = useRef(new Map<string, AbortController>());
+  /** 分块图层上次成功裁剪的视口 bbox：新视口没走出它（含 25% 缓冲）就不重拉 */
+  const chunkBBoxRef = useRef(new Map<string, ViewBBox>());
+  /** 视口重拉的防抖定时器 */
+  const viewTimerRef = useRef<number>(0);
+  /**
+   * layers 的 ref 镜像：视口回调在地图事件里读的是**那一刻**的清单，
+   * 直接闭包 layers 会把回调绑死在旧列表上。
+   */
+  const layersRef = useRef(layers);
+  layersRef.current = layers;
+
+  // 卸载时把在途的分块请求全部掐掉：组件没了，回调整个作废
+  useEffect(() => {
+    const aborts = chunkAbortRef.current;
+    return () => aborts.forEach((controller) => controller.abort());
+  }, []);
 
   const [dir, setDir] = useState('');
   const [files, setFiles] = useState<string[]>([]);
@@ -411,38 +474,122 @@ export default function CanvasWorkbench() {
 
   /* ───────── 图层数据 ───────── */
 
+  /** 中止某层在途请求并登记新的中止器：同层新请求打断旧请求 */
+  const abortChunkLoad = useCallback((layerId: string): AbortController => {
+    chunkAbortRef.current.get(layerId)?.abort();
+    const controller = new AbortController();
+    chunkAbortRef.current.set(layerId, controller);
+    return controller;
+  }, []);
+
   /**
    * 把图层的数据拉回来：矢量的 GeoJSON + 各自的地理范围。
    *
    * 新增图层和恢复项目**共用这一份** —— 恢复时只回填图层列表是不够的，
    * 那样地图上还是一片空白（列表有了、数据没回来，用户以为没恢复成功）。
    *
-   * 返回是否全部成功：新增图层失败时不要顺手把错误提示清掉。
+   * 体积闸自动降级：全量转换撞了 `payload_too_large` 就**按当前视口裁剪重试**，
+   * 重试成功把该层标记成 chunked（调用方合进图层对象、写进清单），下次恢复
+   * 直接走视口模式 —— 不再每开一次项目都撞一次闸。
+   *
+   * 返回 ok 与分块标记：新增图层失败时不要顺手把错误提示清掉。
    */
   const loadLayerData = useCallback(
-    async (target: readonly MapLayer[]): Promise<boolean> => {
+    async (
+      target: readonly MapLayer[],
+      opts?: { layersFor?: ReadonlyMap<string, readonly string[]> },
+    ): Promise<{ ok: boolean; chunkedMarks: ReadonlyMap<string, boolean> }> => {
       let ok = true;
       // 记下这次请求属于哪个项目：中途换了项目就不要再往回写数据了
       const owner = projectKeyRef.current;
       const stillMine = (): boolean => projectKeyRef.current === owner;
+      const chunkedMarks = new Map<string, boolean>();
       for (const layer of target) {
-        if (layer.kind === 'vector') {
-          const res = await engine.fetchGeoJson(layer.path);
-          if (!res.ok) {
-            setBanner(`读取 ${layer.path} 失败：${res.error}`);
-            ok = false;
-            continue;
-          }
-          if (!stillMine()) return ok;
+        /** 拉一份矢量数据（bbox 不给 = 全量）并落进 vectorData */
+        const pull = async (
+          bbox?: ViewBBox,
+          layers?: readonly string[],
+        ): Promise<{ ok: boolean; code?: string; error?: string; note?: string }> => {
+          const res = await engine.fetchGeoJson(layer.path, {
+            bbox,
+            layers,
+            signal: abortChunkLoad(layer.id).signal,
+          });
+          if (!res.ok) return { ok: false, code: res.code, error: res.error };
+          if (!stillMine()) return { ok: false, code: 'aborted' };
           setVectorData((prev) => {
             const next = new Map(prev);
             next.set(layer.id, res.data.geojson);
             return next;
           });
+          return { ok: true, note: res.data.note };
+        };
+        const selectedLayers = opts?.layersFor?.get(layer.id);
+
+        if (layer.kind === 'vector') {
+          let settled = false;
+          if (layer.chunked) {
+            // 分块层恢复：直接按当前视口拉，不做全量尝试
+            //（每开一次项目都撞一次闸 = 干等一场注定失败的转换）
+            const vp = mapHandleRef.current?.getViewport();
+            if (vp) {
+              const res = await pull(vp.bbox, selectedLayers);
+              if (res.ok) {
+                chunkBBoxRef.current.set(layer.id, vp.bbox);
+                settled = true;
+              } else if (res.code !== 'aborted') {
+                setBanner(`读取 ${layer.path} 失败：${res.error}`);
+                ok = false;
+                continue;
+              } else {
+                continue;
+              }
+            }
+            // 地图还没建好（vp 为空）：落到下面的全量尝试兜底
+          }
+          if (!settled) {
+            const res = await pull(undefined, selectedLayers);
+            if (!res.ok) {
+              if (res.code === 'aborted') continue;
+              const vp =
+                res.code === 'payload_too_large' ? mapHandleRef.current?.getViewport() : null;
+              if (vp) {
+                const retry = await pull(vp.bbox, selectedLayers);
+                if (retry.ok) {
+                  chunkedMarks.set(layer.id, true);
+                  chunkBBoxRef.current.set(layer.id, vp.bbox);
+                  setBanner(
+                    `${layer.name} 太大，已按当前视口分块加载 —— 缩放平移会自动补齐；整层加载请先简化数据。`,
+                  );
+                  // 后台预建视口金字塔（分块工程第二阶段）：幂等、并发去重、
+                  // 有缓存直接短路 —— 建成后每次视口补数据从小缓存裁，快一到两个量级。
+                  // 失败静默：原始裁剪照常工作，金字塔只是加速器不是依赖。
+                  void engine.buildPyramid(layer.path);
+                } else if (retry.code !== 'aborted') {
+                  setBanner(`读取 ${layer.path} 失败：${retry.error}`);
+                  ok = false;
+                  continue;
+                } else {
+                  continue;
+                }
+              } else {
+                setBanner(`读取 ${layer.path} 失败：${res.error}`);
+                ok = false;
+                continue;
+              }
+            }
+            // 多图层源的加载说明（>20 层只装了第一层之类）：装了什么、跳了什么，说清楚
+            else if (res.note) {
+              setBanner(res.note);
+            }
+          }
         }
+
+        // extent 查的是**全量**范围：fitBounds 要把人带到数据的完整范围上，
+        // 而不是当前视口那一小块（分块层尤其重要，栅格也靠它）
         const extentRes = await engine.fetchExtent(layer.path);
         if (extentRes.ok) {
-          if (!stillMine()) return ok;
+          if (!stillMine()) return { ok, chunkedMarks };
           const bbox = extentRes.data.bbox;
           setExtents((prev) => {
             const next = new Map(prev);
@@ -451,9 +598,9 @@ export default function CanvasWorkbench() {
           });
         }
       }
-      return ok;
+      return { ok, chunkedMarks };
     },
-    [engine.fetchGeoJson, engine.fetchExtent],
+    [engine.fetchGeoJson, engine.fetchExtent, engine.buildPyramid, abortChunkLoad],
   );
 
   /* ───────── 图层操作 ───────── */
@@ -473,8 +620,10 @@ export default function CanvasWorkbench() {
       // 先把数据拉回来，**成功了才进清单**：失败还往里加，用户会得到一个
       // 图例上挂着、地图上却没有的"幽灵图层"，而且自动保存会把它写进项目
       // —— 下次打开就一直报错（2026-11-14 实测事故）。失败原因已进横幅。
-      const ok = await loadLayerData([layer]);
+      const { ok, chunkedMarks } = await loadLayerData([layer]);
       if (!ok) return;
+      // 撞体积闸降级成功的层带上 chunked 标记（进清单，恢复时直接走视口模式）
+      const finalLayer: MapLayer = chunkedMarks.get(id) ? { ...layer, chunked: true } : layer;
       setLayers((prev) => {
         // 叠放次序 = 数组顺序（末尾在最上），和面板里的上移/下移一致。
         //
@@ -482,18 +631,24 @@ export default function CanvasWorkbench() {
         // 栅格是底，矢量是上面的作业层。反过来的话，加载一个栅格会把
         // 已经画出来的矢量整个盖住（非 GIS 专业用户看不出为什么东西"不见了"）。
         // 用户之后仍可用上移/下移自由调整。
-        if (kind !== 'raster') return [...prev, layer];
+        if (kind !== 'raster') return [...prev, finalLayer];
         const firstVector = prev.findIndex((l) => l.kind === 'vector');
-        if (firstVector < 0) return [...prev, layer];
-        return [...prev.slice(0, firstVector), layer, ...prev.slice(firstVector)];
+        if (firstVector < 0) return [...prev, finalLayer];
+        return [...prev.slice(0, firstVector), finalLayer, ...prev.slice(firstVector)];
       });
       setActiveLayerId(id);
-      setBanner(null);
+      // 分块加载的提示语是这次操作的结果说明，不能被这里清掉
+      if (!chunkedMarks.get(id)) setBanner(null);
     },
     [dir, loadLayerData],
   );
 
   const removeLayer = useCallback((id: string) => {
+    // 在途的分块请求与视口记录一并清掉：层的生命周期到这为止
+    chunkAbortRef.current.get(id)?.abort();
+    chunkAbortRef.current.delete(id);
+    chunkBBoxRef.current.delete(id);
+    window.clearTimeout(viewTimerRef.current);
     setLayers((prev) => prev.filter((layer) => layer.id !== id));
     setVectorData((prev) => {
       const next = new Map(prev);
@@ -534,6 +689,113 @@ export default function CanvasWorkbench() {
     });
   }, []);
 
+  /* ───────── 分块图层：moveend 随视口补数据 ───────── */
+
+  const refetchChunked = useCallback(
+    async (targets: readonly MapLayer[], bbox: ViewBBox, zoom?: number) => {
+      const owner = projectKeyRef.current;
+      const stillMine = (): boolean => projectKeyRef.current === owner;
+      for (const layer of targets) {
+        // 新视口没走出上次已加载的范围（含 25% 缓冲）：数据够画，不折腾引擎
+        const last = chunkBBoxRef.current.get(layer.id);
+        if (last && inflatedContains(last, bbox)) continue;
+        const res = await engine.fetchGeoJson(layer.path, {
+          bbox,
+          // pyramid=auto：引擎缓存里建好塔就按 zoom 挑级（小缓存文件，毫秒级）；
+          // 没建好引擎自动退回原始裁剪 —— 前端不感知差异
+          pyramid: true,
+          zoom,
+          signal: abortChunkLoad(layer.id).signal,
+        });
+        if (!stillMine()) return;
+        if (!res.ok) {
+          // 被下一次 moveend 打断不算失败；真失败才报（不让横幅连环刷）
+          if (res.code === 'aborted') continue;
+          setBanner(`视口分块刷新失败（${layer.name}）：${res.error}`);
+          continue;
+        }
+        chunkBBoxRef.current.set(layer.id, bbox);
+        setVectorData((prev) => {
+          const next = new Map(prev);
+          next.set(layer.id, res.data.geojson);
+          return next;
+        });
+      }
+    },
+    [engine.fetchGeoJson, abortChunkLoad],
+  );
+
+  /**
+   * MapCanvas 的 moveend 派发点：只对**分块**矢量层做事。
+   *
+   * 防抖 400ms（连续拖拽等停下来再拉）；包含判定挡掉小范围拖拽；
+   * 同层新请求自动打断旧请求。非分块层整份数据已在手上，视口变化与它无关。
+   */
+  const handleViewportChange = useCallback(
+    (bbox: ViewBBox) => {
+      const targets = layersRef.current.filter(
+        (layer) => layer.kind === 'vector' && layer.chunked && layer.visible,
+      );
+      if (targets.length === 0) return;
+      // zoom 是挑金字塔级的依据（粗/中/细），随视口快照一起带走
+      const zoom = mapHandleRef.current?.getView()?.zoom ?? undefined;
+      window.clearTimeout(viewTimerRef.current);
+      viewTimerRef.current = window.setTimeout(() => {
+        void refetchChunked(targets, bbox, zoom);
+      }, 400);
+    },
+    [refetchChunked],
+  );
+
+  /* ───────── 图层选择器 ───────── */
+
+  const openLayerPicker = useCallback(
+    async (layerId: string) => {
+      const layer = layersRef.current.find((l) => l.id === layerId);
+      if (!layer || layer.kind !== 'vector') return;
+      setLayerPicker({ layerId, path: layer.path, name: layer.name });
+      setPickerOptions(null);
+      setPickerSelected(new Set());
+      setPickerBusy(true);
+      const res = await engine.fetchVectorLayers(layer.path);
+      setPickerBusy(false);
+      if (!res.ok) {
+        setLayerPicker(null);
+        setBanner(`读图层清单失败：${res.error}`);
+        return;
+      }
+      if (res.data.layerNames.length <= 1) {
+        setLayerPicker(null);
+        setBanner('这个文件只有单图层，整层已经装进来了，没有可勾选的其他图层。');
+        return;
+      }
+      setPickerOptions(res.data.layerNames);
+    },
+    [engine.fetchVectorLayers],
+  );
+
+  /** 按勾选重新加载该层的数据：复用 loadLayerData 全管线（原地替换、撞闸降级、后台建塔） */
+  const applyLayerSelection = useCallback(
+    async (selected: readonly string[]) => {
+      const picker = layerPicker;
+      const layer = layersRef.current.find((l) => l.id === picker?.layerId);
+      if (!picker || !layer) return;
+      setPickerBusy(true);
+      const layersFor = new Map([[picker.layerId, selected]]);
+      const { ok, chunkedMarks } = await loadLayerData([layer], { layersFor });
+      setPickerBusy(false);
+      if (!ok) return; // 横幅已报错
+      setLayers((prev) =>
+        prev.map((l) =>
+          l.id === picker.layerId && chunkedMarks.has(picker.layerId) ? { ...l, chunked: true } : l,
+        ),
+      );
+      setLayerPicker(null);
+      setBanner(`已按所选图层重新加载「${picker.name}」（${selected.length} 层）。`);
+    },
+    [layerPicker, loadLayerData],
+  );
+
   /* ───────── 恢复项目 ───────── */
 
   useEffect(() => {
@@ -545,6 +807,7 @@ export default function CanvasWorkbench() {
       path: l.path,
       visible: l.visible,
       opacity: l.opacity,
+      chunked: l.chunked,
     }));
     // 先清空上一个项目留下的数据：两个项目都可能有 layer-1，
     // 不清的话旧项目的 GeoJSON 会灌进新项目的图层里
@@ -563,8 +826,14 @@ export default function CanvasWorkbench() {
     }, 0);
     idRef.current = Math.max(idRef.current, maxN);
 
-    // 数据也要拉回来 —— 只回填列表的话地图上是空的
-    void loadLayerData(restored);
+    // 数据也要拉回来 —— 只回填列表的话地图上是空的；
+    // 撞闸降级的层在这里就地补上 chunked 标记（下次打开直接走视口模式）
+    void loadLayerData(restored).then(({ chunkedMarks }) => {
+      if (chunkedMarks.size === 0) return;
+      setLayers((prev) =>
+        prev.map((layer) => (chunkedMarks.has(layer.id) ? { ...layer, chunked: true } : layer)),
+      );
+    });
   }, [manifest, loadLayerData]);
 
   /* ───────── 自动保存清单 ───────── */
@@ -583,6 +852,7 @@ export default function CanvasWorkbench() {
         path: l.path,
         visible: l.visible,
         opacity: l.opacity,
+        ...(l.chunked ? { chunked: true } : {}),
       })),
       ...(v ? { view: { center: v.center, zoom: v.zoom } } : {}),
     };
@@ -624,6 +894,11 @@ export default function CanvasWorkbench() {
     setLayers([]);
     setVectorData(new Map());
     setExtents(new Map());
+    // 分块状态跟着项目走：在途请求掐掉、视口记录清空，别带进下一个项目
+    chunkAbortRef.current.forEach((controller) => controller.abort());
+    chunkAbortRef.current.clear();
+    chunkBBoxRef.current.clear();
+    window.clearTimeout(viewTimerRef.current);
     setActiveLayerId(null);
     setSelected([]);
     setDir('');
@@ -931,7 +1206,9 @@ export default function CanvasWorkbench() {
    */
   return (
     <>
-      <CanvasBoot leftRef={leftRef} rightRef={rightRef} stageRef={stageRef} />
+      {/* 启动屏（v2 cinematic）：盖住一切，揭幕时把接力棒交给 CanvasBoot */}
+      <BootCinematic engineReady={engineReady} onReveal={() => setBootDone(true)} />
+      {bootDone ? <CanvasBoot leftRef={leftRef} rightRef={rightRef} stageRef={stageRef} /> : null}
       <div className="flex h-[100dvh] flex-col overflow-hidden bg-studio text-studio-ink">
         <div className="flex min-h-0 flex-1">
           <ActivityBar
@@ -986,6 +1263,7 @@ export default function CanvasWorkbench() {
                   onOpacityChange={changeOpacity}
                   onMoveLayer={moveLayer}
                   onSelectLayer={setActiveLayerId}
+                  onPickLayers={(id) => void openLayerPicker(id)}
                   onEnterDirectory={(name) => setDir((prev) => (prev ? prev + '/' + name : name))}
                   onGoUp={() =>
                     setDir((prev) => (prev.includes('/') ? prev.slice(0, prev.lastIndexOf('/')) : ''))
@@ -1142,6 +1420,7 @@ export default function CanvasWorkbench() {
                           : undefined
                       }
                       preserveViewLayerIds={manifest?.layers.map((l) => l.id)}
+                      onViewportChange={handleViewportChange}
                       onSelectFeatures={(features) => {
                         setSelected(features);
                         setSelectedIndex(0);
@@ -1291,6 +1570,24 @@ export default function CanvasWorkbench() {
             }
             void addLayer(name, kind, relPath);
           }}
+        />
+
+        <LayerPickerModal
+          open={layerPicker !== null}
+          name={layerPicker?.name ?? ''}
+          options={pickerOptions}
+          selected={pickerSelected}
+          busy={pickerBusy}
+          onToggle={(layerName) =>
+            setPickerSelected((prev) => {
+              const next = new Set(prev);
+              if (next.has(layerName)) next.delete(layerName);
+              else next.add(layerName);
+              return next;
+            })
+          }
+          onApply={() => void applyLayerSelection([...pickerSelected])}
+          onClose={() => setLayerPicker(null)}
         />
 
         <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />

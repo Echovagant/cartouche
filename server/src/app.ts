@@ -28,7 +28,12 @@ import {
   runHealthCheck,
   renderCompatReport,
   renderRasterPng,
+  VectorConvertError,
   vectorToGeoJson,
+  buildVectorPyramid,
+  findPyramid,
+  pyramidLevelForZoom,
+  probeLayer,
   datasetExtent,
   buildPdfFromJpeg,
   executePlan,
@@ -956,8 +961,29 @@ function foldCasePath(p: string): string {
             }
             bbox = [nums[0]!, nums[1]!, nums[2]!, nums[3]!];
           }
+          // 金字塔直取（分块加载第二阶段）：缓存里按 zoom 挑一级，从小缓存文件裁
+          // —— 比对原始大文件裁快一到两个数量级。没有缓存就原样走原始裁剪：
+          // pyramid=auto 只是"能用则用"，不改变任何行为承诺。
+          const zoomParam = Number(url.searchParams.get('zoom'));
+          let convertPath = resolveWorkspacePath(root, rel);
+          let pyramidLevel: ReturnType<typeof pyramidLevelForZoom> = null;
+          if (url.searchParams.get('pyramid') === 'auto') {
+            try {
+              const info = findPyramid(convertPath);
+              pyramidLevel = info
+                ? pyramidLevelForZoom(info.levels, Number.isFinite(zoomParam) ? zoomParam : 9)
+                : null;
+              if (pyramidLevel && info) {
+                convertPath = join(info.dir, `${info.hash}-${pyramidLevel.name}.geojson`);
+              }
+            } catch {
+              pyramidLevel = null; // 缓存探测失败不拦路：原始裁剪照走
+            }
+          }
+          const layerNames = url.searchParams.getAll('layer');
           const res = await vectorToGeoJson(gdalLoc, {
-            path: resolveWorkspacePath(root, rel),
+            path: convertPath,
+            ...(layerNames.length ? { layers: layerNames } : {}),
             // ⚠️ 必须显式换算到 4326：ogr2ogr 不给 -t_srs 时**按源 CRS 输出**。
             //    投影坐标系的矢量会带着 UTM 东坐标/北坐标出去（如 816690, 3381042），
             //    MapLibre 当成经纬度解析 → 要素跑到几百万度外，画布上什么都看不见。
@@ -966,10 +992,58 @@ function foldCasePath(p: string): string {
             ...(limitParam ? { limit: Number(limitParam) } : {}),
             ...(bbox ? { bbox } : {}),
           });
-          json(200, res);
+          json(200, pyramidLevel ? { ...res, level: pyramidLevel.name } : res);
+        } catch (err) {
+          // 体积闸（payload-too-large）单独给 413 + 稳定错误码：前端把它翻译成
+          // "按当前视口分块重试"，其余 500 才是真正的内部错误。
+          const tooLarge = err instanceof VectorConvertError && err.code === 'payload-too-large';
+          const bad = err instanceof PathEscapeError ? 400 : tooLarge ? 413 : 500;
+          json(bad, {
+            error: bad === 400 ? 'bad_request' : tooLarge ? 'payload_too_large' : 'internal',
+            message: scrub((err as Error).message),
+          });
+        }
+      })();
+      return;
+    }
+
+    if (url.pathname === '/api/data/layers' && req.method === 'GET') {
+      void (async () => {
+        try {
+          if (!gdalLoc) {
+            json(503, { error: 'gdal_unavailable', message: '未找到 GDAL 运行时，出图与体检不可用；请先运行 npm run doctor' });
+            return;
+          }
+          const rel = url.searchParams.get('path') ?? '';
+          const root = url.searchParams.get('root');
+          const abs = resolveWorkspacePath(root, rel);
+          // 探测本身很便宜（ogrinfo -so，几百毫秒），图层选择器点开时才调
+          const info = await probeLayer(gdalLoc, abs);
+          json(200, { path: rel, layerNames: info.layerNames });
         } catch (err) {
           const bad = err instanceof PathEscapeError ? 400 : 500;
           json(bad, { error: bad === 400 ? 'bad_request' : 'internal', message: scrub((err as Error).message) });
+        }
+      })();
+      return;
+    }
+
+    if (url.pathname === '/api/data/pyramid' && req.method === 'POST') {
+      void (async () => {
+        try {
+          if (!gdalLoc) {
+            json(503, { error: 'gdal_unavailable', message: '未找到 GDAL 运行时，出图与体检不可用；请先运行 npm run doctor' });
+            return;
+          }
+          const body = await readBody(req, res);
+          const req0 = JSON.parse(body.toString('utf8') || '{}') as { path?: string; root?: string };
+          const abs = resolveWorkspacePath(req0.root ?? null, req0.path ?? '');
+          // 构建可能要几分钟（对全量源多做几遍简化）：并发构建在引擎里按 hash 去重，
+          // 已有缓存直接短路 —— 前端 fire-and-forget 调这里也安全。
+          const result = await buildVectorPyramid(gdalLoc, { path: abs });
+          json(200, result);
+        } catch (err) {
+          json(500, { error: 'internal', message: scrub((err as Error).message) });
         }
       })();
       return;

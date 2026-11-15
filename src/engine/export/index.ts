@@ -24,6 +24,9 @@ export type { PdfOptions } from './pdf.ts';
 export { vectorToGeoJson, VectorConvertError } from './vector-geojson.ts';
 export type { VectorToGeoJsonOptions, VectorToGeoJsonResult } from './vector-geojson.ts';
 
+export { buildVectorPyramid, findPyramid, pyramidLevelForZoom } from './vector-pyramid.ts';
+export type { PyramidBuildResult, PyramidInfo, PyramidLevel, PyramidLevelName } from './vector-pyramid.ts';
+
 export { datasetExtent, DatasetExtentError } from './dataset-extent.ts';
 export type { DatasetExtentOptions, DatasetExtentResult } from './dataset-extent.ts';
 

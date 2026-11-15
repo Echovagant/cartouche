@@ -14,6 +14,7 @@ import {
   ArrowDownIcon,
   ArrowUpIcon,
   FolderOpenIcon,
+  StackIcon,
   TrashIcon,
 } from '@phosphor-icons/react';
 import { guessEntryKind, type EntryKind, type LayerKind, type MapLayer } from './types';
@@ -34,6 +35,8 @@ export interface LayerPanelProps {
   onOpacityChange: (id: string, opacity: number) => void;
   onMoveLayer: (id: string, direction: -1 | 1) => void;
   onSelectLayer: (id: string) => void;
+  /** 打开图层选择器（矢量层专用：勾选多图层容器里的图层重新加载） */
+  onPickLayers: (id: string) => void;
   /** 点目录条目时请求进入该目录 */
   onEnterDirectory: (name: string) => void;
   /** 返回上一级 */
@@ -70,6 +73,7 @@ export default function LayerPanel({
   onOpacityChange,
   onMoveLayer,
   onSelectLayer,
+  onPickLayers,
   onEnterDirectory,
   onGoUp,
 }: LayerPanelProps) {
@@ -251,6 +255,16 @@ export default function LayerPanel({
                     >
                       <ArrowDownIcon size={12} weight="bold" />
                     </ActionButton>
+                    {layer.kind === 'vector' ? (
+                      <ActionButton
+                        variant="quiet"
+                        onClick={() => onPickLayers(layer.id)}
+                        className="!px-1.5 !py-0.5 text-[11px]"
+                        title="勾选容器内的图层重新加载"
+                      >
+                        <StackIcon size={12} weight="bold" />
+                      </ActionButton>
+                    ) : null}
                     <ActionButton
                       variant="danger"
                       onClick={() => onRemoveLayer(layer.id)}
