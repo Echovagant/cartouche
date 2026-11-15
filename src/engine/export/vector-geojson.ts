@@ -92,6 +92,19 @@ export async function vectorToGeoJson(
 
   const outDir = mkdtempSync(join(tmpdir(), 'cartouche-geojson-'));
 
+  // 视口裁剪参数（bbox 给了就每层都带）：相交过滤 + 几何裁到范围内，
+  // 超大图层「每次一小块」的引擎侧基础（分块加载工程第一阶段）。
+  // ⚠️ 用 -clipdst（目标坐标系里裁）而不是 -clipsrc（源坐标系里裁）：
+  //    bbox 永远是 4326 经纬度，源若是投影坐标系（如 CGCS2000 高斯克吕格），
+  //    clipsrc 会拿经纬度数值去套米制坐标 → 一个要素都裁不出来
+  //    （2026-11-15 实测：CN_MountainRanges 投影源 bbox 加载 0 要素）。
+  //    clipdst 在重投影**之后**执行，任何源坐标系都正确。
+  const clipArgs: string[] = [];
+  if (options.bbox) {
+    const [minX, minY, maxX, maxY] = options.bbox;
+    clipArgs.push('-clipdst', String(minX), String(minY), String(maxX), String(maxY));
+  }
+
   // 先探图层清单：单图层走原路（一次转换），多图层走「中间 GPKG」两阶段。
   // 探测本身很便宜（ogrinfo -so，几百毫秒），换来的是多图层容器不再整文件炸掉。
   let info = await probeLayer(loc, options.path);
@@ -182,20 +195,6 @@ export async function vectorToGeoJson(
   let totalBytes = 0;
   let truncated = false;
   let remaining = options.limit !== undefined && options.limit > 0 ? options.limit : Infinity;
-
-  // 视口裁剪参数（bbox 给了就每层都带）：相交过滤 + 几何裁到范围内，
-  // 超大图层「每次一小块」的引擎侧基础（分块加载工程第一阶段）。
-  const clipArgs: string[] = [];
-  if (options.bbox) {
-    const [minX, minY, maxX, maxY] = options.bbox;
-    clipArgs.push(
-      '-clipsrc',
-      String(minX),
-      String(minY),
-      String(maxX),
-      String(maxY),
-    );
-  }
 
   for (const layer of layers) {
     if (remaining <= 0) {
