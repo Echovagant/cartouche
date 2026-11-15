@@ -209,7 +209,11 @@ export async function pickFolder(
     const r = await execFileAsync(
       'powershell',
       ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-STA', '-Command', ps],
-      { encoding: 'utf8', windowsHide: true, timeout: 600000, maxBuffer: 1024 * 1024 },
+      // ⚠️ windowsHide 不能为 true：引擎进程本身是隐藏启动的，
+      //    子进程如果也隐藏，Windows 会把 COM 对话框放到 Z-Order 最底层 ——
+      //    用户看到的是"点击没反应"，实际上对话框被压在了所有窗口后面
+      //    （2026-11-15 实测：设为 false 后对话框正确出现在前台）。
+      { encoding: 'utf8', windowsHide: false, timeout: 600000, maxBuffer: 1024 * 1024 },
     );
     stdout = r.stdout;
   } catch (err) {
