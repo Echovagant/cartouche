@@ -110,7 +110,7 @@ export const LLM_PROVIDERS: readonly LlmProviderEntry[] = [
     keyPrefixes: ['sk-cp-', 'sk-api-'],
     effortSupported: true,
     fallbackModels: MINIMAX_MODELS,
-    note: '与 MiniMax 国际版是两套账号体系，key 不通用。',
+    note: '与 MiniMax 国际版是两套账号体系，key 不通用。M2.7/M2.5/M2.1/M2 将于 2026-11-18 退役（自动路由到 M3.1 Flash）。',
   },
   {
     id: 'minimax-intl',
@@ -121,7 +121,7 @@ export const LLM_PROVIDERS: readonly LlmProviderEntry[] = [
     keyPrefixes: ['sk-cp-', 'sk-api-'],
     effortSupported: true,
     fallbackModels: MINIMAX_MODELS,
-    note: '与国内版是两套账号体系，key 不通用。',
+    note: '与国内版是两套账号体系，key 不通用。M2.7/M2.5/M2.1/M2 将于 2026-11-18 退役（自动路由到 M3.1 Flash）。',
   },
   {
     id: 'glm',
@@ -130,6 +130,7 @@ export const LLM_PROVIDERS: readonly LlmProviderEntry[] = [
     modelsSupported: true,
     family: 'glm',
     keyPrefixes: [],
+    fallbackModels: ['glm-5.1', 'glm-5', 'glm-4.6'],
   },
   {
     id: 'dashscope',
@@ -156,6 +157,8 @@ export const LLM_PROVIDERS: readonly LlmProviderEntry[] = [
     modelsSupported: true,
     family: 'deepseek',
     keyPrefixes: [],
+    fallbackModels: ['deepseek-flash'],
+    note: '旧模型名 deepseek-chat / deepseek-reasoner 已于 2026-07 弃用，现役为 deepseek-flash（V4.1）。',
   },
   {
     id: 'moonshot',
@@ -164,6 +167,8 @@ export const LLM_PROVIDERS: readonly LlmProviderEntry[] = [
     modelsSupported: true,
     family: 'moonshot',
     keyPrefixes: [],
+    fallbackModels: ['kimi-k3.1-pro', 'kimi-k3'],
+    note: 'moonshot-v1 与 kimi-k2.5 已于 2026-08-31 下线；现役为 Kimi K3 / K3.1 Pro。',
   },
   {
     id: 'siliconflow',

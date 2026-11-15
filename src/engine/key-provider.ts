@@ -239,19 +239,13 @@ export const MINIMAX_INTL_ANTHROPIC_BASE_URL = 'https://api.minimax.io/anthropic
  * 这一份是**兜底**：实时拉取才是准的（模型上下线频繁）。
  * 拉取失败时用这份，别让用户对着空列表发愁。
  *
- * 清单以账号实际可用的为准 —— 不同套餐能调的模型可能不同，
- * 所以这里记的是**2026-10-24 那把订阅 key 拉到的真实清单**。
+ * 清单以官方在售为准（2026-11-15 按 platform.minimax.io/docs/faq/models 核对）：
+ * M2.7 / M2.5 / M2.1 / M2 全系将于 2026-11-18 退役（老用户自动路由到 M3.1 Flash），
+ * 兜底清单里不再保留 —— 留着会让离线兜底选出一个当天就调不了的模型。
  */
 export const MINIMAX_MODELS: readonly string[] = [
   'MiniMax-M3.1-Flash', // 最新：思考深度可调，通过 effort 调档
   'MiniMax-M3',
-  'MiniMax-M2.7',
-  'MiniMax-M2.7-highspeed',
-  'MiniMax-M2.5',
-  'MiniMax-M2.5-highspeed',
-  'MiniMax-M2.1',
-  'MiniMax-M2.1-highspeed',
-  'MiniMax-M2',
 ];
 
 /**
