@@ -788,3 +788,119 @@
   --line: #322c24;
   --line-2: #453d33;
 }
+
+/* ═══════ 启动屏 BootCinematic（v2 cinematic 移植） ═══════
+   放映厅定调：**始终暗场**（不随 data-theme 翻色），暖黑 + 测绘墨绿深底亮档
+   （accent-lit #4fa88b），与 --studio 暗色同族 —— 浅色主题下也是暗场揭幕
+   （Apple 式：暗色启动屏 → 内容页本色）。颜色用字面量不用 var(--studio-*)。 */
+
+.boot-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: #141210;
+  color: #f3eee4;
+  font-family: var(--font-mono);
+  overflow: hidden;
+}
+/* 氛围层：细网格 + 径向遮罩（纯 CSS，零资源） */
+.boot-screen::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(rgba(243, 238, 228, 0.05) 1px, transparent 1px) 0 0 / 100% 56px,
+    linear-gradient(90deg, rgba(243, 238, 228, 0.05) 1px, transparent 1px) 0 0 / 56px 100%;
+  -webkit-mask-image: radial-gradient(85% 75% at 50% 42%, #000 25%, transparent 100%);
+  mask-image: radial-gradient(85% 75% at 50% 42%, #000 25%, transparent 100%);
+}
+.boot-vignette {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(120% 90% at 50% 112%, rgba(79, 168, 139, 0.1), transparent 60%);
+}
+
+/* logo：顶部中央，顺序描边（JS 写 dasharray/offset） */
+.boot-logo { position: absolute; top: 7vh; left: 50%; transform: translateX(-50%); }
+.boot-logo svg { stroke: #4fa88b; }
+
+/* mask 揭示通用容器 */
+.boot-rv { overflow: hidden; }
+.boot-rv > * { display: block; transform: translateY(110%); transition: transform 0.8s cubic-bezier(0.22, 1, 0.36, 1); }
+.boot-rv.boot-in > * { transform: translateY(0); }
+
+/* 大字 odometer：左下，三位独立滚轮 */
+.boot-odo-wrap { position: absolute; left: 8vw; bottom: 8vw; }
+.boot-brand {
+  margin-bottom: 3vh;
+  font-size: 12px;
+  letter-spacing: 0.5em;
+  text-indent: 0.5em;
+  text-transform: uppercase;
+  color: rgba(243, 238, 228, 0.42);
+}
+.boot-odo {
+  display: flex;
+  font: 200 clamp(110px, 21vw, 250px) / 0.82 var(--font-mono);
+  letter-spacing: -0.04em;
+  font-variant-numeric: tabular-nums;
+}
+.boot-odo-col { height: 0.82em; overflow: hidden; }
+.boot-odo-stack { display: flex; flex-direction: column; transition: transform 0.55s cubic-bezier(0.22, 1, 0.36, 1); }
+.boot-odo-stack span { height: 0.82em; }
+/* 退场：三列错峰滚出 */
+.boot-screen.boot-out .boot-odo-col { transform: translateY(-130%); transition: transform 0.4s cubic-bezier(0.7, 0, 0.84, 0); }
+.boot-screen.boot-out .boot-odo-col:nth-child(2) { transition-delay: 0.05s; }
+.boot-screen.boot-out .boot-odo-col:nth-child(3) { transition-delay: 0.1s; }
+.boot-screen.boot-out .boot-rv > * { transform: translateY(-110%); transition: transform 0.4s cubic-bezier(0.7, 0, 0.84, 0); }
+
+/* 状态行：右下，方块闪烁 + mask 换词（中文同样吃 letterspacing） */
+.boot-status {
+  position: absolute;
+  right: 8vw;
+  bottom: 8vw;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 11px;
+  letter-spacing: 0.38em;
+  color: rgba(243, 238, 228, 0.42);
+}
+.boot-status::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  flex: none;
+  background: #4fa88b;
+  animation: boot-blink 1.2s steps(2) infinite;
+}
+@keyframes boot-blink { 50% { opacity: 0.15; } }
+.boot-status .boot-rv { height: 1em; }
+.boot-status .boot-rv > * { transition-duration: 0.38s; }
+
+/* 底缘进度线 */
+.boot-bar { position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: rgba(243, 238, 228, 0.08); }
+.boot-bar-fill { height: 100%; background: #4fa88b; transform-origin: left center; transform: scaleX(0); }
+
+/* ============ 双幕布退场（挂在 body 直下，盖过启动屏） ============ */
+.boot-curtain {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  transform: scaleY(0);
+  transform-origin: bottom;
+  transition: transform 0.5s cubic-bezier(0.83, 0, 0.17, 1);
+  will-change: transform;
+}
+#boot-curtain-1 { z-index: 10000; background: #4fa88b; }
+#boot-curtain-2 { z-index: 10001; background: #1d1a16; transition-delay: 0.12s; }
+.boot-curtain.boot-up { transform: scaleY(1); }
+.boot-curtain.boot-down { transform-origin: top; transform: scaleY(0); transition-delay: 0.08s; }
+#boot-curtain-2.boot-down { transition-delay: 0s; }
+
+@media (prefers-reduced-motion: reduce) {
+  .boot-odo-stack, .boot-rv > *, .boot-curtain { transition: none !important; }
+  .boot-status::before { animation: none; }
+}
