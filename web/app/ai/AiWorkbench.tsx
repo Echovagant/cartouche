@@ -88,8 +88,8 @@ interface ExecResultPayload {
 /** 来源 → 一句人话 */
 const SOURCE_TEXT: Record<LlmSource, string> = {
   none: '还没配置密钥',
-  env: '来自启动脚本注入的环境变量（磁盘上只有 DPAPI 密文）',
-  session: '来自这次会话里粘贴的（只在引擎内存里，引擎退出即失效）',
+  env: '来自本机加密存储',
+  session: '会话内粘贴，引擎重启后失效',
 };
 
 /** 闸门②的结论 → 一句人话 */
@@ -106,28 +106,6 @@ function targetText(params: Record<string, unknown>): string {
   if (typeof raw !== 'string' || raw.trim() === '') return '（未指定）';
   return raw.replace(/^(?:dataset|layer|summary):\/\//, '');
 }
-
-/**
- * 三层分工：AI 只翻译、引擎算与写、你点头。
- *
- * 为什么把这句话摊开给用户看，而不是留一句"很聪明"：
- * 多数人判断不了"逐轴容差 0.02 米"，但判断得了"我说一句话它就绕开了箱子"。
- * 说清哪一段归谁、哪一段不归谁，用户才知道该信哪一段。
- */
-const ROLE_SPLIT: readonly { who: string; body: string }[] = [
-  {
-    who: 'AI · 只翻译',
-    body: '把话翻成一份操作计划：做哪个动作、作用于哪个图层、参数是什么。它不产出任何数值。',
-  },
-  {
-    who: '确定性引擎 · 只算与写',
-    body: '按契约校验计划，预演一遍算出影响面，你确认后才按确定性规则写盘。精度与用哪个模型无关。',
-  },
-  {
-    who: '你 · 点头',
-    body: '确认前看得见：会改多少像元、改哪个文件、备份叫什么。改完原文件旁边就有备份，改了什么记进项目留痕。',
-  },
-];
 
 export default function AiWorkbench() {
   const llm = useLlm();
@@ -423,51 +401,15 @@ export default function AiWorkbench() {
           AI 接入
         </h1>
         <p className="mt-2 max-w-xl text-[13px] leading-relaxed text-studio-ink-2">
-          把密钥交给本机引擎，挑一个模型，然后发一句话试试通不通。
-          密钥不出这台机器，也不进仓库。
+          粘贴密钥 → 挑模型 → 直接发指令。
         </p>
 
-        {/* 三层分工：把"AI 做什么、不做什么"摊开。
-            徽标表达的是"我们没测过"，不是"这功能弱"——能说清分工就不必靠徽标。 */}
-        <ul className="mt-4 max-w-2xl space-y-1.5">
-          {ROLE_SPLIT.map((r) => (
-            <li key={r.who} className="flex gap-2.5 text-[12.5px] leading-relaxed text-studio-ink-2">
-              <span className="mt-px shrink-0 font-mono text-[11.5px] text-studio-ink-3">{r.who}</span>
-              <span>{r.body}</span>
-            </li>
-          ))}
-        </ul>
+        {/* 隐私承诺压成两行：发送清单对着 server/src/llm-plan.ts 的白名单写，
+            改白名单时这里的文案必须跟着改。 */}
         <p className="mt-3 max-w-xl text-[12px] leading-relaxed text-studio-ink-3">
-          这条链路已经用真模型跑过：4 类明确需求各 10 遍，共 40 次提议全部命中正确的操作；
-          说得含糊时模型不会乱猜，会告诉你缺哪一项。配一枚你自己的密钥就能自己试，
-          密钥留在你本机。
+          发送给模型的只有图层清单、视窗内要素摘要和你的原话（发前可逐字查看）；
+          图件本体、绝对路径、用户名永不上传。
         </p>
-
-        {/*
-          「会不会泄露我的数据」是外行用户第一個会问的问题，所以答案放在最显眼处，
-          而且给的是**具体清单**而不是一句「很安全」。
-
-          这份清单对着 server/src/llm-plan.ts 的白名单逐条写的：
-          允许发送 —— 项目名、图层名与字段名、要素数量、坐标系、
-          视窗内最多 200 个要素的简化坐标与关键属性值、视窗范围、用户原话；
-          禁止发送 —— 文件本体、绝对路径、用户名、机器信息。
-          改动白名单时，这里的文案必须跟着改（两边不许各说各话）。
-        */}
-        <div className="mt-4 max-w-2xl rounded-lg border border-studio-line bg-studio-2/70 px-4 py-3">
-          <div className="text-[12.5px] font-medium text-studio-ink">
-            用 AI 时，什么会离开这台机器？
-          </div>
-          <ul className="mt-2 space-y-1 text-[12px] leading-relaxed text-studio-ink-2">
-            <li>· 项目名、图层名与字段名、要素数量、坐标系标识</li>
-            <li>· 你视窗内最多 200 个要素的简化坐标与关键属性值</li>
-            <li>· 你写的这句话</li>
-          </ul>
-          <p className="mt-2 text-[12px] leading-relaxed text-studio-ink-3">
-            不会离开的：图件本体一个字节都不上传（引擎只读你自己电脑上的文件夹），
-            绝对路径、用户名、机器信息也都不发。发出去的原文，发之前能逐字看——
-            下面「看看会发送什么」就是那段原文。
-          </p>
-        </div>
 
         {/* 从画布跳过来时，把带过来的上下文说清楚：用户得知道模型看的是哪张图 */}
         {entry.fromCanvas ? (
@@ -601,9 +543,7 @@ export default function AiWorkbench() {
           ) : null}
 
           <ul className="mt-4 space-y-1.5 text-[12px] leading-relaxed text-studio-ink-3">
-            <li>· 粘贴的密钥只存在于引擎进程内存里，引擎一关就没了</li>
-            <li>· 想长期保存：用 scripts/set-key.ps1 写进本机 DPAPI 密文（%LOCALAPPDATA%\cartouche\llm-key.txt），磁盘上没有明文</li>
-            <li>· 这个页面永远不回显密钥，也没有任何接口会把它返回给浏览器</li>
+            <li>· 密钥只在引擎内存里，重启即失效；本页永不回显</li>
           </ul>
         </section>
 
@@ -633,11 +573,6 @@ export default function AiWorkbench() {
           >
             2 · 模型
           </SectionLabel>
-
-          <p className="text-[12.5px] leading-relaxed text-studio-ink-2">
-            模型上下线很频繁，写死在代码里的清单随时会过期 ——
-            所以这里默认按官方实时返回的清单来选。
-          </p>
 
           <div className="mt-4 flex flex-wrap items-center gap-2">
             {/* 端点明说没有清单接口的，就不给这个按钮 ——
@@ -716,12 +651,6 @@ export default function AiWorkbench() {
               </label>
             ) : null}
           </div>
-
-          {effortLevels.length > 0 ? (
-            <p className="mt-3 text-[12px] leading-relaxed text-studio-ink-3">
-              深度思考官方默认开着且关不掉，想省 token 只能调低档位。
-            </p>
-          ) : null}
         </section>
 
         {/* ── 3. 连通性测试 ── */}
@@ -793,9 +722,7 @@ export default function AiWorkbench() {
           </SectionLabel>
 
           <p className="text-[12.5px] leading-relaxed text-studio-ink-2">
-            说一句想怎么改，模型只会给出**一份操作计划**（提议），不会碰你的文件。
-            计划要过三道检查（合法性、引擎能不能做、影响多大），
-            最后还得你点「确认执行」才会落盘。
+            说一句想怎么改 —— 模型只出计划，过三道检查后由你确认才落盘。
           </p>
 
           <div className="mt-4 flex flex-col gap-1.5">
@@ -812,8 +739,7 @@ export default function AiWorkbench() {
               spellCheck={false}
             />
             <p className="text-[11.5px] leading-relaxed text-studio-ink-3">
-              填了才能把图层清单（名字、字段、要素数量）交给模型；不填就只有空上下文。
-              这里填的是本机路径，只发给本机引擎，不会发给模型。
+              填了才带图层清单；路径只发本机引擎，不会发给模型。
             </p>
           </div>
 
