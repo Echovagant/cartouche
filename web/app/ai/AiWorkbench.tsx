@@ -194,6 +194,48 @@ export default function AiWorkbench() {
     if (res.ok) void llm.pullModels();
   };
 
+  /** 「记住这台电脑」：写入本机 DPAPI 密文，同时立即使会话生效（免二次粘贴） */
+  const rememberKey = async (): Promise<void> => {
+    const key = apiKey.trim();
+    if (!key || llm.isBusy('key')) return;
+    try {
+      const res = await fetch(`${ENGINE_BASE}/api/llm/persist-key`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ providerId: status?.provider, apiKey: key }),
+      });
+      const body = (await res.json().catch(() => null)) as { message?: string } | null;
+      if (!res.ok) throw new Error(body?.message ?? `HTTP ${res.status}`);
+      // 写盘成功后立刻让会话也生效，用户不用再贴一次
+      await llm.setKey(key, status?.provider);
+      setApiKey('');
+      void llm.pullModels();
+    } catch (err) {
+      setApiKey('');
+      // 记住失败不静默：key 还在输入框里，用户没损失，但要知道为什么
+      setLlmError(`没能记住密钥：${(err as Error).message}（key 仍在输入框，可改用「仅本次会话使用」）`);
+    }
+  };
+
+  /** 清除：会话密钥必清；这台电脑上有记住的密文就一并删 */
+  const forgetKey = async (): Promise<void> => {
+    const provider = status?.provider;
+    if (provider) await llm.clearKey(provider);
+    try {
+      await fetch(`${ENGINE_BASE}/api/llm/persist-key`, {
+        method: 'DELETE',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ providerId: provider }),
+      });
+    } catch {
+      /* 删除失败不打断：会话密钥已经清了 */
+    }
+    void llm.refreshStatus();
+  };
+
+  /** llm.error 之外的本页错误（记住失败等），一条通道显示 */
+  const [llmError, setLlmError] = useState<string | null>(null);
+
   /* ── 提议层：四道闸门按顺序来 ── */
 
   /** 看一眼「本次将发送什么」（发之前就能看到裁剪后的上下文） */
@@ -431,6 +473,13 @@ export default function AiWorkbench() {
           </div>
         ) : null}
 
+        {llmError ? (
+          <div className="mt-6 flex items-start gap-2.5 rounded-lg border border-warn/45 bg-warn/12 px-4 py-3 text-[12.5px] leading-relaxed text-warn">
+            <WarningCircleIcon size={15} weight="fill" className="mt-px shrink-0" />
+            <span>{llmError}</span>
+          </div>
+        ) : null}
+
         {llm.statusError ? (
           <div className="mt-6 flex items-start gap-2.5 rounded-lg border border-warn/45 bg-warn/12 px-4 py-3 text-[12.5px] leading-relaxed text-warn">
             <WarningCircleIcon size={15} weight="fill" className="mt-px shrink-0" />
@@ -525,10 +574,20 @@ export default function AiWorkbench() {
               {llm.isBusy('key') ? <SpinnerGapIcon size={13} className="animate-spin" /> : null}
               仅本次会话使用
             </ActionButton>
-            {configured && status?.source === 'session' ? (
+            {/* 「记住这台电脑」：key 以 DPAPI 密文存本机（引擎写，前端只见状态），
+                重启不用重填。与「仅本次会话」用同一把输入框里的 key。 */}
+            <ActionButton
+              onClick={() => void rememberKey()}
+              disabled={!apiKey.trim() || llm.isBusy('key')}
+              title="以 DPAPI 密文存本机（%LOCALAPPDATA%\cartouche\keys），重启后不用重填"
+            >
+              记住这台电脑
+            </ActionButton>
+            {configured ? (
               <ActionButton
-                onClick={() => void llm.clearKey(status?.provider)}
+                onClick={() => void forgetKey()}
                 disabled={llm.isBusy('key')}
+                title="清除会话密钥；如果这台电脑上有记住的密文，一并删除"
               >
                 清除
               </ActionButton>

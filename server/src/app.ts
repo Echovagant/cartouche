@@ -54,6 +54,9 @@ import {
   setActiveProvider,
   setCustomBaseUrl,
   setSessionApiKey,
+  persistApiKey,
+  clearPersistedApiKey,
+  isPersisted,
   detectProviderMismatch,
 } from './llm.ts';
 import { findProvider } from '@cartouche/engine';
@@ -621,6 +624,48 @@ function foldCasePath(p: string): string {
 
     if (url.pathname === '/api/llm/status') {
       json(200, llmStatus());
+      return;
+    }
+
+    // 「记住这台电脑」：把页面粘来的 key 写成 DPAPI 密文（本机、仓库外）。
+    // 红线与 set-key.ps1 一致：不落明文、不进日志；写入即对当前接入线生效。
+    if (url.pathname === '/api/llm/persist-key' && req.method === 'POST') {
+      void (async () => {
+        try {
+          const body = JSON.parse((await readBody(req, res)).toString('utf8') || '{}') as {
+            providerId?: string;
+            apiKey?: string;
+          };
+          const providerId = body.providerId?.trim() || currentProviderId();
+          const key = body.apiKey?.trim() ?? '';
+          if (!key) {
+            json(400, { error: 'bad_request', message: '缺少 apiKey：要记住的密钥没有收到' });
+            return;
+          }
+          persistApiKey(providerId, key);
+          setActiveProvider(providerId);
+          setSessionApiKey(providerId, key);
+          json(200, { ok: true, persisted: true, provider: providerId });
+        } catch (err) {
+          json(400, { error: 'bad_request', message: (err as Error).message });
+        }
+      })();
+      return;
+    }
+
+    if (url.pathname === '/api/llm/persist-key' && req.method === 'DELETE') {
+      void (async () => {
+        try {
+          const body = JSON.parse((await readBody(req, res)).toString('utf8') || '{}') as {
+            providerId?: string;
+          };
+          const providerId = body.providerId?.trim() || currentProviderId();
+          const removed = clearPersistedApiKey(providerId);
+          json(200, { ok: true, removed, provider: providerId });
+        } catch (err) {
+          json(400, { error: 'bad_request', message: (err as Error).message });
+        }
+      })();
       return;
     }
 
