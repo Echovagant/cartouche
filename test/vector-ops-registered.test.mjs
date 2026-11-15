@@ -114,7 +114,7 @@ test('接线：vector.addField 的预演**不写盘**（确认卡点一下就改
     // ⚠️ 预演走 previewOp：executePlan 是**真执行**，那是执行那条路。
     const res = await previewOp(
       { loc, store },
-      { op: 'vector.addField', params: { target: 'dataset://sample.shp', name: 'PREVIEW_ONLY', expression: `${field}` } },
+      { op: 'vector.addField', params: { target: 'dataset://sample.shp', name: 'PREVIEW', expression: `${field}` } },
     );
     assert.equal(res.ok, true, res.error ?? '预演应当成功');
     assert.match(res.value.summary, /预演/);
