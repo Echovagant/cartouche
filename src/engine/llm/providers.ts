@@ -172,7 +172,7 @@ export const LLM_PROVIDERS: readonly LlmProviderEntry[] = [
     keyPrefixes: [],
     fallbackModels: ['deepseek-flash', 'deepseek-v4-pro'],
     effortLevels: ['high', 'max'],
-    note: '旧模型名 deepseek-chat / deepseek-reasoner 已于 2026-07 弃用。思考模式走 reasoning_effort（仅 high / max 两档），省略即非思考模式。',
+    note: 'DeepSeek 无订阅套餐，只有按量计费（token × 单价）。旧模型名 deepseek-chat / deepseek-reasoner 已于 2026-07 弃用。思考模式走 reasoning_effort（仅 high / max 两档），省略即非思考模式。',
   },
   {
     id: 'moonshot',

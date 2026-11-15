@@ -915,7 +915,7 @@ export default function Home() {
                       </dt>
                       <dd className="mt-1.5 text-body leading-relaxed text-paper/85">
                         密钥用 DPAPI 加密存在本机，从不明文落盘。见
-                        <a href="ai.html" className="text-paper underline underline-offset-4">
+                        <a href="canvas.html" className="text-paper underline underline-offset-4">
                           AI 接入
                         </a>
                         。

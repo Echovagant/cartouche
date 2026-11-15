@@ -1,24 +1,27 @@
 'use client';
 
 /**
- * 画布内的 AI 改图面板（右侧，VS Code 的 Copilot 位）。
+ * 画布内的 AI 面板（右侧，VS Code 的 Copilot 位）。
  *
  * 为什么搬进画布（2026-11-15 用户裁定）：AI 问答的**结果**要落在图上——
  * 计划→确认→地图当场刷新，用户看到图真的变了才会信这个功能有用。
- * 放在独立页面里，用户看不到改图过程，等于白做。
+ * 接入配置（接入线/密钥/模型/试一句）也全部内联——ai.html 不再需要。
  *
- * 接入配置（密钥/模型）仍在 ai.html：本面板在未配置时给一条去接入页的指引，
- * 已配置时显示当前模型；「一句话改图」全流程在这里完成。
+ * 计费方式说明（2026-11-15 按官网核对，写在各接入线的 note 里）：
+ * 同一厂商的「订阅 key」与「按量 API key」是两把不同的 key，
+ * 用户粘哪把就按哪把计费——引擎不区分，都走 Bearer token 发到对应端点。
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
-  ArrowRightIcon,
   CheckCircleIcon,
+  DownloadSimpleIcon,
   PaperPlaneTiltIcon,
+  PlugsConnectedIcon,
   SpinnerGapIcon,
   WarningCircleIcon,
   XIcon,
   EyeIcon,
+  KeyIcon,
 } from '@phosphor-icons/react';
 import { ActionButton, TextField } from '../ui';
 import ConfirmCard from '../ConfirmCard';
@@ -61,12 +64,9 @@ function targetText(params: Record<string, unknown>): string {
 }
 
 export interface AiSidePanelProps {
-  /** 当前项目根（绝对路径或引擎代号）；没有项目时面板给指引 */
   readonly projectRoot: string | null;
-  /** 当前选中图层名（写进占位提示，让用户知道改的是哪张） */
   readonly activeLayerName: string | null;
   readonly onClose: () => void;
-  /** 执行成功后由外层刷新地图与图层（用户要看到图真的变了） */
   readonly onExecuted: () => void;
 }
 
@@ -79,6 +79,8 @@ export function AiSidePanel({
   const llm = useLlm();
   const configured = llm.status?.configured ?? false;
   const effortLevels = llm.status?.effortLevels ?? [];
+  const provider = llm.status?.provider ?? '';
+  const activeNote = llm.status?.providers.find((p) => p.id === provider)?.note ?? '';
 
   const [apiKey, setApiKey] = useState('');
   const [model, setModel] = useState('');
@@ -95,14 +97,12 @@ export function AiSidePanel({
   const [gateOpen, setGateOpen] = useState(false);
   const [panelError, setPanelError] = useState<string | null>(null);
 
-  // 模型清单到手后默认选第一个
   useEffect(() => {
     const models = llm.models?.models ?? llm.status?.models ?? [];
     if (models.length === 0) return;
     setModel((prev) => (prev && models.includes(prev) ? prev : (models[0] ?? '')));
   }, [llm.models, llm.status]);
 
-  // 换接入线时深度档位跟着换
   useEffect(() => {
     const levels = llm.status?.effortLevels ?? [];
     if (levels.length > 0 && !levels.includes(effort)) setEffort(levels[0] ?? 'max');
@@ -112,12 +112,11 @@ export function AiSidePanel({
   const submitKey = async (): Promise<void> => {
     const key = apiKey.trim();
     if (!key) return;
-    const res = await llm.setKey(key, llm.status?.provider);
+    const res = await llm.setKey(key, provider);
     setApiKey('');
-    if (res.ok) void llm.pullModels();
+    if (res.ok) void llm.pullModels(provider);
   };
 
-  /* ── 提议 → 预演 ── */
   const runPreviews = async (
     ops: readonly { op: string; params: Record<string, unknown> }[],
   ): Promise<PlanGatePreview[]> => {
@@ -205,7 +204,6 @@ export function AiSidePanel({
     setGateOpen(true);
   };
 
-  /* ── 确认执行 → 地图刷新 ── */
   const confirmExecute = async (): Promise<void> => {
     const doc = proposal?.plan;
     if (!doc) return;
@@ -241,7 +239,6 @@ export function AiSidePanel({
       setExecFailure(null);
       setExecResult(body);
       setGateOpen(false);
-      // 执行成功（哪怕部分成功）都让外层刷新地图——用户要看到图真的变了
       if (body.completed > 0) onExecuted();
     } catch (err) {
       setExecFailure(
@@ -262,11 +259,8 @@ export function AiSidePanel({
     setBlocker(null);
   };
 
-  const busy = llm.planBusy || previewing || executing;
-
   return (
     <div className="flex h-full flex-col border-l border-studio-line bg-studio-2/70">
-      {/* 面板头 */}
       <div className="flex h-9 shrink-0 items-center gap-2 border-b border-studio-line px-3">
         <strong className="text-[12.5px] font-medium text-studio-ink">AI 改图</strong>
         <span className="text-[11px] text-studio-ink-3">
@@ -284,108 +278,177 @@ export function AiSidePanel({
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto p-3">
-        {/* 未配置：内联接入（一行粘贴 + 去接入页链接） */}
-        {!configured ? (
-          <div className="rounded-lg border border-studio-line bg-studio-3/50 p-3">
-            <p className="text-[12.5px] leading-relaxed text-studio-ink-2">
-              先把密钥给本机引擎（只进内存，不落盘）：
-            </p>
-            <div className="mt-2 flex gap-2">
-              <TextField
-                type="password"
-                value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') void submitKey();
-                }}
-                placeholder="粘贴 API Key"
-                className="min-w-0 flex-1"
-                autoComplete="off"
-                spellCheck={false}
-              />
-              <ActionButton
-                variant="primary"
-                onClick={() => void submitKey()}
-                disabled={!apiKey.trim() || llm.isBusy('key')}
-              >
-                {llm.isBusy('key') ? <SpinnerGapIcon size={13} className="animate-spin" /> : null}
-                配置
-              </ActionButton>
-            </div>
-            <a
-              href="ai.html"
-              className="mt-2 inline-flex items-center gap-1 text-[12px] text-studio-ink-3 transition-colors hover:text-studio-ink-2"
-            >
-              模型与密钥的详细设置在接入页
-              <ArrowRightIcon size={11} aria-hidden="true" />
-            </a>
+        {/* ── 接入配置 ── */}
+        <div className="rounded-lg border border-studio-line bg-studio-3/50 p-3">
+          <div className="flex items-center gap-1.5 text-[12px] font-medium text-studio-ink">
+            <PlugsConnectedIcon size={13} aria-hidden="true" />
+            接入
           </div>
-        ) : (
-          /* 已配置：紧凑的模型/档位行 */
-          <div className="flex flex-wrap items-center gap-2 text-[12px] text-studio-ink-3">
-            <select
-              value={model}
-              onChange={(e) => setModel(e.target.value)}
-              disabled={modelOptionsEmpty(llm.status?.models ?? [])}
-              className="max-w-[220px] rounded-lg border border-studio-line bg-studio/70 px-2 py-1 text-[12px] text-studio-ink focus:border-accent focus:outline-none"
+          <label className="mt-2 block text-[11.5px] text-studio-ink-3" htmlFor="panel-provider">
+            接入线
+          </label>
+          <select
+            id="panel-provider"
+            value={provider}
+            onChange={(e) => void llm.selectProvider(e.target.value)}
+            className="mt-1 w-full rounded-lg border border-studio-line bg-studio/70 px-2 py-1.5 text-[12px] text-studio-ink focus:border-accent focus:outline-none"
+          >
+            {(llm.status?.providers ?? []).map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.displayName}
+                {p.configured ? ' ✓' : ''}
+              </option>
+            ))}
+          </select>
+          {activeNote ? (
+            <p className="mt-1.5 text-[11px] leading-relaxed text-studio-ink-3">{activeNote}</p>
+          ) : null}
+          <div className="mt-2 flex gap-1.5">
+            <TextField
+              type="password"
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void submitKey();
+              }}
+              placeholder="粘贴 API Key"
+              className="min-w-0 flex-1"
+              autoComplete="off"
+              spellCheck={false}
+            />
+            <ActionButton
+              variant="primary"
+              onClick={() => void submitKey()}
+              disabled={!apiKey.trim() || llm.isBusy('key')}
             >
-              {(llm.models?.models ?? llm.status?.models ?? []).map((m) => (
-                <option key={m} value={m}>
-                  {m}
-                </option>
-              ))}
-            </select>
-            {effortLevels.length > 0 ? (
+              {llm.isBusy('key') ? <SpinnerGapIcon size={13} className="animate-spin" /> : null}
+              配置
+            </ActionButton>
+          </div>
+          <p className="mt-1 text-[11px] text-studio-ink-3">
+            只进引擎内存，不落盘不回显。同一厂商的订阅 key 与按量 key 是两把不同的 key——粘哪把就按哪把计费。
+          </p>
+        </div>
+
+        {/* ── 模型 ── */}
+        {configured ? (
+          <div className="mt-3 rounded-lg border border-studio-line bg-studio-3/50 p-3">
+            <div className="flex items-center gap-1.5 text-[12px] font-medium text-studio-ink">
+              <KeyIcon size={13} aria-hidden="true" />
+              模型
+            </div>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
               <select
-                value={effort}
-                onChange={(e) => setEffort(e.target.value)}
-                className="rounded-lg border border-studio-line bg-studio/70 px-2 py-1 text-[12px] text-studio-ink focus:border-accent focus:outline-none"
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+                disabled={(llm.models?.models ?? llm.status?.models ?? []).length === 0}
+                className="max-w-[200px] rounded-lg border border-studio-line bg-studio/70 px-2 py-1 text-[12px] text-studio-ink focus:border-accent focus:outline-none"
               >
-                {effortLevels.map((lv) => (
-                  <option key={lv} value={lv}>
-                    思考 {lv}
+                {(llm.models?.models ?? llm.status?.models ?? []).map((m) => (
+                  <option key={m} value={m}>
+                    {m}
                   </option>
                 ))}
               </select>
-            ) : null}
+              <ActionButton onClick={() => void llm.pullModels(provider)} disabled={llm.isBusy('models')}>
+                {llm.isBusy('models') ? (
+                  <SpinnerGapIcon size={13} className="animate-spin" />
+                ) : (
+                  <DownloadSimpleIcon size={13} />
+                )}
+                刷新
+              </ActionButton>
+              {effortLevels.length > 0 ? (
+                <select
+                  value={effort}
+                  onChange={(e) => setEffort(e.target.value)}
+                  className="rounded-lg border border-studio-line bg-studio/70 px-2 py-1 text-[12px] text-studio-ink focus:border-accent focus:outline-none"
+                >
+                  {effortLevels.map((lv) => (
+                    <option key={lv} value={lv}>
+                      思考 {lv}
+                    </option>
+                  ))}
+                </select>
+              ) : null}
+            </div>
           </div>
-        )}
+        ) : null}
 
-        {/* 指令输入 */}
-        <textarea
-          value={instruction}
-          onChange={(e) => setInstruction(e.target.value)}
-          rows={3}
-          className="mt-3 w-full resize-y rounded-lg border border-studio-line bg-studio/70 px-2.5 py-2 text-[12.5px] leading-relaxed text-studio-ink placeholder:text-studio-ink-3 focus:border-accent focus:outline-none"
-          placeholder={
-            activeLayerName
-              ? `例如：把《${activeLayerName}》右上角那片提亮一点，别动别的`
-              : '例如：把底图右上角那片提亮一点，别动别的'
-          }
-        />
+        {/* ── 试一句 ── */}
+        {configured ? (
+          <details className="mt-3 rounded-lg border border-studio-line bg-studio-3/50 px-3 py-2">
+            <summary className="cursor-pointer text-[12px] text-studio-ink-2">
+              试一句（连通性测试）
+            </summary>
+            <textarea
+              rows={2}
+              className="mt-2 w-full resize-y rounded-lg border border-studio-line bg-studio/70 px-2 py-1.5 text-[12px] text-studio-ink focus:border-accent focus:outline-none"
+              placeholder="发一句话过去看模型怎么回"
+              defaultValue="用一句话说：这张图适合用来做什么？"
+              id="panel-test-prompt"
+            />
+            <ActionButton
+              onClick={() => {
+                const el = document.getElementById('panel-test-prompt') as HTMLTextAreaElement | null;
+                void llm.testConnection({ prompt: el?.value ?? '你好', model, effort });
+              }}
+              disabled={!configured || llm.isBusy('test')}
+              className="mt-2"
+            >
+              {llm.isBusy('test') ? <SpinnerGapIcon size={13} className="animate-spin" /> : <PaperPlaneTiltIcon size={13} />}
+              发一句
+            </ActionButton>
+            {llm.testResult ? (
+              <div className="mt-2 rounded border border-studio-line bg-studio/60 p-2">
+                <div className="font-mono text-[10.5px] text-studio-ink-3">
+                  {llm.testResult.model} · {llm.testResult.elapsedMs} ms
+                </div>
+                <p className="mt-1 whitespace-pre-wrap text-[12px] leading-relaxed text-studio-ink">
+                  {llm.testResult.reply}
+                </p>
+              </div>
+            ) : null}
+          </details>
+        ) : null}
 
-        <div className="mt-2 flex items-center gap-2">
-          <ActionButton
-            variant="primary"
-            onClick={() => void sendPlan()}
-            disabled={!configured || llm.planBusy || !instruction.trim()}
-          >
-            {llm.planBusy ? (
-              <SpinnerGapIcon size={13} className="animate-spin" />
-            ) : (
-              <PaperPlaneTiltIcon size={13} />
-            )}
-            {llm.planBusy ? '正在出计划…' : '提议改动'}
-          </ActionButton>
-          <EyeIcon size={13} aria-hidden="true" className="text-studio-ink-3" />
-          <span className="text-[11.5px] text-studio-ink-3">发送前可逐字查看</span>
-        </div>
+        {/* ── 一句话改图 ── */}
+        {configured ? (
+          <div className="mt-3">
+            <div className="flex items-center gap-1.5 text-[12px] font-medium text-studio-ink">
+              <PaperPlaneTiltIcon size={13} aria-hidden="true" />
+              用一句话改图
+            </div>
+            <textarea
+              value={instruction}
+              onChange={(e) => setInstruction(e.target.value)}
+              rows={3}
+              className="mt-2 w-full resize-y rounded-lg border border-studio-line bg-studio/70 px-2.5 py-2 text-[12.5px] leading-relaxed text-studio-ink placeholder:text-studio-ink-3 focus:border-accent focus:outline-none"
+              placeholder={
+                activeLayerName
+                  ? `例如：把《${activeLayerName}》右上角那片提亮一点，别动别的`
+                  : '例如：把底图右上角那片提亮一点，别动别的'
+              }
+            />
+            <div className="mt-2 flex items-center gap-2">
+              <ActionButton
+                variant="primary"
+                onClick={() => void sendPlan()}
+                disabled={llm.planBusy || !instruction.trim()}
+              >
+                {llm.planBusy ? <SpinnerGapIcon size={13} className="animate-spin" /> : <PaperPlaneTiltIcon size={13} />}
+                {llm.planBusy ? '正在出计划…' : '提议改动'}
+              </ActionButton>
+              <EyeIcon size={13} aria-hidden="true" className="text-studio-ink-3" />
+              <span className="text-[11.5px] text-studio-ink-3">发送前可逐字查看</span>
+            </div>
+          </div>
+        ) : null}
 
         {panelError ? (
           <p className="mt-2 text-[12px] leading-relaxed text-warn">{panelError}</p>
         ) : null}
 
-        {/* 计划不合法 / 未支持 */}
         {proposal && proposal.schemaIssues.length > 0 ? (
           <div className="mt-3 rounded-lg border border-warn/45 bg-warn/12 px-3 py-2.5 text-[12.5px] leading-relaxed text-warn">
             <strong>计划不合法：</strong>
@@ -407,7 +470,6 @@ export function AiSidePanel({
           </div>
         ) : null}
 
-        {/* 计划预览 */}
         {proposal?.plan ? (
           <div className="mt-3 rounded-lg border border-studio-line bg-studio/60 p-3">
             <div className="mb-1.5 font-mono text-[11px] text-studio-ink-3">
@@ -415,22 +477,15 @@ export function AiSidePanel({
               {proposal.elapsedMs !== null ? ` · ${proposal.elapsedMs} ms` : ''}
             </div>
             {proposal.plan.intent ? (
-              <p className="mb-1.5 text-[12.5px] leading-relaxed text-studio-ink-2">
-                {proposal.plan.intent}
-              </p>
+              <p className="mb-1.5 text-[12.5px] leading-relaxed text-studio-ink-2">{proposal.plan.intent}</p>
             ) : null}
             <ol className="flex flex-col gap-1.5">
               {proposal.plan.ops.map((op, index) => (
-                <li
-                  key={`${op.op}-${index}`}
-                  className="rounded border border-studio-line bg-studio/45 px-2 py-1.5"
-                >
+                <li key={`${op.op}-${index}`} className="rounded border border-studio-line bg-studio/45 px-2 py-1.5">
                   <div className="flex flex-wrap items-center gap-x-2 text-[12px] text-studio-ink">
                     <span className="font-mono text-[11px] text-studio-ink-3">#{index + 1}</span>
                     <strong className="font-medium">{opLabel(op.op)}</strong>
-                    <span className="font-mono text-[11px] break-all text-studio-ink-3">
-                      {targetText(op.params)}
-                    </span>
+                    <span className="font-mono text-[11px] break-all text-studio-ink-3">{targetText(op.params)}</span>
                   </div>
                   <pre className="mt-1 overflow-x-auto whitespace-pre-wrap rounded bg-studio/70 p-1.5 font-mono text-[10.5px] leading-relaxed text-studio-ink-2">
                     {JSON.stringify(op.params, null, 2)}
@@ -441,7 +496,6 @@ export function AiSidePanel({
           </div>
         ) : null}
 
-        {/* 预演影响 */}
         {previews.length > 0 ? (
           <div className="mt-3 rounded-lg border border-studio-line bg-studio/60 p-3">
             <div className="mb-1.5 font-mono text-[11px] text-studio-ink-3">量化影响</div>
@@ -481,10 +535,7 @@ export function AiSidePanel({
           <div className="mt-3 rounded-lg border border-warn/40 bg-warn/12 px-3 py-2.5 text-[12.5px] leading-relaxed text-warn">
             <div className="font-medium">{previewFailure.title}</div>
             <div className="mt-0.5 text-studio-ink-2">{previewFailure.detail}</div>
-            <div className="mt-0.5">
-              <span className="text-studio-ink-3">下一步：</span>
-              {previewFailure.next}
-            </div>
+            <div className="mt-0.5"><span className="text-studio-ink-3">下一步：</span>{previewFailure.next}</div>
           </div>
         ) : null}
 
@@ -492,10 +543,7 @@ export function AiSidePanel({
           <div className="mt-3 rounded-lg border border-warn/45 bg-warn/12 px-3 py-2.5 text-[12.5px] leading-relaxed text-warn">
             <div className="font-medium">{blocker.title}</div>
             <div className="mt-0.5 text-studio-ink-2">{blocker.detail}</div>
-            <div className="mt-0.5">
-              <span className="text-studio-ink-3">下一步：</span>
-              {blocker.next}
-            </div>
+            <div className="mt-0.5"><span className="text-studio-ink-3">下一步：</span>{blocker.next}</div>
           </div>
         ) : null}
 
@@ -503,26 +551,17 @@ export function AiSidePanel({
           <div className="mt-3 rounded-lg border border-warn/45 bg-warn/12 px-3 py-2.5 text-[12.5px] leading-relaxed text-warn">
             <div className="font-medium">{execFailure.title}</div>
             <div className="mt-0.5 text-studio-ink-2">{execFailure.detail}</div>
-            <div className="mt-0.5">
-              <span className="text-studio-ink-3">下一步：</span>
-              {execFailure.next}
-            </div>
+            <div className="mt-0.5"><span className="text-studio-ink-3">下一步：</span>{execFailure.next}</div>
           </div>
         ) : null}
 
-        {/* 执行结果 */}
         {execResult ? (
           <div className="mt-3 rounded-lg border border-studio-line bg-studio/60 p-3">
             <div className="mb-1.5 font-mono text-[11px] text-studio-ink-3">执行结果</div>
             {execResult.results.length > 0 ? (
               <ul className="space-y-1.5">
                 {execResult.results.map((result) => {
-                  const failure = result.ok
-                    ? null
-                    : describeExecuteFailure({
-                        op: result.op,
-                        message: result.error ?? '未知原因',
-                      });
+                  const failure = result.ok ? null : describeExecuteFailure({ op: result.op, message: result.error ?? '未知原因' });
                   return (
                     <li key={result.index} className="flex items-start gap-2 text-[12.5px]">
                       {result.ok ? (
@@ -532,9 +571,7 @@ export function AiSidePanel({
                       )}
                       <span className="min-w-0 flex-1">
                         <span className="font-mono text-[11px]">{result.op}</span>
-                        <span className="ml-1 text-studio-ink-2">
-                          {result.ok ? '成功' : (failure?.title ?? '失败')}
-                        </span>
+                        <span className="ml-1 text-studio-ink-2">{result.ok ? '成功' : (failure?.title ?? '失败')}</span>
                         {result.ok && result.value?.summary ? (
                           <span className="mt-0.5 block text-studio-ink-2">{result.value.summary}</span>
                         ) : null}
@@ -564,7 +601,6 @@ export function AiSidePanel({
         ) : null}
       </div>
 
-      {/* 闸门④确认卡：全页浮层 */}
       {gateOpen && proposal?.plan ? (
         proposal.plan.ops.length === 1 ? (
           <ConfirmCard
@@ -595,9 +631,4 @@ export function AiSidePanel({
       ) : null}
     </div>
   );
-}
-
-/** 模型选项为空的小工具（避免 JSX 里塞复杂表达式） */
-function modelOptionsEmpty(models: readonly string[]): boolean {
-  return models.length === 0;
 }
