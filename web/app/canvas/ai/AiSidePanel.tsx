@@ -112,9 +112,46 @@ export function AiSidePanel({
   const submitKey = async (): Promise<void> => {
     const key = apiKey.trim();
     if (!key) return;
-    const res = await llm.setKey(key, provider);
+    const res = await llm.setKey(key, llm.status?.provider);
     setApiKey('');
-    if (res.ok) void llm.pullModels(provider);
+    if (res.ok) void llm.pullModels();
+  };
+
+  /** 「记住这台电脑」：写入本机 DPAPI 密文，同时立即使会话生效（免二次粘贴） */
+  const rememberKey = async (): Promise<void> => {
+    const key = apiKey.trim();
+    if (!key || llm.isBusy('key')) return;
+    try {
+      const res = await fetch(`${ENGINE_BASE}/api/llm/persist-key`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ providerId: llm.status?.provider, apiKey: key }),
+      });
+      const body = (await res.json().catch(() => null)) as { message?: string } | null;
+      if (!res.ok) throw new Error(body?.message ?? `HTTP ${res.status}`);
+      await llm.setKey(key, llm.status?.provider);
+      setApiKey('');
+      void llm.pullModels();
+    } catch (err) {
+      setApiKey('');
+      setPanelError(`没能记住密钥：${(err as Error).message}（key 仍在输入框，可改用「仅本次会话使用」）`);
+    }
+  };
+
+  /** 清除：会话密钥必清；这台电脑上有记住的密文就一并删 */
+  const forgetKey = async (): Promise<void> => {
+    const provider = llm.status?.provider;
+    if (provider) await llm.clearKey(provider);
+    try {
+      await fetch(`${ENGINE_BASE}/api/llm/persist-key`, {
+        method: 'DELETE',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ providerId: provider }),
+      });
+    } catch {
+      /* 删除失败不打断：会话密钥已经清了 */
+    }
+    void llm.refreshStatus();
   };
 
   const runPreviews = async (
@@ -322,8 +359,21 @@ export function AiSidePanel({
               disabled={!apiKey.trim() || llm.isBusy('key')}
             >
               {llm.isBusy('key') ? <SpinnerGapIcon size={13} className="animate-spin" /> : null}
-              配置
+              仅本次会话使用
             </ActionButton>
+            {/* 「记住这台电脑」：key 以 DPAPI 密文存本机（引擎写，前端只见状态），重启不用重填 */}
+            <ActionButton
+              onClick={() => void rememberKey()}
+              disabled={!apiKey.trim() || llm.isBusy('key')}
+              title="以 DPAPI 密文存本机（%LOCALAPPDATA%\cartouche\keys），重启后不用重填"
+            >
+              记住这台电脑
+            </ActionButton>
+            {configured ? (
+              <ActionButton onClick={() => void forgetKey()} disabled={llm.isBusy('key')}>
+                清除
+              </ActionButton>
+            ) : null}
           </div>
           <p className="mt-1 text-[11px] text-studio-ink-3">
             只进引擎内存，不落盘不回显。同一厂商的订阅 key 与按量 key 是两把不同的 key——粘哪把就按哪把计费。
