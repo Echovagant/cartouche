@@ -102,16 +102,71 @@ function saveHandles(): void {
  * 否则中文路径经过 GBK 解码会变成乱码 —— 路径乱了就选错目录。
  */
 export function buildFolderPickerScript(): string {
+  // ⚠️ 2026-11-15 裁定：不用 .NET FolderBrowserDialog（旧树形界面，用户说"廉价"），
+  // 改用 Windows 原生 IFileOpenDialog COM —— 与 VS Code / Chrome 文件选择器完全相同的
+  // 现代界面（有地址栏、快速访问、搜索框）。通过 Add-Type 加载 C# 代码调用 COM。
+  // 对话框以非模态方式弹出（Show(IntPtr.Zero)），独立于引擎进程窗口，出现在前台。
+  const cs = [
+    'using System;',
+    'using System.Runtime.InteropServices;',
+    'public class ModernFolderPicker {',
+    '  [DllImport("ole32.dll")]',
+    '  static extern int CoCreateInstance(ref Guid clsid, IntPtr pUnkOuter, uint dwClsContext, ref Guid riid, [MarshalAs(UnmanagedType.Interface)] out IFileOpenDialog ppv);',
+    '  [ComImport, Guid("DC1C5A9C-E88A-4dde-A5A1-60F82A20AEF7")]',
+    '  class FileOpenDialogCOM { }',
+    '  [ComImport, Guid("D57C7288-D4AD-4768-BE02-9D96953287B4"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]',
+    '  interface IFileOpenDialog {',
+    '    [PreserveSig] int Show(IntPtr hwndOwner);',
+    '    [PreserveSig] int SetFileTypes(uint c, IntPtr p);',
+    '    [PreserveSig] int SetFileTypeIndex(uint i);',
+    '    [PreserveSig] int GetFileTypeIndex(out uint i);',
+    '    [PreserveSig] int Advise(IntPtr f, out uint c);',
+    '    [PreserveSig] int Unadvise(uint c);',
+    '    [PreserveSig] int SetOptions(uint o);',
+    '    [PreserveSig] int GetOptions(out uint o);',
+    '    [PreserveSig] int SetDefaultFolder(IntPtr i);',
+    '    [PreserveSig] int SetFolder(IntPtr i);',
+    '    [PreserveSig] int GetFolder(out IntPtr i);',
+    '    [PreserveSig] int GetCurrentSelection(IntPtr i);',
+    '    [PreserveSig] int SetFileName([MarshalAs(UnmanagedType.LPWStr)] string n);',
+    '    [PreserveSig] int SetTitle([MarshalAs(UnmanagedType.LPWStr)] string t);',
+    '    [PreserveSig] int SetOkButtonLabel([MarshalAs(UnmanagedType.LPWStr)] string t);',
+    '    [PreserveSig] int SetFileNameLabel([MarshalAs(UnmanagedType.LPWStr)] string t);',
+    '    [PreserveSig] int GetResult(out IntPtr i);',
+    '    [PreserveSig] int AddPlace(IntPtr i, int f);',
+    '    [PreserveSig] int SetNavigationRoot(IntPtr i);',
+    '  }',
+    '  [ComImport, Guid("43826D1E-E718-42EE-BC55-A1E261C37BFE"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]',
+    '  interface IShellItem {',
+    '    [PreserveSig] int GetDisplayName(uint n, [MarshalAs(UnmanagedType.LPWStr)] out string p);',
+    '  }',
+    '  public static string Pick(string title) {',
+    '    var clsid = new Guid("DC1C5A9C-E88A-4dde-A5A1-60F82A20AEF7");',
+    '    var iid = new Guid("D57C7288-D4AD-4768-BE02-9D96953287B4");',
+    '    IFileOpenDialog dialog;',
+    '    CoCreateInstance(ref clsid, IntPtr.Zero, 1, ref iid, out dialog);',
+    '    dialog.SetTitle(title);',
+    '    dialog.SetOptions(0x60);',
+    '    if (dialog.Show(IntPtr.Zero) != 0) return null;',
+    '    IntPtr ppsi;',
+    '    dialog.GetResult(out ppsi);',
+    '    var item = (IShellItem)Marshal.GetObjectForIUnknown(ppsi);',
+    '    string path;',
+    '    item.GetDisplayName(0x80058000, out path);',
+    '    return path;',
+    '  }',
+    '}',
+  ].join('\n');
+
   return [
-    'Add-Type -AssemblyName System.Windows.Forms',
+    "$cs = @'",
+    cs,
+    "'@",
+    'Add-Type -TypeDefinition $cs',
     'chcp 65001 > $null',
     '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8',
-    '$d = New-Object System.Windows.Forms.FolderBrowserDialog',
-    '$d.Description = "选一个放图件的文件夹"',
-    // 允许在对话框里直接新建文件夹 —— 用户经常是「先建一个再放图件」
-    '$d.ShowNewFolderButton = $true',
-    '$r = $d.ShowDialog()',
-    'if ($r -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Out.Write($d.SelectedPath) } else { exit 1 }',
+    '$r = [ModernFolderPicker]::Pick("选一个放图件的文件夹")',
+    'if ($r) { [Console]::Out.Write($r) } else { exit 1 }',
     'exit 0',
   ].join('\n');
 }
