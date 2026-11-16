@@ -17,10 +17,18 @@
  * 灭掉的只是动效 —— 与项目既有原则一致（「动效只负责表达状态变化，不承载信息」）。
  */
 import { useCallback, useEffect, useState } from 'react';
+import { ENGINE_BASE } from '../../engine-base';
 
 export type BootAnimationMode = 'always' | 'first-visit' | 'never';
 
 const STORAGE_KEY = 'cartouche.boot.animation';
+/**
+ * 「这个值已经和引擎核对过」的标记。
+ *
+ * 没有它 = 本地缓存还没跟引擎比对过（首访、换浏览器、换访问地址），
+ * 这时要**先问引擎**再决定播不播 —— 跨浏览器才能拿到同一份设置。
+ */
+const SYNCED_KEY = 'cartouche.boot.synced';
 
 export const BOOT_ANIMATION_LABELS: Record<BootAnimationMode, string> = {
   always: '总是播放',
@@ -49,6 +57,25 @@ export function readBootAnimationMode(): BootAnimationMode {
   }
 }
 
+/** 本地缓存是否已经和引擎核对过 */
+export function isBootAnimationSynced(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    return window.localStorage.getItem(SYNCED_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+/** 记下"已与引擎核对过" */
+function markSynced(): void {
+  try {
+    window.localStorage.setItem(SYNCED_KEY, '1');
+  } catch {
+    /* 隐私模式写不了：下次再问一遍引擎就是了 */
+  }
+}
+
 /** 写入设置；'first-visit' 是默认值，用 removeItem 而不是写一个冗余值 */
 export function setBootAnimationMode(mode: BootAnimationMode): void {
   try {
@@ -66,12 +93,62 @@ export function setBootAnimationMode(mode: BootAnimationMode): void {
  * 预渲染进 HTML —— 如果只靠 JS 判断，首帧会先闪一下启动屏再消失。
  * 内联脚本 + CSS 属性选择器是唯一能做到"首帧就没有"的办法
  * （与主题的 data-theme 同一套路）。
+ *
+ * `pending` = 本地缓存还没跟引擎核对过（首访、换浏览器、换访问地址）：
+ * 这时**先藏住**启动屏，等问完引擎再决定播不播 —— 问的工夫只有几十毫秒，
+ * 藏着比"闪一下再消失"好看得多。
  */
 export const BOOT_ATTR = 'data-boot';
+export const BOOT_PENDING_ATTR = 'data-boot-pending';
 
-export function applyBootAttr(mode: BootAnimationMode): void {
+export function applyBootAttr(mode: BootAnimationMode, pending = false): void {
   if (typeof document === 'undefined') return;
   document.documentElement.setAttribute(BOOT_ATTR, mode === 'never' ? 'off' : 'on');
+  document.documentElement.setAttribute(BOOT_PENDING_ATTR, pending ? '1' : '0');
+}
+
+/**
+ * 向引擎问一次机器级设置（引擎是权威：跨浏览器、跨访问地址都一致）。
+ *
+ * 返回 null = 问不到（引擎没起 / 超时）——调用方按本地缓存继续，
+ * 不能因为引擎没起就让用户看到个错的设置。
+ *
+ * 拿到值后顺手写回本地缓存并打"已核对"标记：下次启动就能零延迟用本地值。
+ */
+export async function fetchEngineBootMode(timeoutMs = 800): Promise<BootAnimationMode | null> {
+  if (typeof window === 'undefined') return null;
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(`${ENGINE_BASE}/api/settings`, { signal: controller.signal });
+    if (!res.ok) return null;
+    const body = (await res.json()) as { bootAnimation?: unknown };
+    if (!isMode(body.bootAnimation)) return null;
+    setBootAnimationMode(body.bootAnimation);
+    markSynced();
+    return body.bootAnimation;
+  } catch {
+    return null;
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
+/** 把设置写进引擎（权威副本）：保存时两边都写，本地即时生效、引擎跨浏览器共享 */
+export async function saveBootModeToEngine(mode: BootAnimationMode): Promise<boolean> {
+  if (typeof window === 'undefined') return false;
+  try {
+    const res = await fetch(`${ENGINE_BASE}/api/settings`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ bootAnimation: mode }),
+    });
+    if (!res.ok) return false;
+    markSynced();
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** React 侧订阅设置值（设置页改完立刻反映到界面，不必刷新） */
@@ -86,6 +163,8 @@ export function useBootAnimationMode(): [BootAnimationMode, (mode: BootAnimation
     setBootAnimationMode(next);
     setMode(next);
     applyBootAttr(next);
+    // 同步到引擎（跨浏览器/跨地址共享）——失败也不影响本地已生效
+    void saveBootModeToEngine(next);
   }, []);
 
   return [mode, update];

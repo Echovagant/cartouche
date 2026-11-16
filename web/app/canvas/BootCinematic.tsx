@@ -22,7 +22,13 @@
  * 状态词是启动期真实并行发生的三件事（连引擎 / 装地图内核 / 准备图面）。
  */
 import { useEffect, useRef } from 'react';
-import { readBootAnimationMode } from './project/useBootAnimation';
+import {
+  applyBootAttr,
+  fetchEngineBootMode,
+  isBootAnimationSynced,
+  readBootAnimationMode,
+  type BootAnimationMode,
+} from './project/useBootAnimation';
 
 const STATUSES = ['连接图签引擎', '装载地图内核', '准备图面'] as const;
 const READY_WORD = '就绪';
@@ -60,17 +66,40 @@ export function BootCinematic({
     if (startedRef.current) return;
     startedRef.current = true;
 
-    // 「从不播放」：整个启动屏跳过，把接力棒直接交给工作台。
-    // 首帧的隐藏由 layout 的内联脚本 + CSS 完成（html[data-boot='off']），
-    // 所以这里不会看到任何闪屏 —— 只是不播动画而已。
-    const mode = readBootAnimationMode();
-    if (mode === 'never') {
-      screenRef.current?.style.setProperty('display', 'none');
-      document.getElementById('boot-curtain-1')?.style.setProperty('display', 'none');
-      document.getElementById('boot-curtain-2')?.style.setProperty('display', 'none');
-      onRevealRef.current();
-      return;
-    }
+    // 定时器挂到外层：effect 主体现在是异步的（要先问引擎），cleanup 才清得掉它们
+    let readyTimer = 0;
+    let statusTimer = 0;
+
+    /**
+     * 决定这次播不播、怎么播。
+     *
+     * 引擎是**权威**（机器级设置，换浏览器、换访问地址都一致）；
+     * localStorage 是**缓存**（负责首帧零闪屏）。
+     *   - 本地已核对过 → 直接用，零延迟；
+     *   - 没核对过（首访 / 换浏览器 / 换地址）→ 问引擎，问完写回本地并打标记。
+     * 问不到引擎（引擎没起）→ 按本地来，不能让用户看到个错的设置。
+     */
+    const decideMode = async (): Promise<BootAnimationMode> => {
+      if (isBootAnimationSynced()) return readBootAnimationMode();
+      const fromEngine = await fetchEngineBootMode(800);
+      return fromEngine ?? readBootAnimationMode();
+    };
+
+    const run = async (): Promise<void> => {
+      const mode = await decideMode();
+      // 问完了：撤掉"待定"标记（首帧期间启动屏是藏着的，现在按结论亮相）
+      applyBootAttr(mode, false);
+
+      // 「从不播放」：整个启动屏跳过，把接力棒直接交给工作台。
+      // 首帧的隐藏由 layout 的内联脚本 + CSS 完成（html[data-boot='off']），
+      // 所以这里不会看到任何闪屏 —— 只是不播动画而已。
+      if (mode === 'never') {
+        screenRef.current?.style.setProperty('display', 'none');
+        document.getElementById('boot-curtain-1')?.style.setProperty('display', 'none');
+        document.getElementById('boot-curtain-2')?.style.setProperty('display', 'none');
+        onRevealRef.current();
+        return;
+      }
 
     const screen = screenRef.current;
     const bar = barRef.current;
@@ -137,15 +166,14 @@ export function BootCinematic({
     });
 
     /* ---- 状态词 mask 换词：滚出上 → 换词 → 滚入下 ---- */
-    let stTimer = 0;
     const setStatus = (word: string): void => {
       if (reduced) {
         statusText.textContent = word;
         return;
       }
-      window.clearTimeout(stTimer);
+      window.clearTimeout(statusTimer);
       statusRv.classList.remove('boot-in');
-      stTimer = window.setTimeout(() => {
+      statusTimer = window.setTimeout(() => {
         statusText.textContent = word;
         statusRv.classList.add('boot-in');
       }, 380);
@@ -249,9 +277,9 @@ export function BootCinematic({
     // 真实信号：引擎健康检查 ready → 立刻收尾（比模拟进度快就按它的来）
     if (engineReadyRef.current) {
       done();
-      return () => window.clearTimeout(stTimer);
+      return;
     }
-    const readyTimer = window.setInterval(() => {
+    readyTimer = window.setInterval(() => {
       if (finished) return;
       if (engineReadyRef.current) {
         done();
@@ -263,10 +291,13 @@ export function BootCinematic({
       if (performance.now() - startedAt > FORCE_EXIT_AT) done();
     }, 300);
     window.setTimeout(done, MAX_DURATION); // 兜底：引擎离线也不把人卡在加载屏
+    };
+
+    void run();
 
     return () => {
       window.clearInterval(readyTimer);
-      window.clearTimeout(stTimer);
+      window.clearTimeout(statusTimer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 编排器只跑一次，props 经 ref 读最新值
   }, []);

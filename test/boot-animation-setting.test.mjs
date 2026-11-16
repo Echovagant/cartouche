@@ -96,3 +96,72 @@ describe('加载动画设置', () => {
     );
   });
 });
+
+describe('加载动画设置的持久化（跨浏览器 / 跨访问地址）', () => {
+  const server = read('server', 'src', 'settings.ts');
+  const serverApp = read('server', 'src', 'app.ts');
+
+  test('引擎是权威副本：设置落在本机配置目录，不是浏览器里', () => {
+    assert.match(server, /settings\.json/, '要落盘到配置文件');
+    assert.match(
+      server,
+      /LOCALAPPDATA|CARTOUCHE_CONFIG_DIR/,
+      '落在本机配置目录（与 roots.json 同级）',
+    );
+    assert.match(server, /readSettings/, '要能读回来');
+    assert.match(server, /writeSettings/, '要能写进去');
+  });
+
+  test('引擎有设置接口（GET 读 / PUT 写）', () => {
+    assert.match(serverApp, /\/api\/settings/, '要有 /api/settings 路由');
+    assert.match(serverApp, /readSettings\(\)/, 'GET 要读设置');
+    assert.match(serverApp, /writeSettings\(/, 'PUT 要写设置');
+  });
+
+  test('前端：本地缓存 + 引擎同步，缺一不可', () => {
+    assert.match(pref, /fetchEngineBootMode/, '要能向引擎问设置');
+    assert.match(pref, /saveBootModeToEngine/, '保存时要同步到引擎');
+    assert.match(pref, /isBootAnimationSynced/, '要记录"本地已与引擎核对过"');
+    assert.match(
+      pref,
+      /cartouche\.boot\.synced/,
+      '核对标记用独立存储键（与设置值分开）',
+    );
+  });
+
+  test('启动决策链：本地核对过就零延迟，没核对过先问引擎', () => {
+    assert.match(
+      boot,
+      /isBootAnimationSynced\(\)\) return readBootAnimationMode\(\)/,
+      '本地核对过 → 直接用，不等引擎',
+    );
+    assert.match(
+      boot,
+      /await fetchEngineBootMode\(800\)/,
+      '没核对过 → 先问引擎（换浏览器才能拿到同一份设置）',
+    );
+    assert.match(
+      boot,
+      /fromEngine \?\? readBootAnimationMode\(\)/,
+      '问不到引擎 → 按本地来（引擎没起也不能让用户看到错的设置）',
+    );
+  });
+
+  test('问引擎期间启动屏是藏着的（跨浏览器首访零闪屏）', () => {
+    assert.match(layout, /data-boot-pending/, '内联脚本要写"待定"标记');
+    assert.match(
+      css,
+      /html\[data-boot-pending='1'\][\s\S]*?\.boot-screen[\s\S]*?display:\s*none/,
+      '待定期间启动屏必须被藏住',
+    );
+  });
+
+  test('设置页显示的是生效中的那一份（换浏览器后不能显示本地默认值）', () => {
+    assert.match(
+      settings,
+      /fetchEngineBootMode\(800\)\.then\(\(fromEngine\) => \{[\s\S]{0,120}?setBootMode\(fromEngine\)/,
+      '设置页打开时要向引擎核对一次',
+    );
+    assert.match(settings, /saveBootModeToEngine\(bootMode\)/, '保存时要同步到引擎');
+  });
+});

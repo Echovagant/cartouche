@@ -67,6 +67,7 @@ import {
 import { findProvider } from '@cartouche/engine';
 import { buildContextPreview, checkPlanAgainstContract, createPlan } from './llm-plan.ts';
 import { loadRegisteredRoots, registerRoot, unregisterRoot } from './roots.ts';
+import { readSettings, writeSettings } from './settings.ts';
 import { isFolderPickerSupported, pathForHandle, pickFolder } from './folder-picker.ts';
 
 /**
@@ -1023,6 +1024,38 @@ function foldCasePath(p: string): string {
         } catch (err) {
           const bad = err instanceof PathEscapeError ? 400 : 500;
           json(bad, { error: bad === 400 ? 'bad_request' : 'internal', message: scrub((err as Error).message) });
+        }
+      })();
+      return;
+    }
+
+    if (url.pathname === '/api/settings' && (req.method === 'GET' || req.method === 'PUT')) {
+      void (async () => {
+        try {
+          if (req.method === 'GET') {
+            json(200, readSettings());
+            return;
+          }
+          const body = await readBody(req, res);
+          const parsed = JSON.parse(body.toString('utf8') || '{}') as {
+            bootAnimation?: string;
+          };
+          if (parsed.bootAnimation !== undefined) {
+            if (
+              parsed.bootAnimation !== 'always' &&
+              parsed.bootAnimation !== 'first-visit' &&
+              parsed.bootAnimation !== 'never'
+            ) {
+              json(400, {
+                error: 'bad_request',
+                message: 'bootAnimation 只能是 always / first-visit / never',
+              });
+              return;
+            }
+          }
+          json(200, writeSettings({ ...(parsed.bootAnimation ? { bootAnimation: parsed.bootAnimation } : {}) }));
+        } catch (err) {
+          json(400, { error: 'bad_request', message: scrub((err as Error).message) });
         }
       })();
       return;

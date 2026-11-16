@@ -118,10 +118,14 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           静态导出会把启动屏标记预渲染进 HTML —— 只靠 JS 判断的话，
           选了「从不播放」的用户仍会先看到一闪而过的启动屏。
           这里读 localStorage 写 <html data-boot="off">，CSS 据此在渲染前就藏掉它。
+
+          data-boot-pending：本地缓存还没跟引擎核对过（首访 / 换浏览器 / 换访问地址）。
+          这时**先藏住**启动屏，等页面问完引擎（几十毫秒）再决定播不播 ——
+          藏几十毫秒比"闪一下再消失"好看得多。
         */}
         <script
           dangerouslySetInnerHTML={{
-            __html: `(function(){try{var m=localStorage.getItem('cartouche.boot.animation');document.documentElement.setAttribute('data-boot',m==='never'?'off':'on');}catch(e){document.documentElement.setAttribute('data-boot','on');}})();`,
+            __html: `(function(){try{var m=localStorage.getItem('cartouche.boot.animation');var synced=localStorage.getItem('cartouche.boot.synced')==='1';document.documentElement.setAttribute('data-boot',m==='never'?'off':'on');document.documentElement.setAttribute('data-boot-pending',synced?'0':'1');}catch(e){document.documentElement.setAttribute('data-boot','on');document.documentElement.setAttribute('data-boot-pending','0');}})();`,
           }}
         />
 

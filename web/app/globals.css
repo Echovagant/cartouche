@@ -913,6 +913,13 @@ html[data-boot='off'] .boot-screen,
 html[data-boot='off'] .boot-curtain {
   display: none !important;
 }
+/* 本地缓存还没跟引擎核对过（首访 / 换浏览器 / 换访问地址）：
+   先藏住启动屏，等问完引擎（几十毫秒）再决定播不播 ——
+   藏几十毫秒好过"闪一下再消失"。 */
+html[data-boot-pending='1'] .boot-screen,
+html[data-boot-pending='1'] .boot-curtain {
+  display: none !important;
+}
 
 /* 打开项目时的加载态：呼吸光带（动效可关，关掉时元素根本不渲染） */
 @keyframes boot-pulse {

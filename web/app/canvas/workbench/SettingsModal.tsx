@@ -21,7 +21,9 @@ import {
   BOOT_ANIMATION_HINTS,
   BOOT_ANIMATION_LABELS,
   applyBootAttr,
+  fetchEngineBootMode,
   readBootAnimationMode,
+  saveBootModeToEngine,
   setBootAnimationMode,
   type BootAnimationMode,
 } from '../project/useBootAnimation';
@@ -49,6 +51,12 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
     setReduceMotion(readReduceMotionOverride());
     setBootMode(readBootAnimationMode());
     setSaved(false);
+    // 本地缓存还没跟引擎核对过（换浏览器 / 换访问地址）→ 向引擎问一次：
+    // 设置页显示的必须是**当前生效**的那份，不能是本地的默认值
+    // （否则会出现"设置里写着从不播放、实际却在播"的错觉）。
+    void fetchEngineBootMode(800).then((fromEngine) => {
+      if (fromEngine) setBootMode(fromEngine);
+    });
   }, [open]);
 
   if (!open) return null;
@@ -63,9 +71,11 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
     }
     setReduceMotionOverride(reduceMotion);
     // 加载动画：写完立刻生效（启动屏下一次打开画布时按新设置走；
-    // 打开项目时的加载态本次会话内就跟着变）
+    // 打开项目时的加载态本次会话内就跟着变），并同步到引擎 ——
+    // 引擎是权威副本，换浏览器、换访问地址都跟着走。
     setBootAnimationMode(bootMode);
     applyBootAttr(bootMode);
+    void saveBootModeToEngine(bootMode);
     setSaved(true);
   };
 
@@ -175,7 +185,9 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
 
         <div className="flex items-center justify-between border-t border-studio-line px-4 py-3">
           <span className="text-[12px] text-studio-ink-3">
-            {saved ? '已保存 —— 引擎地址与动效设置刷新页面后生效' : '偏好只存在本机浏览器里，不上传'}
+            {saved
+              ? '已保存 —— 引擎地址与动效设置刷新页面后生效'
+              : '加载动画存在本机引擎上（换浏览器、换地址都跟着走）；其余偏好存在浏览器里。都不上传。'}
           </span>
           <div className="flex items-center gap-2">
             <ActionButton variant="ghost" onClick={onClose}>
