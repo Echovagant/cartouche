@@ -1145,36 +1145,22 @@ export function drawSheet(ctx: CanvasRenderingContext2D, options: SheetOptions):
   // 顺序：图例 → 比例尺 → 标题栏 → 指北针。
   // 万一画幅小到放不下，后画的盖住先画的，
   // 但比例尺的数字与刻度条是同一组，永远不会被图例切掉半截。
-  if (geometry.legendVisible) {
-    if (options.preview) {
-      // 屏幕预览：图例按 72% 缩小（往自身左上角收，不会压到比例尺）。
-      // 导出不受影响 —— 导出走的是完整版式，标签栏/图例尺寸一字不差。
-      const lg = geometry.legend;
-      ctx.save();
-      ctx.translate(lg.x, lg.y);
-      ctx.scale(0.72, 0.72);
-      ctx.translate(-lg.x, -lg.y);
-      drawLegend(
-        ctx,
-        effectiveLayout,
-        effectiveLayout.legend.items,
-        geometry.legend,
-        geometry.legendItems,
-        geometry.legendHorizontal,
-        k,
-      );
-      ctx.restore();
-    } else {
-      drawLegend(
-        ctx,
-        effectiveLayout,
-        effectiveLayout.legend.items,
-        geometry.legend,
-        geometry.legendItems,
-        geometry.legendHorizontal,
-        k,
-      );
-    }
+  //
+  // ⚠️ **屏幕预览不画图例**（2026-11-16 用户裁定）：图例是给人看的**界面**，
+  //    不该当成像素压在"直接编辑图像的画布"上。屏幕上的图例改成独立的
+  //    DOM 面板（可拖动位置、可调透明度，见 canvas/LegendPanel.tsx）——
+  //    它和画布**不在同一层级**，用户想挪就挪、想淡就淡。
+  //    导出（PDF/JPEG）走的仍是完整版式，图例照旧进图面。
+  if (geometry.legendVisible && !options.preview) {
+    drawLegend(
+      ctx,
+      effectiveLayout,
+      effectiveLayout.legend.items,
+      geometry.legend,
+      geometry.legendItems,
+      geometry.legendHorizontal,
+      k,
+    );
   }
   drawScaleBar(ctx, effectiveLayout, content, options.dpi, geometry.scale, k);
   // 标题栏只进**导出**：屏幕改图时不该有一块「出图时间 / 操作人」常驻画布

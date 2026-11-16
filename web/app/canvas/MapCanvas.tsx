@@ -35,6 +35,7 @@ import {
   type MapOptions,
 } from 'maplibre-gl';
 import { drawSheet, metersPerPixelAt, pdfScaleDenominator, type SheetLegendItem } from './sheet';
+import { LegendPanel } from './LegendPanel';
 import type {
   EditGesture,
   EditPreview,
@@ -341,6 +342,8 @@ export default function MapCanvas({
 }: MapCanvasProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const overlayRef = useRef<HTMLCanvasElement | null>(null);
+  /** 画布容器（图例面板的定位参照） */
+  const stageRootRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MlMap | null>(null);
   const [styleReady, setStyleReady] = useState(false);
 
@@ -395,12 +398,17 @@ export default function MapCanvas({
     const bounds = map.getBounds();
     return [bounds.getWest(), bounds.getSouth(), bounds.getEast(), bounds.getNorth()];
   }, []);
-  /** 图面要素的图例：图层名 + 色块 */
+  /**
+   * 图面要素的图例：图层名 + 色块。
+   *
+   * 名字**去掉扩展名**：图例是给人读的说明（"陆地与海洋"），
+   * 而不是文件列表（"陆地与海洋.tif"）。文件列表在侧栏，那里才该带扩展名。
+   */
   const legend = useCallback((): SheetLegendItem[] => {
     return layersRef.current
       .filter((layer) => layer.visible)
       .map((layer) => ({
-        name: layer.name,
+        name: layer.name.replace(/\.[^./\\]+$/, ''),
         color: layer.kind === 'raster' ? '#b08d57' : '#2f6f5e',
       }));
   }, []);
@@ -428,8 +436,10 @@ export default function MapCanvas({
       operator: sheetMetaRef.current.operator,
       producedAt: sheetMetaRef.current.producedAt,
       metersPerPixel: metersPerPixelAt(map.getZoom(), center.lat),
-      legend: legend(),
-      // 屏幕预览形态：标题栏不上屏、图例缩小（导出 PDF 仍是完整版式）
+      // 屏幕预览**不画图例**：图例是界面（独立 DOM 面板，可拖动/可调透明度），
+      // 不该当成像素压在编辑画布上（2026-11-16 用户裁定）。
+      legend: [],
+      // 屏幕预览形态：标题栏不上屏（导出 PDF 仍是完整版式）
       preview: true,
     });
   }, [legend]);
@@ -1085,7 +1095,7 @@ export default function MapCanvas({
   );
 
   return (
-    <div className="relative h-full w-full">
+    <div className="relative h-full w-full" ref={stageRootRef}>
       {/*
         容器要**套一层**：MapLibre 会给自己的容器加上 .maplibregl-map，
         而 maplibre-gl.css 是**无层级**样式（Tailwind 的类在 @layer utilities 里）——
@@ -1101,6 +1111,12 @@ export default function MapCanvas({
         className="pointer-events-none absolute inset-0"
         aria-hidden="true"
       />
+      {/*
+        图例：独立的界面层（z-20，高于画布），可拖动、可调透明度、可折叠。
+        刻意**不**画进上面的 canvas —— 画布是"直接编辑图像"的地方，
+        压在上面的说明会挡事（2026-11-16 用户裁定）。
+      */}
+      <LegendPanel items={legend()} containerRef={stageRootRef} />
       {engineError ? (
         <div className="absolute inset-0 z-10 flex items-center justify-center bg-studio/92 p-6">
           <div
