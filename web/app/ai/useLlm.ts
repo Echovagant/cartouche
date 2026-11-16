@@ -181,8 +181,6 @@ export interface PlanPayload {
  * 分类与文案都放在 `failures.ts`（纯函数，可被 Node 直接测），
  * 这里只是转出去，界面的旧引用不用改。
  */
-export type { PlanFailure, PlanFailureKind } from './failures';
-export { classifyPlanFailure } from './failures';
 
 /** 统一的取 JSON（失败时也要把响应体带出来：分类要看 body.error） */
 async function postJson<T>(url: string, body: unknown): Promise<{ status: number; body: T | null }> {

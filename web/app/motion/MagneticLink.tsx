@@ -170,32 +170,3 @@ export function MagneticLink({
   );
 }
 
-export function MagneticButton({
-  className = '',
-  children,
-  strength = 1,
-  onClick,
-  disabled,
-  title,
-}: {
-  className?: string;
-  children: ReactNode;
-  strength?: number;
-  onClick?: () => void;
-  disabled?: boolean;
-  title?: string;
-}) {
-  const ref = useMagnetic<HTMLButtonElement>(strength);
-  return (
-    <button
-      ref={ref}
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      title={title}
-      className={className}
-    >
-      {children}
-    </button>
-  );
-}

@@ -72,21 +72,6 @@ function readLocalDecision(): 'on' | 'off' | null {
   return null;
 }
 
-/** 跟着系统设置走；用户中途改也生效 */
-export function usePrefersReducedMotion(): boolean {
-  const [reduced, setReduced] = useState(false);
-
-  useEffect(() => {
-    const mq = window.matchMedia(QUERY);
-    const update = (): void => setReduced(mq.matches);
-    update();
-    mq.addEventListener('change', update);
-    return () => mq.removeEventListener('change', update);
-  }, []);
-
-  return reduced;
-}
-
 /**
  * 三态决策：动画组件据此决定播不播。
  *

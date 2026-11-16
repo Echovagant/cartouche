@@ -95,7 +95,3 @@ export function makeTempDir(targetPath: string, prefix = '.cartouche-tmp-'): str
  */
 export const GPKG_SIDECAR_SUFFIXES: readonly string[] = ['-wal', '-shm', '-journal'];
 
-/** 某个 GeoPackage 文件旁边的伴随文件（工作区相对路径）。 */
-export function gpkgSidecarPaths(targetRel: string): string[] {
-  return GPKG_SIDECAR_SUFFIXES.map((suffix) => `${targetRel}${suffix}`);
-}

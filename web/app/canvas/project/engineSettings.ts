@@ -27,7 +27,6 @@ export interface EngineSettings {
 
 let cache: EngineSettings | null = null;
 let inflight: Promise<EngineSettings | null> | null = null;
-const listeners = new Set<(settings: EngineSettings | null) => void>();
 
 /**
  * 「本地缓存已经和引擎核对过」的标记。
@@ -55,23 +54,6 @@ export function markEngineSettingsSynced(): void {
   }
 }
 
-function notify(): void {
-  for (const listener of listeners) listener(cache);
-}
-
-/** 订阅设置变化（设置页保存后，其他订阅者要跟着更新） */
-export function subscribeEngineSettings(
-  listener: (settings: EngineSettings | null) => void,
-): () => void {
-  listeners.add(listener);
-  return () => listeners.delete(listener);
-}
-
-/** 已经拿到的设置（没问过引擎就是 null） */
-export function getCachedEngineSettings(): EngineSettings | null {
-  return cache;
-}
-
 /**
  * 向引擎问一次机器级设置（问不到返回 null，调用方按本地缓存继续）。
  *
@@ -88,7 +70,6 @@ export async function fetchEngineSettings(timeoutMs = 800): Promise<EngineSettin
       if (!res.ok) return null;
       const body = (await res.json()) as EngineSettings;
       cache = body;
-      notify();
       return body;
     } catch {
       return null;
@@ -112,7 +93,6 @@ export async function saveEngineSettings(patch: Partial<EngineSettings>): Promis
     if (!res.ok) return false;
     const body = (await res.json()) as EngineSettings;
     cache = body;
-    notify();
     return true;
   } catch {
     return false;

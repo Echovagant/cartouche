@@ -23,8 +23,6 @@ import { useCallback, useEffect, useState } from 'react';
 import { ENGINE_BASE } from '../engine-base';
 import type { ProjectManifest, ProjectOutput, ProjectRef, ProjectSummary } from './types';
 
-export type { ProjectManifest, ProjectOutput, ProjectRef, ProjectSummary } from './types';
-
 /**
  * 存储键带上 v2：旧键（无版本号）里存的是上一版界面的数据，
  * 里面还有开发期测试留下的项目路径 —— 换键让那些旧条目**全部退役**，

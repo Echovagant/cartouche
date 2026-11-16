@@ -37,7 +37,7 @@ import {
   type SheetLegendItem,
 } from './layout/types.ts';
 
-export type { SheetLegendItem, SheetLayout, SheetContent } from './layout/types.ts';
+export type { SheetLegendItem } from './layout/types.ts';
 
 export interface SheetOptions {
   /** 画布宽（像素） */

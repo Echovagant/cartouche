@@ -1,14 +1,10 @@
 /**
  * 「打开项目」这一屏用到的纯函数。
  *
- * 为什么单独放一个文件：图号怎么算、时间怎么写、排序怎么比，
- * 都是**规则**而不是界面。规则跟界面分开，改规则不用碰组件，
- * 组件也不用知道图号是怎么来的。
+ * 为什么单独放一个文件：图号怎么算、时间怎么写，都是**规则**而不是界面。
+ * 规则跟界面分开，改规则不用碰组件，组件也不用知道图号是怎么来的。
  */
 import type { ProjectSummary } from '../types';
-
-/** 最近项目的三种排法 */
-export type ProjectSort = 'recent' | 'name' | 'layers';
 
 /** 两位补零：图号与时间戳都按两位写 */
 function pad2(n: number): string {
@@ -56,40 +52,4 @@ export function sheetNumber(key: string, updatedAt: string): string {
 /** 项目的定位串：有路径用路径，弹窗选的用代号 */
 export function projectKey(p: ProjectSummary): string {
   return p.path ?? p.handle ?? p.name;
-}
-
-/** 按名称或定位串过滤（大小写不敏感） */
-export function filterProjects(
-  list: readonly ProjectSummary[],
-  query: string,
-): ProjectSummary[] {
-  const q = query.trim().toLowerCase();
-  if (!q) return [...list];
-  return list.filter(
-    (p) =>
-      p.name.toLowerCase().includes(q) ||
-      (p.path ?? '').toLowerCase().includes(q) ||
-      (p.handle ?? '').toLowerCase().includes(q),
-  );
-}
-
-/**
- * 排序。
- *
- * `recent` 保持数组原序 —— 最近项目本来就是按打开先后存的，
- * 再按时间重排一遍反而跟「我上次开的是哪个」对不上。
- */
-export function sortProjects(
-  list: readonly ProjectSummary[],
-  sort: ProjectSort,
-): ProjectSummary[] {
-  const copy = [...list];
-  if (sort === 'name') {
-    copy.sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
-  } else if (sort === 'layers') {
-    copy.sort(
-      (a, b) => b.layerCount - a.layerCount || a.name.localeCompare(b.name, 'zh-CN'),
-    );
-  }
-  return copy;
 }

@@ -255,7 +255,6 @@
 
   --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
 
-  --animate-shimmer: shimmer 1.8s linear infinite;
   --animate-breathe: breathe 3.2s ease-in-out infinite;
   --animate-sweep: sweep 5.5s var(--ease-out-expo) infinite;
 }
@@ -285,8 +284,6 @@
   }
 }
 
-@keyframes shimmer {
-  0% { background-position: -140% 0; }
   100% { background-position: 240% 0; }
 }
 
@@ -303,8 +300,6 @@
 }
 
 /* Hero 图幅上的扫描线：纯 CSS 循环，比 JS 循环省电 */
-@keyframes cartouche-sweep {
-  0% { transform: translateY(0); opacity: 0; }
   8% { opacity: 0.9; }
   88% { opacity: 0.55; }
   100% { transform: translateY(636px); opacity: 0; }
@@ -485,41 +480,6 @@
      在制图台美学里暗角 = 「照片滤镜」，与「图纸」冲突。
      画布那一套 .vignette + --studio-* 变量不动，两边互不干扰。 */
 
-  /* 顶部高光描边：给深色块一点"被光打到"的质感 */
-  .rim-light {
-    position: relative;
-  }
-  .rim-light::before {
-    content: '';
-    position: absolute;
-    inset: 0;
-    border-radius: inherit;
-    padding: 1px;
-    background: linear-gradient(160deg, rgb(255 255 255 / 0.55), transparent 42%);
-    -webkit-mask:
-      linear-gradient(#000 0 0) content-box,
-      linear-gradient(#000 0 0);
-    -webkit-mask-composite: xor;
-    mask-composite: exclude;
-    pointer-events: none;
-  }
-
-  /* 骨架屏：按真实布局尺寸出，不用转圈 */  .skeleton {
-    background: linear-gradient(
-      100deg,
-      var(--color-paper-deep) 30%,
-      color-mix(in srgb, var(--color-paper-deep) 55%, #fff) 50%,
-      var(--color-paper-deep) 70%
-    );
-    background-size: 220% 100%;
-    animation: var(--animate-shimmer);
-  }
-
-  .cartouche-sweep {
-    animation: cartouche-sweep 9s var(--ease-out-expo) infinite;
-    will-change: transform, opacity;
-  }
-
   /* 画布的胶片颗粒：固定层、pointer-events:none，绝不放在滚动容器里 */
   .film-grain::after {
     content: '';
@@ -603,17 +563,6 @@
   }
 
   /**
-   * 段与段之间的分隔原语。
-   *
-   * 相邻两段同表面（纸→纸）时靠它断开，而不是再起一个 surface：
-   * 表面色变化是**唯一**的分段手段，分隔线只做"这里换话题了"的提示。
-   */
-  .homepage-separator {
-    height: 1px;
-    background: var(--color-line);
-  }
-
-  /**
    * 揭示态的初始样子。
    *
    * 只写 opacity，不写 translate —— GSAP 动的是 transform（y），
@@ -647,9 +596,6 @@
 }
 
 @layer utilities {
-  .text-balance {
-    text-wrap: balance;
-  }
   .text-pretty {
     text-wrap: pretty;
   }
@@ -684,9 +630,7 @@
     scroll-behavior: auto !important;
   }
 
-  .reveal,
-  .slide-in,
-  .scale-in {
+  .reveal {
     transform: none !important;
     opacity: 1 !important;
     animation: fade-in 200ms linear both !important;
@@ -714,8 +658,7 @@
 @media (forced-colors: active) {
   .grain::after,
   .film-grain::after,
-  .vignette::before,
-  .rim-light::before {
+  .vignette::before {
     display: none !important;
   }
 
@@ -728,9 +671,7 @@
     backdrop-filter: none !important;
   }
 
-  .reveal,
-  .slide-in,
-  .scale-in {
+  .reveal {
     opacity: 1 !important;
     transform: none !important;
   }
