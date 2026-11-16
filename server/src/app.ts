@@ -791,28 +791,27 @@ function foldCasePath(p: string): string {
 
     // 「本次将发送什么」的预览：用户按下发送之前就该看到裁剪后的上下文。
     // 裁剪规则写在 llm-plan.ts 里，这里只是把它算出来的结果端出去。
-    if (url.pathname === '/api/llm/context-preview' && (req.method === 'GET' || req.method === 'POST')) {
+    // 只收 POST：前端（web/app/ai/useLlm.ts）走 body 传参；
+    // 早先还留过一个 GET 变体（参数走 query string），全仓无人调用 → 收窄掉，
+    // 免得留下第二条没人走的入口。
+    if (url.pathname === '/api/llm/context-preview' && req.method === 'POST') {
       void (async () => {
         try {
-          const body = (
-            req.method === 'POST'
-              ? JSON.parse((await readBody(req, res)).toString('utf8') || '{}')
-              : {}
-          ) as {
+          const body = JSON.parse((await readBody(req, res)).toString('utf8') || '{}') as {
             context?: unknown;
             prompt?: string;
             model?: string;
             effort?: string;
             root?: string;
           };
-          const root = body.root ?? url.searchParams.get('root');
-          const context = body.context ?? (await manifestContext(root ?? null));
+          const root = body.root ?? null;
+          const context = body.context ?? (await manifestContext(root));
           const preview = await buildContextPreview({
             context,
-            prompt: body.prompt ?? url.searchParams.get('prompt') ?? '',
-            model: body.model ?? url.searchParams.get('model') ?? undefined,
-            effort: body.effort ?? url.searchParams.get('effort') ?? undefined,
-            root: root ?? null,
+            prompt: body.prompt ?? '',
+            model: body.model ?? undefined,
+            effort: body.effort ?? undefined,
+            root,
           });
           json(200, preview);
         } catch (err) {

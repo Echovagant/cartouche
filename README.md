@@ -225,6 +225,8 @@ fixtures/           测试夹具
 workspace/          你的图件（本地，不入库）
 ```
 
+要读代码、想知道"改 X 该去哪个文件" → 看 **[代码导览](docs/ARCHITECTURE.md)**。
+
 ## 开发
 
 ```bash
