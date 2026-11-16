@@ -84,7 +84,7 @@ if (existsSync(cardSrc)) {
   console.warn('[site-assets] 没有 shots/edit-confirm-card.png，确认卡素材需先跑一次浏览器实测');
 }
 
-// 2. 出图（带图框）与自检报告：README 那两张已经是压好的 jpg，直接复制
+// 2. 出图工作台与自检报告：README 那两张已经是压好的 jpg，直接复制
 for (const [src, dst] of [
   ['assets/canvas.jpg', 'canvas-frame.jpg'],
   ['assets/report.jpg', 'report.jpg'],

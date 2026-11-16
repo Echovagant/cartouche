@@ -13,8 +13,8 @@
  *  - export-pdf.png    **引擎自己导出的**那一份单页 PDF 的首页
  *                      （引擎 /api/render/raster.png 出图 → 引擎
  *                        /api/export/pdf 封 PDF → 首页栅格化），1053×745
- *  - report.jpg        六段式自检报告的实拍，1400×702
- *  - canvas-frame.jpg  出图工作台的实拍，1578×802
+ *  - report.jpg        自检报告面板的实拍，1578×902
+ *  - canvas-frame.jpg  出图工作台的实拍，1578×902
  *
  * 手绘的示意 SVG 已经全部删掉：示意图里的面积、坐标、操作人、日期
  * 都是编的，而用户明确要求「不伪造数据」。
