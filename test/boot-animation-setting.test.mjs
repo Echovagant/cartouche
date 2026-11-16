@@ -98,6 +98,32 @@ describe('加载动画设置', () => {
   });
 });
 
+describe('图层选择器弹窗', () => {
+  const picker = read('web', 'app', 'canvas', 'workbench', 'LayerPickerModal.tsx');
+
+  test('标题与文件名分两行（挤一行会重叠 —— 2026-11-16 实拍发现）', () => {
+    assert.match(
+      picker,
+      /block truncate text-\[12\.5px\] text-studio-ink">选择要加载的图层/,
+      '标题要独占一行',
+    );
+    assert.match(
+      picker,
+      /block truncate font-mono text-\[10\.5px\] text-studio-ink-3/,
+      '文件名另起一行（同行会与标题叠在一起）',
+    );
+    assert.doesNotMatch(
+      picker,
+      /选择要加载的图层\s*\n\s*\{name \? <span className="text-studio-ink-3"> · /,
+      '不要把文件名接在标题同一行',
+    );
+  });
+
+  test('勾选为空时不能提交', () => {
+    assert.match(picker, /disabled=\{busy \|\| selected\.size === 0\}/, '没勾选就不让加载');
+  });
+});
+
 describe('加载动画设置的持久化（跨浏览器 / 跨访问地址）', () => {
   const server = read('server', 'src', 'settings.ts');
   const serverApp = read('server', 'src', 'app.ts');

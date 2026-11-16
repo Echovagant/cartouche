@@ -64,9 +64,15 @@ export function LayerPickerModal({
       >
         <div className="flex items-center gap-2 border-b border-studio-line px-4 py-3">
           <StackIcon size={14} aria-hidden="true" className="shrink-0 text-studio-ink-3" />
-          <span className="min-w-0 flex-1 truncate text-[12.5px] text-studio-ink">
-            选择要加载的图层
-            {name ? <span className="text-studio-ink-3"> · {name}</span> : null}
+          {/* 标题与文件名分两行：挤在一行时 flex 容器宽度塌缩，
+              两段文字会从同一起点画出来、叠在一起（2026-11-16 实拍发现）。 */}
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-[12.5px] text-studio-ink">选择要加载的图层</span>
+            {name ? (
+              <span className="mt-0.5 block truncate font-mono text-[10.5px] text-studio-ink-3">
+                {name}
+              </span>
+            ) : null}
           </span>
           {options ? (
             <span className="shrink-0 font-mono text-[10.5px] text-studio-ink-3">
