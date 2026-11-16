@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import CanvasWorkbench from './CanvasWorkbench';
 
+/** 画布页的浏览器标签与分享摘要（静态导出时写进 HTML head）。 */
 export const metadata: Metadata = {
   title: '图签 Cartouche · 地图画布',
   description: '在浏览器里看工作区里的地图数据：栅格底图、矢量要素、属性表，一键导出带图框与标题栏的 PDF。',

@@ -92,6 +92,10 @@ function signatureOf(
   return JSON.stringify([path, corners, points]);
 }
 
+/**
+ * 编辑工具（画笔/框选/调色）的入参：三样依赖都由上层注入，
+ * 本 hook 不自己发请求 —— 换算、预演的触发时机全部由调用方掌控。
+ */
 export interface UseEditToolsOptions {
   /** 被编辑的栅格（相对项目根的路径）；null = 还没选栅格 */
   readonly targetPath: string | null;

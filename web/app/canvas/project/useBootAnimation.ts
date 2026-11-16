@@ -24,16 +24,24 @@ import {
   saveEngineSettings,
 } from './engineSettings';
 
+/**
+ * 加载动画的三种播放方式（设置页的三态开关对应这里）。
+ *
+ * `always` 每次完整播；`first-visit` 首访完整、回头客自动缩短；
+ * `never` 完全跳过（首帧前就隐藏，见 layout.tsx 的内联脚本）。
+ */
 export type BootAnimationMode = 'always' | 'first-visit' | 'never';
 
 const STORAGE_KEY = 'cartouche.boot.animation';
 
+/** 三态在设置页上的显示名（分段控件的按钮文字） */
 export const BOOT_ANIMATION_LABELS: Record<BootAnimationMode, string> = {
   always: '总是播放',
   'first-visit': '仅首次访问',
   never: '从不播放',
 };
 
+/** 三态各自的行为说明（设置页选中后显示的那行小字） */
 export const BOOT_ANIMATION_HINTS: Record<BootAnimationMode, string> = {
   always: '每次打开画布都完整播一遍启动动画（约 2 秒）。',
   'first-visit': '第一次访问播完整动画，12 小时内再来自动缩短到约 1 秒。',

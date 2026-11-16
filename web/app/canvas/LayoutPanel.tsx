@@ -51,6 +51,12 @@ export interface LayoutPreviewInput {
   readonly producedAt: string;
 }
 
+/**
+ * 出图排版面板：图幅、图廓、格网、图例、比例尺、标题栏、出图模板的集中编辑位。
+ *
+ * 它只改 `layout` 这一份状态（改动经 onChange 交给上层），
+ * 真正把版式画出来的是 sheet.ts 的 drawSheet——面板与画布靠同一份数据对齐。
+ */
 export interface LayoutPanelProps {
   readonly layout: SheetLayout;
   readonly onChange: (layout: SheetLayout) => void;

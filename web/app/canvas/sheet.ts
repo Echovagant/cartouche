@@ -39,6 +39,13 @@ import {
 
 export type { SheetLegendItem } from './layout/types.ts';
 
+/**
+ * drawSheet 的入参：**这次要把图面画成什么样**。
+ *
+ * 内容分两类——"画布/纸张本身的参数"（width/height/dpi）与
+ * "要印到图面上的信息"（title/operator/producedAt/legend）。
+ * 屏幕预览与导出 PDF 各自组装一份传入；两者唯一的差别在 preview 标记。
+ */
 export interface SheetOptions {
   /** 画布宽（像素） */
   readonly width: number;

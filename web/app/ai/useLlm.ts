@@ -69,13 +69,24 @@ export interface LlmModelsPayload {
   readonly warning: string | null;
 }
 
+/** 连通性测试的结果（引擎侧的同一份，这里只做转发） */
 export interface LlmTestPayload {
+  /** 恒为 true：引擎应答了才算数，失败走 LlmResult 的失败分支 */
   readonly ok: true;
+  /** 模型回的原文 */
   readonly reply: string;
+  /** 实际使用的模型 */
   readonly model: string;
+  /** 往返耗时（毫秒） */
   readonly elapsedMs: number;
 }
 
+/**
+ * 一次调用的结果：成功带数据，失败带一句能直接显示的中文。
+ *
+ * 不用异常做控制流：界面要同时显示"结果"与"错误提示"，
+ * 用返回值比 try/catch 好写，也不会漏掉某一处的错误处理。
+ */
 export type LlmResult<T> =
   | { readonly ok: true; readonly data: T }
   | { readonly ok: false; readonly error: string };
@@ -203,14 +214,28 @@ async function postJson<T>(url: string, body: unknown): Promise<{ status: number
   }
 }
 
+/**
+ * AI 接入页能做的全部事（页面组件只依赖这份接口，不碰 fetch）。
+ *
+ * 每个方法要么改状态（贴密钥、换接入线），要么取数据（拉清单、测连通、要计划）；
+ * 返回值统一是 LlmResult —— 失败一律带一句能直接显示的中文。
+ */
 export interface LlmApi {
+  /** 引擎侧状态（当前接入线、密钥来源、可用模型）；还没问回来时为 null */
   readonly status: LlmStatus | null;
+  /** 问状态失败的说明（引擎没起、连不上之类） */
   readonly statusError: string | null;
+  /** 最近一次拉到的模型清单（连 source 也带出去，界面要说清是实时还是离线兜底） */
   readonly models: LlmModelsPayload | null;
+  /** 最近一次连通性测试的结果 */
   readonly testResult: LlmTestPayload | null;
+  /** 每个操作各自的在途标记（键名与 isBusy 的键名一致） */
   readonly busy: Readonly<Record<string, boolean>>;
+  /** 最近一次失败的说明（页面顶部的提示条用它） */
   readonly error: string | null;
+  /** 查某个操作是否还在途 */
   readonly isBusy: (key: string) => boolean;
+  /** 重新问一次引擎状态 */
   readonly refreshStatus: () => Promise<void>;
   /** 粘贴密钥：只发给本机引擎，引擎留在内存里（按接入线分开存） */
   readonly setKey: (apiKey: string, providerId?: string) => Promise<LlmResult<LlmStatus>>;
@@ -255,6 +280,11 @@ export interface LlmApi {
   }) => Promise<ContextPreview | null>;
 }
 
+/**
+ * 把上面那套能力包成一个 hook：状态、加载态、失败文案都归它管。
+ *
+ * 组件只管渲染 —— "请求还没回来"的那几个分支因此不用在每个面板里重写一遍。
+ */
 export function useLlm(): LlmApi {
   const [status, setStatus] = useState<LlmStatus | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);

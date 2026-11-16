@@ -1925,7 +1925,7 @@ for (const r of opRows) {
       const want = String(wantRaw).toUpperCase();
       const hits = r.ops.filter((o) => o.op === op);
       if (hits.length === 0) {
-        // 这一轮矩阵里没有这个 op（多半是引擎里尚未实现的那几个）：
+        // 这份预期矩阵里没有这个 op（多半是引擎里尚未实现的那几个）：
         // 记下来，但不能算成「实测与预期不符」—— 那是没测，不是测错。
         expectedNotCovered.push({ case: r.dataset, op, expected: want });
         continue;

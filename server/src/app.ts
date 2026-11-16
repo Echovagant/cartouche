@@ -634,6 +634,8 @@ function foldCasePath(p: string): string {
       return;
     }
 
+    // ⚠️ 引擎侧能力，前端暂未接入（冒烟脚本 scripts/smoke-engine.mjs 在用）：
+    //    op 契约目前由引擎内置读取（见 useEngine 的 previewOp），这条 HTTP 口留给外部工具。
     if (url.pathname === '/api/ops/schema') {
       json(200, readSchema());
       return;
@@ -1431,6 +1433,8 @@ function foldCasePath(p: string): string {
       return;
     }
 
+    // ⚠️ 引擎侧能力，前端暂未接入（冒烟脚本在用）：操作留痕目前由画布经
+    //    /api/op/execute 顺带追加，还没有「查看历史」的界面——闭环待做。
     if (url.pathname === '/api/project/history' && req.method === 'GET') {
       void (async () => {
         try {
@@ -1628,6 +1632,8 @@ function foldCasePath(p: string): string {
      * 路径口径与其它接口一致：`path` 必须是相对路径，落在已登记根之下；
      * 绝对路径与 `..` 一律 400（resolveTarget 内部走 store.resolve）。
      */
+    // ⚠️ 引擎侧能力，前端暂未接入（冒烟脚本在用）：按窗口读像元是
+    //    「局部修改不整图重写」的地基，界面接线待做。
     if (url.pathname === '/api/raster/frame' && req.method === 'POST') {
       void (async () => {
         try {
@@ -1672,6 +1678,8 @@ function foldCasePath(p: string): string {
      * 失败不静默：建不出来就回 500 并带上原因（磁盘不够 / GDAL 报错），
      * 用户点"建金字塔"却什么都没发生、又没提示，是最坏的一种体验。
      */
+    // ⚠️ 引擎侧能力，前端暂未接入（冒烟脚本在用）：建金字塔概览，
+    //    大图缩放时的快速预览要靠它——界面接线待做。
     if (url.pathname === '/api/raster/overview' && req.method === 'POST') {
       void (async () => {
         try {

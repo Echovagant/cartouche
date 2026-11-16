@@ -119,6 +119,13 @@ function waitForIdle(map: MlMap, timeoutMs = 4000): Promise<void> {
   });
 }
 
+/**
+ * 地图画布对外暴露的能力句柄（父组件通过 ref 拿到它）。
+ *
+ * 父组件（CanvasWorkbench）不直接碰 MapLibre 的内部状态——
+ * 需要地图回答的每件事（导出画面、当前视角、重出图、视口快照）
+ * 都收敛成这里的一个方法，由 MapCanvas 内部翻译成 MapLibre 调用。
+ */
 export interface MapCanvasHandle {
   /**
    * 把当前视口导出为 JPEG（data URL）。

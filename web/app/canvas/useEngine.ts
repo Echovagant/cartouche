@@ -32,6 +32,7 @@ import type {
 } from './types';
 import { ENGINE_BASE } from '../engine-base';
 
+/** 引擎健康检查的返回体：画布据此判断"引擎在不在、能不能干活" */
 export interface EngineInfo {
   readonly ok: boolean;
   readonly name: string;
@@ -40,6 +41,7 @@ export interface EngineInfo {
   readonly workspaceRoot: string;
 }
 
+/** 矢量图层加载请求的返回体：GeoJSON 本体 + 口径说明 */
 export interface GeoJsonPayload {
   readonly geojson: unknown;
   readonly featureCount: number;

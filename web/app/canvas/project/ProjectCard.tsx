@@ -18,6 +18,7 @@ import type { ProjectSummary } from '../types';
 import { formatStamp, projectKey, sheetNumber } from './project-utils';
 import { useReduceMotionDecision } from './useReducedMotion';
 
+/** 最近项目的一张卡片：图号、名称、更新时间、入口。整卡可点。 */
 export interface ProjectCardProps {
   readonly project: ProjectSummary;
   readonly disabled?: boolean;

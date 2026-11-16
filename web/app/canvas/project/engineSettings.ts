@@ -46,6 +46,7 @@ export function isEngineSettingsSynced(): boolean {
   }
 }
 
+/** 打上"本地缓存已与引擎核对过"的标记：下次启动就可以零延迟用本地值 */
 export function markEngineSettingsSynced(): void {
   try {
     window.localStorage.setItem(SYNCED_KEY, '1');

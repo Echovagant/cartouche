@@ -42,6 +42,11 @@ const BUTTON_VARIANT: Record<ButtonVariant, string> = {
   danger: 'bg-transparent text-warn border-studio-line hover:border-warn/45 hover:bg-warn/12',
 };
 
+/**
+ * 画布的标准按钮：四种形态（primary / ghost / quiet / danger）共享同一套
+ * 尺寸与圆角，界面上所有"按一下就干活"的元素都用它——
+ * 视觉的一致性靠"大家长得很像"来维持，不靠各处自己调。
+ */
 export function ActionButton({
   variant = 'ghost',
   className = '',
@@ -59,6 +64,11 @@ export function ActionButton({
   );
 }
 
+/**
+ * 画布的标准输入框。`tone` 决定用哪套色阶：
+ *   studio = 制图台（画布里），paper = 纸面（官网同款表面）。
+ * 路径、图名这类输入都用它；焦点态统一画墨绿描边。
+ */
 export function TextField({
   className = '',
   tone = 'studio',
