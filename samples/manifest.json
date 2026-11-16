@@ -33,7 +33,7 @@
     },
     {
       "id": "datav-china-provinces",
-      "title": "阿里云 DataV 中国省级行政区边界（GeoJSON）",
+      "title": "DataV 行政区边界（GeoJSON）",
       "kind": "vector",
       "baseDir": "samples",
       "url": "https://geo.datav.aliyun.com/areas_v3/bound/100000_full.json",
@@ -151,7 +151,7 @@
     },
     {
       "id": "gadm-china-l1",
-      "title": "GADM 4.1 中国一级行政区（GeoJSON）",
+      "title": "GADM 4.1 一级行政区（GeoJSON）",
       "kind": "vector",
       "baseDir": "samples",
       "url": "https://geodata.ucdavis.edu/gadm/gadm4.1/json/gadm41_CHN_1.json.zip",
@@ -165,9 +165,9 @@
       "license": "GADM 4.1 —— 自由使用（非商业），需署名",
       "attribution": "GADM (gadm.org)",
       "focus": [
-        "中国省级边界 → 与 DataV 版本**交叉验证**（两者边界不一致处即为真实争议）",
+        "一级行政区边界 → 与 DataV 版本**交叉验证**（两者边界不一致处即为真实争议）",
         "属性表含 GID_1 / NAME_1 / TYPE_1 等，字段名规范但含义需业务解释",
-        "**GCJ-02 / WGS84 / CGCS2000 混用陷阱**：国内数据源坐标基准不统一，面积会系统性偏大"
+        "**GCJ-02 / WGS84 / CGCS2000 混用陷阱**：区域数据源的坐标基准不统一，面积会系统性偏大"
       ]
     },
     {
@@ -260,7 +260,7 @@
     },
     {
       "id": "gadm-china-gpkg",
-      "title": "GADM 4.1 中国一级行政区（GeoPackage 容器）",
+      "title": "GADM 4.1 一级行政区（GeoPackage 容器）",
       "kind": "vector",
       "baseDir": "samples",
       "derivedFrom": "gadm-china-l1",
@@ -296,7 +296,7 @@
     },
     {
       "id": "gadm-china-kmz",
-      "title": "GADM 4.1 中国一级行政区（KMZ 压缩 KML）",
+      "title": "GADM 4.1 一级行政区（KMZ 压缩 KML）",
       "kind": "vector",
       "baseDir": "samples",
       "url": "https://geodata.ucdavis.edu/gadm/gadm4.1/kmz/gadm41_CHN_1.kmz",
@@ -607,7 +607,7 @@
     },
     {
       "id": "gadm-china-gauss-kruger",
-      "title": "GADM 中国一级行政区（CGCS2000 高斯-吕格 EPSG:4547）",
+      "title": "GADM 一级行政区（CGCS2000 高斯-吕格 EPSG:4547）",
       "kind": "vector",
       "baseDir": "ext",
       "derivedFrom": "gadm-china-l1",

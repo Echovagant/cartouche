@@ -414,18 +414,17 @@ export default function Home() {
                   只留一道发丝边 + 投影，让它像一张摊在制图台上的成图。 */}
               <figure data-hero="figure" className="relative">
                 <div className="relative">
-                  {/* 容器 aspect 必须跟成图一致（1756/1319 ≈ 1.331），
+                  {/* 容器 aspect 必须跟成图一致（1242/730 ≈ 1.70)，
                       再用 object-contain 兜底 —— 图面一定完整。
-                      WebP 是给页面读的（509KB），PNG 是原图（4.7MB，只在
-                      不支持 WebP 时才下载）。 */}
-                  <div className="relative aspect-[1756/1319] w-full overflow-hidden bg-surface shadow-product ring-1 ring-line">
+                      WebP 是给页面读的，PNG 是原图（只在不支持 WebP 时才下载）。 */}
+                  <div className="relative aspect-[1242/730] w-full overflow-hidden bg-surface shadow-product ring-1 ring-line">
                     <picture>
-                      <source srcSet="./site/china-sheet.webp" type="image/webp" />
+                      <source srcSet="./site/world-sheet.webp" type="image/webp" />
                       <img
-                        src="./site/china-sheet.png"
-                        alt="图签自己出的图面：中国省级行政区与主要河流图，带图例、比例尺、指北针与标题栏"
-                        width={1756}
-                        height={1319}
+                        src="./site/world-sheet.png"
+                        alt="图签自己出的图面：世界陆地与水系，带图例、比例尺、指北针与标题栏"
+                        width={1242}
+                        height={730}
                         loading="eager"
                         decoding="async"
                         fetchPriority="high"
@@ -457,7 +456,7 @@ export default function Home() {
                   data-hero="caption"
                   className="reveal mt-5 font-mono text-body-sm text-ink-3"
                 >
-                  示例：中国省级行政区与主要河流图 · 图签自己出的图面
+                  示例：世界陆地与水系 · 图签自己出的图面
                 </figcaption>
               </figure>
             </div>

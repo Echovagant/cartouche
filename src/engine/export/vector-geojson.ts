@@ -6,7 +6,7 @@
  *
  * 多图层容器（GeoPackage / KML / KMZ）：GeoJSON 输出驱动是**单图层**的，
  * 直接整文件转换会报 "Layer … cannot be created"（2026-11-15 实测：
- * 中国水系 kmz、双图层 gpkg 都死在这）。所以这里先探图层清单，
+ * 多层水系 kmz、双图层 gpkg 都死在这）。所以这里先探图层清单，
  * **逐层转换再合并**成一个 FeatureCollection —— 前端拿到的仍是"一个文件 = 一层地图"。
  */
 import { join } from 'node:path';
@@ -133,13 +133,13 @@ export async function vectorToGeoJson(
    *   - **≤ MERGE_MAX 层**：全部合并成一个 FeatureCollection ——
    *     双图层 gpkg 这种"两张图叠一张底图"就是用户想要的；
    *   - **> MERGE_MAX 层**：只加载**第一个有要素的图层**，其余说清楚。
-   *     KML 文件夹汤（实测有 3450 层的中国水系 kmz）合并等于数据爆炸；
+   *     KML 文件夹汤（实测有 3450 层的多层水系 kmz）合并等于数据爆炸；
    *     图层选择器是将来 UI 的事，引擎先把行为钉住。
    */
   const MERGE_MAX = 20;
 
   // ⚠️ 多图层不能逐层从原始容器转：KML/KMZ 这类**每次打开都要解析整个文件**，
-  //    N 个图层 = O(N×全文件) 解析 —— 2026-11-15 实测：中国水系 kmz 逐层转换
+  //    N 个图层 = O(N×全文件) 解析 —— 2026-11-15 实测：多层水系 kmz 逐层转换
   //    跑了 20 分钟都没完。改成两阶段：
   //    阶段一：一次 ogr2ogr 把全部图层落进中间 GPKG（多图层容器，1 次解析）；
   //    阶段二：从 GPKG 逐层转 GeoJSON 再合并 —— SQLite 直接读，每层都便宜。

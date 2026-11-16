@@ -101,27 +101,30 @@ for (const [src, dst] of [
 console.log('[site-assets] 完成');
 
 /**
- * 3. 首屏主图：中国图面的网页版。
+ * 3. 首屏主图：图签自己出的图面（world-sheet.png）。
  *
- * china-sheet.png 是**图签自己出的图面原图**（引擎/画布的真实输出，4.7MB）。
- * 直接当首屏主图太重，压到 WebP 后是 509KB —— 比原来那张
- * export-pdf.png（871KB）还轻，文字锐度肉眼无差。
+ * world-sheet.png 是**图签自己出的图面原图**（引擎/画布的真实输出：
+ * 地图 + 完整版式图面要素 —— 图框、图例、比例尺、指北针、标题栏）。
+ * 直接当首屏主图太重，压到 WebP 后给页面读。
+ *
+ * 素材用**公开数据**（Natural Earth，公共领域），画面里不出现任何
+ * 特定国家或行政区信息（2026-11-16 用户要求）。
  *
  * sharp 是 Next.js 带进来的传递依赖，仓库没有把它列为直接依赖；
  * 这里动态引入，取不到就跳过（产物已经入库，没有 sharp 也不影响站点跑）。
  */
-const chinaPng = join(outDir, 'china-sheet.png');
-const chinaWebp = join(outDir, 'china-sheet.webp');
-if (existsSync(chinaPng)) {
+const sheetPng = join(outDir, 'world-sheet.png');
+const sheetWebp = join(outDir, 'world-sheet.webp');
+if (existsSync(sheetPng)) {
   try {
     const { default: sharp } = await import('sharp');
-    await sharp(chinaPng).webp({ quality: 88, effort: 6, smartSubsample: true }).toFile(chinaWebp);
-    const { size } = await import('node:fs/promises');
-    const stat = await size(chinaWebp);
-    console.log(`[site-assets] china-sheet.png -> china-sheet.webp（${Math.round(stat / 1024)}KB）`);
+    await sharp(sheetPng).webp({ quality: 88, effort: 6, smartSubsample: true }).toFile(sheetWebp);
+    const { statSync } = await import('node:fs');
+    const stat = statSync(sheetWebp);
+    console.log(`[site-assets] world-sheet.png -> world-sheet.webp（${Math.round(stat.size / 1024)}KB）`);
   } catch (err) {
     console.warn(`[site-assets] 跳过 WebP 转换（${err.message}）——站点会退回 PNG 源图`);
   }
 } else {
-  console.warn('[site-assets] 没有 china-sheet.png，跳过 WebP 转换');
+  console.warn('[site-assets] 没有 world-sheet.png，跳过 WebP 转换');
 }
