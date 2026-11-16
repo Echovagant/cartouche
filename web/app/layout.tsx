@@ -101,13 +101,31 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="zh-CN" className={`${geist.variable} ${geistMono.variable}`}>
       <head>
         {/*
-          主题必须在**首帧之前**落到 <html> 上，否则暗色用户会先看到一帧浅色再跳过去。
+          主题必须在**首帧之前**落到 <html> 上，否则另一套主题的用户会先闪一帧再跳过去。
           用内联脚本（而不是 React effect）是因为它跑在 hydration 之前。
-          没有存储值时默认暗色——画布的默认观感就是"制图台"。
+          全站一个存储键（cartouche.theme）；没有存储值时按**路由**给默认：
+          画布 / AI 工作台是暗色的"制图台"，官网保持浅色的品牌面。
+          手动切过之后就跟着用户走，全站一致。
         */}
         <script
           dangerouslySetInnerHTML={{
-            __html: `(function(){try{var t=localStorage.getItem('cartouche.canvas.theme');if(t==='light'||t==='dark'){document.documentElement.dataset.theme=t;}}catch(e){}})();`,
+            __html: `(function(){try{var t=localStorage.getItem('cartouche.theme');if(t!=='light'&&t!=='dark'){var p=location.pathname;t=(p.indexOf('canvas')>=0||p.indexOf('ai')>=0)?'dark':'light';}document.documentElement.dataset.theme=t;}catch(e){document.documentElement.dataset.theme='light'}})();`,
+          }}
+        />
+
+        {/*
+          加载动画的开关（data-boot）同样必须在**首帧之前**定下来。
+          静态导出会把启动屏标记预渲染进 HTML —— 只靠 JS 判断的话，
+          选了「从不播放」的用户仍会先看到一闪而过的启动屏。
+          这里读 localStorage 写 <html data-boot="off">，CSS 据此在渲染前就藏掉它。
+
+          data-boot-pending：本地缓存还没跟引擎核对过（首访 / 换浏览器 / 换访问地址）。
+          这时**先藏住**启动屏，等页面问完引擎（几十毫秒）再决定播不播 ——
+          藏几十毫秒比"闪一下再消失"好看得多。
+        */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `(function(){try{var m=localStorage.getItem('cartouche.boot.animation');var synced=localStorage.getItem('cartouche.boot.synced')==='1';document.documentElement.setAttribute('data-boot',m==='never'?'off':'on');document.documentElement.setAttribute('data-boot-pending',synced?'0':'1');}catch(e){document.documentElement.setAttribute('data-boot','on');document.documentElement.setAttribute('data-boot-pending','0');}})();`,
           }}
         />
 

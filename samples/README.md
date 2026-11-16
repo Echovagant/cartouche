@@ -45,7 +45,7 @@ manifest 里只写逻辑名，**不写任何本机绝对路径**——换机器�
 | `naturalearth-lakes` | 矢量 | Natural Earth 10m 湖泊 | samples | **Polygon 与 MultiPolygon 混层**、**231 个内环 / 80 个带洞要素**、ESRI 旧式 .prj |
 | `naturalearth-coastline` | 矢量 | Natural Earth 10m 海岸线 | samples | 4000+ 条碎线、只有 3 个字段（重几何轻属性） |
 | `datav-china-provinces` | 矢量 | 阿里云 DataV.GeoAtlas | samples | **中文字段名**、GeoJSON 无显式 CRS |
-| `gadm-china-l1` | 矢量 | GADM 4.1 中国一级行政区 | samples | 与 DataV 版本**交叉验证**边界、**GCJ-02 陷阱** |
+| `gadm-china-l1` | 矢量 | GADM 4.1 一级行政区 | samples | 与 DataV 版本**交叉验证**边界、**GCJ-02 陷阱** |
 | `gadm-china-kmz` | 矢量 | GADM 4.1（KMZ） | samples | **KMZ = zip 包的 KML**、gdalinfo 打不开而 ogrinfo 能开、37 个要素拆出 2143 个面 |
 | `gadm-china-gpkg` | 矢量·派生 | GADM 4.1 → GeoPackage | samples | **GPKG 就是 SQLite**、几何列存 WKB |
 | `gadm-china-gauss-kruger` | 矢量·派生 | GADM 4.1 → CGCS2000 高斯-吕格 | ext | **EPSG:4547**、国产软件写的旧式 .prj、DBF 中文掉码 |

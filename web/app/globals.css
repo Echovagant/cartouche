@@ -68,6 +68,19 @@
  * （浅=纸面段，深=墨面段）——它是官网唯一的分段开关。
  */
 :root {
+  /* 纸面/墨面运行时真值（浅色为默认）。暗色值在文件末尾的 [data-theme='dark']，
+     与 --studio-* 同一套 data-theme 机制 —— 全站一个主题开关。 */
+  --paper: #f4f1ea;
+  --paper-deep: #e9e4d7;
+  --surface: #fcfaf5;
+  --surface-raised: #ffffff;
+  --ink: #1c1a16;
+  --ink-2: #4a463d;
+  --ink-3: #6f695c;
+  --ink-4: #a49d8c;
+  --line: #e2dbcb;
+  --line-2: #cfc6b1;
+
   /* 段与容器 */
   --page-margin: clamp(1.25rem, 4vw, 4rem);
 
@@ -110,21 +123,22 @@
 }
 
 @theme {
-  --color-paper: #f4f1ea;
-  --color-paper-deep: #e9e4d7;
-  --color-surface: #fcfaf5;
-  --color-surface-raised: #ffffff;
+  /* 纸面/墨面这组是**运行时**可切的（与 --studio-* 同一套机制）：
+     @theme 里放 var() 引用，真值在 :root / [data-theme='dark'] ——
+     Tailwind 的 @theme 值在构建期就固定，写死颜色就没法切主题了。 */
+  --color-paper: var(--paper);
+  --color-paper-deep: var(--paper-deep);
+  --color-surface: var(--surface);
+  --color-surface-raised: var(--surface-raised);
 
-  --color-ink: #1c1a16;
-  --color-ink-2: #4a463d;
-  /* 次级说明文字。#7c7668 在纸面(#f4f1ea)上只有 4.01:1、在 surface(#fcfaf5)上
-     4.33:1，都差 WCAG AA 的 4.5:1 一截；压深到 #6f695c 之后是 4.83 / 5.23:1，
-     色相与暖调不变。 */
-  --color-ink-3: #6f695c;
-  --color-ink-4: #a49d8c;
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  /* 次级说明文字。浅色档 #6f695c 在纸面(#f4f1ea)上 4.83:1（WCAG AA ✓）。 */
+  --color-ink-3: var(--ink-3);
+  --color-ink-4: var(--ink-4);
 
-  --color-line: #e2dbcb;
-  --color-line-2: #cfc6b1;
+  --color-line: var(--line);
+  --color-line-2: var(--line-2);
 
   /* 深墨段（bg-ink #1c1a16）上的表面阶梯与描边。
      深段的 hairline 一律用 paper/12，不用浅段的 line —— 浅色描边在墨底上
@@ -250,16 +264,16 @@
   /* P3 屏上的同一组颜色（sRGB 基准值见下方注释，换算自 Ottosson OKLab 矩阵，
      往返误差 0.00000）。放在 @theme 之后：同特异度、后声明者胜。 */
   :root {
-    --color-paper: oklch(0.9585 0.0098 87.47); /* #f4f1ea */
-    --color-paper-deep: oklch(0.9192 0.0182 89.36); /* #e9e4d7 */
-    --color-surface: oklch(0.9853 0.0069 88.64); /* #fcfaf5 */
-    --color-surface-raised: oklch(1 0 0); /* #ffffff */
-    --color-ink: oklch(0.2186 0.0082 84.59); /* #1c1a16 */
-    --color-ink-2: oklch(0.3952 0.0157 86.89); /* #4a463d */
-    --color-ink-3: oklch(0.5224 0.0212 86.17); /* #6f695c */
-    --color-ink-4: oklch(0.6971 0.0255 88.27); /* #a49d8c */
-    --color-line: oklch(0.8926 0.0228 87.16); /* #e2dbcb */
-    --color-line-2: oklch(0.8282 0.0303 87.56); /* #cfc6b1 */
+    --paper: oklch(0.9585 0.0098 87.47); /* #f4f1ea */
+    --paper-deep: oklch(0.9192 0.0182 89.36); /* #e9e4d7 */
+    --surface: oklch(0.9853 0.0069 88.64); /* #fcfaf5 */
+    --surface-raised: oklch(1 0 0); /* #ffffff */
+    --ink: oklch(0.2186 0.0082 84.59); /* #1c1a16 */
+    --ink-2: oklch(0.3952 0.0157 86.89); /* #4a463d */
+    --ink-3: oklch(0.5224 0.0212 86.17); /* #6f695c */
+    --ink-4: oklch(0.6971 0.0255 88.27); /* #a49d8c */
+    --line: oklch(0.8926 0.0228 87.16); /* #e2dbcb */
+    --line-2: oklch(0.8282 0.0303 87.56); /* #cfc6b1 */
     --color-accent: oklch(0.4947 0.0715 173.27); /* #2f6f5e */
     --color-accent-deep: oklch(0.4117 0.0572 175.01); /* #245549 */
     --color-accent-soft: oklch(0.9452 0.0094 171.79); /* #e7efec */
@@ -754,4 +768,165 @@
     visibility: visible !important;
     transform: none !important;
   }
+}
+
+
+/* ── 暗色主题（全站） ─────────────────────────────────────────────
+   与 --studio-* 的暗色同一族：暖黑底、纸色文字。accent/warn 不随主题翻 ——
+   它们在深浅两档底上都够对比（深底强调用 accent-lit / warn-lit）。
+   写在文件**最末尾**：上面 oklch 的 :root 块与本块同特异性（0,1,0），
+   后声明者胜 —— 放前面会被 P3 屏的浅色值压掉。 */
+[data-theme='dark'] {
+  --paper: #171512;
+  --paper-deep: #1d1a16;
+  --surface: #201c18;
+  --surface-raised: #272320;
+  --ink: #f3eee4;
+  --ink-2: #c9c1b2;
+  --ink-3: #9a9284;
+  --ink-4: #6f695c;
+  --line: #322c24;
+  --line-2: #453d33;
+}
+
+/* ═══════ 启动屏 BootCinematic（v2 cinematic 移植） ═══════
+   放映厅定调：**始终暗场**（不随 data-theme 翻色），暖黑 + 测绘墨绿深底亮档
+   （accent-lit #4fa88b），与 --studio 暗色同族 —— 浅色主题下也是暗场揭幕
+   （Apple 式：暗色启动屏 → 内容页本色）。颜色用字面量不用 var(--studio-*)。 */
+
+.boot-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: #141210;
+  color: #f3eee4;
+  font-family: var(--font-mono);
+  overflow: hidden;
+}
+/* 氛围层：细网格 + 径向遮罩（纯 CSS，零资源） */
+.boot-screen::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(rgba(243, 238, 228, 0.05) 1px, transparent 1px) 0 0 / 100% 56px,
+    linear-gradient(90deg, rgba(243, 238, 228, 0.05) 1px, transparent 1px) 0 0 / 56px 100%;
+  -webkit-mask-image: radial-gradient(85% 75% at 50% 42%, #000 25%, transparent 100%);
+  mask-image: radial-gradient(85% 75% at 50% 42%, #000 25%, transparent 100%);
+}
+.boot-vignette {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(120% 90% at 50% 112%, rgba(79, 168, 139, 0.1), transparent 60%);
+}
+
+/* logo：顶部中央，顺序描边（JS 写 dasharray/offset） */
+.boot-logo { position: absolute; top: 7vh; left: 50%; transform: translateX(-50%); }
+.boot-logo svg { stroke: #4fa88b; }
+
+/* mask 揭示通用容器 */
+.boot-rv { overflow: hidden; }
+.boot-rv > * { display: block; transform: translateY(110%); transition: transform 0.8s cubic-bezier(0.22, 1, 0.36, 1); }
+.boot-rv.boot-in > * { transform: translateY(0); }
+
+/* 大字 odometer：左下，三位独立滚轮 */
+.boot-odo-wrap { position: absolute; left: 8vw; bottom: 8vw; }
+.boot-brand {
+  margin-bottom: 3vh;
+  font-size: 12px;
+  letter-spacing: 0.5em;
+  text-indent: 0.5em;
+  text-transform: uppercase;
+  color: rgba(243, 238, 228, 0.42);
+}
+.boot-odo {
+  display: flex;
+  font: 200 clamp(110px, 21vw, 250px) / 0.82 var(--font-mono);
+  letter-spacing: -0.04em;
+  font-variant-numeric: tabular-nums;
+}
+.boot-odo-col { height: 0.82em; overflow: hidden; }
+.boot-odo-stack { display: flex; flex-direction: column; transition: transform 0.55s cubic-bezier(0.22, 1, 0.36, 1); }
+.boot-odo-stack span { height: 0.82em; }
+/* 退场：三列错峰滚出 */
+.boot-screen.boot-out .boot-odo-col { transform: translateY(-130%); transition: transform 0.4s cubic-bezier(0.7, 0, 0.84, 0); }
+.boot-screen.boot-out .boot-odo-col:nth-child(2) { transition-delay: 0.05s; }
+.boot-screen.boot-out .boot-odo-col:nth-child(3) { transition-delay: 0.1s; }
+.boot-screen.boot-out .boot-rv > * { transform: translateY(-110%); transition: transform 0.4s cubic-bezier(0.7, 0, 0.84, 0); }
+
+/* 状态行：右下，方块闪烁 + mask 换词（中文同样吃 letterspacing） */
+.boot-status {
+  position: absolute;
+  right: 8vw;
+  bottom: 8vw;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 11px;
+  letter-spacing: 0.38em;
+  color: rgba(243, 238, 228, 0.42);
+}
+.boot-status::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  flex: none;
+  background: #4fa88b;
+  animation: boot-blink 1.2s steps(2) infinite;
+}
+@keyframes boot-blink { 50% { opacity: 0.15; } }
+.boot-status .boot-rv { height: 1em; }
+.boot-status .boot-rv > * { transition-duration: 0.38s; }
+
+/* 底缘进度线 */
+.boot-bar { position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: rgba(243, 238, 228, 0.08); }
+.boot-bar-fill { height: 100%; background: #4fa88b; transform-origin: left center; transform: scaleX(0); }
+
+/* ============ 双幕布退场（挂在 body 直下，盖过启动屏） ============ */
+.boot-curtain {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  transform: scaleY(0);
+  transform-origin: bottom;
+  transition: transform 0.5s cubic-bezier(0.83, 0, 0.17, 1);
+  will-change: transform;
+}
+#boot-curtain-1 { z-index: 10000; background: #4fa88b; }
+#boot-curtain-2 { z-index: 10001; background: #1d1a16; transition-delay: 0.12s; }
+.boot-curtain.boot-up { transform: scaleY(1); }
+.boot-curtain.boot-down { transform-origin: top; transform: scaleY(0); transition-delay: 0.08s; }
+#boot-curtain-2.boot-down { transition-delay: 0s; }
+
+@media (prefers-reduced-motion: reduce) {
+  .boot-odo-stack, .boot-rv > *, .boot-curtain { transition: none !important; }
+  .boot-status::before { animation: none; }
+}
+
+/* ═══════ 加载动画开关（data-boot） ═══════
+   layout 的内联脚本在首帧前把设置写进 <html data-boot>：
+   「从不播放」→ off → 启动屏在渲染前就被藏掉（零闪屏）。
+   静态导出会把启动屏标记预渲染进 HTML，只靠 JS 判断会闪一下。 */
+html[data-boot='off'] .boot-screen,
+html[data-boot='off'] .boot-curtain {
+  display: none !important;
+}
+/* 本地缓存还没跟引擎核对过（首访 / 换浏览器 / 换访问地址）：
+   先藏住启动屏，等问完引擎（几十毫秒）再决定播不播 ——
+   藏几十毫秒好过"闪一下再消失"。 */
+html[data-boot-pending='1'] .boot-screen,
+html[data-boot-pending='1'] .boot-curtain {
+  display: none !important;
+}
+
+/* 打开项目时的加载态：呼吸光带（动效可关，关掉时元素根本不渲染） */
+@keyframes boot-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.35; transform: scale(0.82); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .boot-pulse { animation: none !important; }
 }

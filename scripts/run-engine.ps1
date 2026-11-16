@@ -82,6 +82,41 @@ if (-not $NoKey -and (Test-Path $keyFile)) {
   Write-Output "[key] not configured. Run: scripts\set-key.ps1"
 }
 
+# 多厂商持久化密钥（2026-11-15 裁定）：keys\<接入线id>.txt（DPAPI 密文）→ <大写ID>_API_KEY。
+# 白名单与 server/src/llm.ts 的 PERSISTED_ENV、scripts/set-key.ps1 是同一份约定（不许各说各话）。
+# minimax-cn 的旧单文件（llm-key.txt → MINIMAX_API_KEY）已在上面那一段装载。
+$keysDir = Join-Path $localAppData 'cartouche\keys'
+if (Test-Path $keysDir) {
+  $knownKeys = @{
+    'minimax-intl' = 'MINIMAX_INTL_API_KEY'
+    'glm'          = 'GLM_API_KEY'
+    'dashscope'    = 'DASHSCOPE_API_KEY'
+    'ark'          = 'ARK_API_KEY'
+    'deepseek'     = 'DEEPSEEK_API_KEY'
+    'moonshot'     = 'MOONSHOT_API_KEY'
+    'siliconflow'  = 'SILICONFLOW_API_KEY'
+  }
+  foreach ($kentry in $knownKeys.GetEnumerator()) {
+    $kf = Join-Path $keysDir ($kentry.Key + '.txt')
+    if (Test-Path $kf) {
+      try {
+        $enc2 = [IO.File]::ReadAllText($kf).Trim()
+        $sec2 = ConvertTo-SecureString $enc2
+        $bstr2 = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec2)
+        try {
+          $plain2 = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr2)
+          Set-Item -Path ("Env:" + $kentry.Value) -Value $plain2
+          Write-Output ("[key] {0} loaded (DPAPI) length={1}" -f $kentry.Key, $plain2.Length)
+        } finally {
+          [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr2)
+        }
+      } catch {
+        Write-Output ("[key] {0} 解密失败（换 Windows 用户或文件损坏？跳过）" -f $kentry.Key)
+      }
+    }
+  }
+}
+
 $env:ENGINE_PORT = "$Port"
 $env:ENGINE_HOST = '127.0.0.1'
 

@@ -93,7 +93,7 @@ const DEFAULT_MAX_SCAN = 5000;
  * 尖角阈值（度）。
  *
  * 取 10° 是量出来的，不是拍的：
- *   - 实测公开样本 GADM 中国省级（37 个面、2 万多个顶点）里，
+ *   - 实测公开样本 GADM 一级行政区（37 个面、2 万多个顶点）里，
  *     最锐的**合法**拐角约 19°，没有任何一个顶点小于 15°；
  *   - 而数字化尖刺（边界冲出去又折回来）通常在 5° 以下。
  * 所以 10° 能把「真缺陷」和「合法的窄角」分开。
@@ -320,7 +320,9 @@ async function checkVectorHealth(
 
   if (!scan) {
     // 读不到要素 ≠ 没问题。这一项必须如实标成「没查」。
-    const reason = '要素读取失败（GDAL 未能把图层转成 GeoJSON），要素级检查没有执行';
+    // 文案说人话：用户看到的是"这项没查成"，不是 GDAL 的内部报错。
+    const reason =
+      '这个文件读不出要素，逐条检查没能执行（文件可能已损坏、加密，或格式不被支持）';
     coverage.push(cov('null-geometry', 'skipped', ['V-GEOM-001'], reason));
     coverage.push(cov('zero-area', 'skipped', ['V-GEOM-002'], reason));
     coverage.push(cov('sharp-angle', 'skipped', ['V-GEOM-008'], reason));

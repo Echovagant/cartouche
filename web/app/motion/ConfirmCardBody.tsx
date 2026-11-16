@@ -34,8 +34,12 @@ export interface ConfirmCardBodyProps {
    * 表面变体：
    *   studio = 画布的制图台主题（跟随 canvas 的浅/暗）
    *   ink    = 官网的墨面深色段
+   *   paper  = 官网的纸面浅色段（首屏浮在浅色图面上的那张卡）
+   *
+   * ⚠️ ink 与 paper 不能混用：ink 是"深底浅字"，放到浅色纸面上会**糊成一片**
+   * （bg-ink-surface 只是墨色上的 6% 白，浅底上等于没有底 → 浅字压浅图，看不清）。
    */
-  readonly variant?: 'studio' | 'ink';
+  readonly variant?: 'studio' | 'ink' | 'paper';
   /** 卡头右侧的动作位（画布放「取消」，官网留空） */
   readonly headerAction?: ReactNode;
   /** 卡体下半部分（画布放预演失败/影响面过大/执行结果/按钮组） */
@@ -70,18 +74,21 @@ export function ConfirmCardBody({
   className = '',
 }: ConfirmCardBodyProps) {
   const ink = variant === 'ink';
+  const paper = variant === 'paper';
 
   return (
     <div
       className={
         ink
           ? `w-full rounded-panel border border-ink-line bg-ink-surface p-5 ${className}`
-          : `w-[540px] max-w-full rounded-panel border border-studio-line bg-studio-2 p-5 shadow-[var(--studio-stage-shadow)] ${className}`
+          : paper
+            ? `w-full rounded-panel border border-line bg-surface p-5 shadow-[var(--studio-stage-shadow)] ${className}`
+            : `w-[540px] max-w-full rounded-panel border border-studio-line bg-studio-2 p-5 shadow-[var(--studio-stage-shadow)] ${className}`
       }
     >
       <div className="flex items-center gap-2.5">
         <strong
-          className={`font-display text-[15px] font-semibold ${ink ? 'text-paper' : 'text-studio-ink'}`}
+          className={`font-display text-[15px] font-semibold ${ink ? 'text-paper' : paper ? 'text-ink' : 'text-studio-ink'}`}
         >
           {title}
         </strong>
@@ -90,7 +97,9 @@ export function ConfirmCardBody({
             className={
               ink
                 ? 'rounded border border-ink-line bg-ink-raised px-1.5 py-0.5 font-mono text-[11px] text-paper/85'
-                : 'rounded border border-studio-line bg-studio-3/70 px-1.5 py-0.5 font-mono text-[11px] text-studio-ink-2'
+                : paper
+                  ? 'rounded border border-line bg-paper px-1.5 py-0.5 font-mono text-[11px] text-ink-2'
+                  : 'rounded border border-studio-line bg-studio-3/70 px-1.5 py-0.5 font-mono text-[11px] text-studio-ink-2'
             }
           >
             {opLabel}
@@ -108,14 +117,18 @@ export function ConfirmCardBody({
             className={
               ink
                 ? `flex items-start gap-3 rounded-lg border border-ink-line bg-ink-surface px-3.5 py-3${reveal ? ' reveal' : ''}`
-                : 'flex items-start gap-2.5 rounded-lg border border-studio-line bg-studio/45 px-3 py-2'
+                : paper
+                  ? `flex items-start gap-2.5 rounded-lg border border-line bg-paper/70 px-3 py-2${reveal ? ' reveal' : ''}`
+                  : 'flex items-start gap-2.5 rounded-lg border border-studio-line bg-studio/45 px-3 py-2'
             }
           >
             <span
               className={
                 ink
                   ? 'mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-accent-lit/18 font-mono text-[11px] text-accent-lit'
-                  : 'mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-accent/20 font-mono text-[10px] text-accent'
+                  : paper
+                    ? 'mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-accent/15 font-mono text-[11px] text-accent'
+                    : 'mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-accent/20 font-mono text-[10px] text-accent'
               }
             >
               {index + 1}
@@ -125,7 +138,9 @@ export function ConfirmCardBody({
                 className={
                   ink
                     ? 'text-[13px] text-paper/85'
-                    : 'text-[11px] text-studio-ink-3'
+                    : paper
+                      ? 'text-[12px] text-ink-2'
+                      : 'text-[11px] text-studio-ink-3'
                 }
               >
                 {gate.label}
@@ -134,7 +149,9 @@ export function ConfirmCardBody({
                 className={
                   ink
                     ? 'mt-1 font-mono text-[13px] break-all text-paper tnum'
-                    : 'mt-0.5 font-mono text-[12.5px] break-all text-studio-ink'
+                    : paper
+                      ? 'mt-0.5 font-mono text-[12.5px] break-all text-ink tnum'
+                      : 'mt-0.5 font-mono text-[12.5px] break-all text-studio-ink'
                 }
               >
                 {gate.value}

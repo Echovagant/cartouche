@@ -66,20 +66,67 @@ export async function scanFeatures(
   limit: number,
 ): Promise<FeatureScan | null> {
   const gdal = tools(loc);
-  const res = await gdal.ogr2ogr([
-    '-f', 'GeoJSON',
-    '-limit', String(limit + 1),
-    '-lco', 'RFC7946=NO',
-    '-lco', 'ID_GENERATE=YES',
-    '/vsistdout/',
-    path,
-  ]);
-  if (!res.ok || !res.stdout.trim()) return null;
+
+  /**
+   * 转一层，返回该层的要素（读不到就 null）。
+   *
+   * `layer` 为空 = 整文件转（单图层源）；给了层名 = 只转那一层。
+   */
+  const scanOne = async (layer?: string): Promise<ScannedFeature[] | null> => {
+    const args = [
+      '-f', 'GeoJSON',
+      '-limit', String(limit + 1),
+      '-lco', 'RFC7946=NO',
+      '-lco', 'ID_GENERATE=YES',
+      '/vsistdout/',
+      path,
+    ];
+    if (layer !== undefined) args.push(layer);
+    const res = await gdal.ogr2ogr(args);
+    if (!res.ok || !res.stdout.trim()) return null;
+    try {
+      const j = JSON.parse(res.stdout) as { features?: ScannedFeature[] };
+      return j.features ?? [];
+    } catch {
+      return null;
+    }
+  };
+
+  // 多图层容器（GeoPackage / KML / KMZ …）：**GeoJSON 输出驱动是单图层的**，
+  // 整文件转不过去（报 "Layer … cannot be created"）→ 读不到要素 →
+  // 报告里整节变成"未检查"。用户看到的是"这工具检查不了"，那是白做。
+  // 改成逐层转再合并（与 vector-geojson 的两阶段做法同源）。
+  const layerNames = await probeLayerNames(loc, path);
+  if (layerNames && layerNames.length > 1) {
+    const merged: ScannedFeature[] = [];
+    for (const layer of layerNames) {
+      if (merged.length > limit) break;
+      const feats = await scanOne(layer);
+      if (!feats) continue;
+      merged.push(...feats);
+    }
+    if (merged.length === 0) return null;
+    const truncated = merged.length > limit;
+    return { features: truncated ? merged.slice(0, limit) : merged, truncated };
+  }
+
+  const feats = await scanOne();
+  if (!feats) return null;
+  const truncated = feats.length > limit;
+  return { features: truncated ? feats.slice(0, limit) : feats, truncated };
+}
+
+/**
+ * 探这个文件里的图层名（读不到就 null = 单图层或探不出来）。
+ *
+ * 探不出来时按单图层处理：老路径照旧，不因为探层失败就把体检整个拖垮。
+ */
+async function probeLayerNames(loc: GdalLocation, path: string): Promise<string[] | null> {
   try {
-    const j = JSON.parse(res.stdout) as { features?: ScannedFeature[] };
-    const feats = j.features ?? [];
-    const truncated = feats.length > limit;
-    return { features: truncated ? feats.slice(0, limit) : feats, truncated };
+    const { probeLayer } = await import('../vector/read.ts');
+    const info = await probeLayer(loc, path);
+    const names = info.layerNames.filter((n) => n !== '');
+    return names.length > 0 ? names : null;
   } catch {
     return null;
   }

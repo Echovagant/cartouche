@@ -182,6 +182,14 @@ export interface MapLayer {
   visible: boolean;
   /** 不透明度 0~1 */
   opacity: number;
+  /**
+   * 视口分块模式：数据太大整层装不下（128MB 闸），按当前视口裁剪着装。
+   *
+   * 打了标记的层，moveend 会随视口自动重裁补齐；恢复项目时**直接走视口模式**，
+   * 不再做全量尝试（否则每开一次项目都撞一次闸、干等一场注定失败的转换）。
+   * 该标记会写进项目清单，属于层的固有属性而非临时状态。
+   */
+  chunked?: boolean;
 }
 
 /* ───────── 项目清单（`.cartouche/project.json`） ───────── */
@@ -202,6 +210,8 @@ export interface ProjectLayer {
   readonly path: string;
   readonly visible: boolean;
   readonly opacity: number;
+  /** 视口分块模式（大文件）：恢复时直接按视口加载，不再做全量尝试 */
+  readonly chunked?: boolean;
 }
 
 /** 地图视角：中心点（经度、纬度）与缩放级别 */
@@ -238,10 +248,28 @@ export interface ProjectOutput {
   readonly mtimeMs: number;
 }
 
+/**
+ * 项目的定位方式：要么是绝对路径（手填的），要么是引擎代号（弹窗选的）。
+ *
+ * 为什么允许两者：弹窗选出来的目录前端**只有代号**（folder-N，见
+ * server/src/folder-picker.ts 的隐私约定），路径留在引擎里；
+ * 手填路径的场景仍然存在（远程机器、图形对话框不可用）。
+ */
+export type ProjectRef = {
+  /** 项目根的绝对路径（**仅用于调用引擎**，不要显示在界面上） */
+  readonly path?: string;
+  /** 引擎侧的项目目录代号（folder-N）。代号表落盘了，引擎重启后依然有效 */
+  readonly handle?: string;
+  /** 弹窗选出来时的文件夹名（建项目时当默认项目名用） */
+  readonly label?: string;
+};
+
 /** 「最近打开的项目」列表里的一项 */
 export interface ProjectSummary {
-  /** 项目根的绝对路径（**仅用于调用引擎**，不要显示在界面上） */
-  readonly path: string;
+  /** 项目根的绝对路径（**仅用于调用引擎**，不要显示在界面上）。弹窗选的项目可以缺省 */
+  readonly path?: string;
+  /** 弹窗选出来的项目目录代号。引擎重启后依然有效（代号表落盘了） */
+  readonly handle?: string;
   readonly name: string;
   readonly updatedAt: string;
   readonly layerCount: number;

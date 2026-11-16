@@ -14,7 +14,6 @@
 import { useRef, type KeyboardEvent } from 'react';
 import { FilePdfIcon, ShieldCheckIcon, SparkleIcon } from '@phosphor-icons/react';
 import type { HealthStatus } from './useEngine';
-import { MagneticButton } from '../motion/MagneticLink';
 import { ActionButton, StatusDot } from './ui';
 
 export interface ToolbarProps {
@@ -33,10 +32,17 @@ export interface ToolbarProps {
   stretch?: 'auto' | 'none';
   /** 切档；传 undefined = 回到「自动」 */
   onStretchChange: (value: 'auto' | 'none' | undefined) => void;
+  /** 项目里有没有栅格图层：没有时整组「栅格显示」都不出现（纯矢量项目看了只会困惑） */
+  hasRaster: boolean;
   /** 跳到 AI 工作台，把当前项目与图层带过去 */
   onOpenAi: () => void;
   /** 为什么现在点不了（空 = 可以点） */
   aiBlockedReason: string;
+  /**
+   * 内嵌形态：去掉自己的条状外壳（边框/底色/内边距），
+   * 让两组工具条合成**一行**。外壳由外层容器统一出。
+   */
+  inline?: boolean;
 }
 
 const HEALTH_TEXT: Record<HealthStatus, string> = {
@@ -68,7 +74,7 @@ const STRETCH_OPTIONS: readonly {
   {
     value: 'auto',
     label: '按实际亮度',
-    hint: '把这幅图实际用到的明暗范围铺满，画面最接近 ArcGIS Pro 里看到的效果',
+    hint: '把这幅图实际用到的明暗范围铺满 —— 只改显示的明暗，不动位置、缩放与数据本身',
   },
   {
     value: 'none',
@@ -87,8 +93,10 @@ export default function Toolbar({
   onReloadHealth,
   stretch,
   onStretchChange,
+  hasRaster,
   onOpenAi,
   aiBlockedReason,
+  inline = false,
 }: ToolbarProps) {
   const exportDisabled = exporting || health !== 'ready';
   const reportDisabled = reporting || !canReport || health !== 'ready';
@@ -130,43 +138,53 @@ export default function Toolbar({
   };
 
   return (
-    <div className="flex items-center gap-2 border-b border-studio-line bg-studio-2/60 px-4 py-2.5">
-      <MagneticButton
+    <div
+      className={
+        inline
+          ? 'contents'
+          : 'flex items-center gap-2 border-b border-studio-line bg-studio-2/60 px-4 py-2.5'
+      }
+    >
+      {/* 工具按钮**不带动画**：这是干活的地方，按钮就是按钮（用户裁定，2026-11-14） */}
+      <button
+        type="button"
         onClick={onExportPdf}
         disabled={exportDisabled}
         title={health !== 'ready' ? '引擎未就绪' : '把当前视口封成带图框的 PDF'}
-        className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-accent bg-accent px-3.5 py-1.5 text-[12.5px] font-medium text-paper shadow-[0_2px_14px_-4px_rgba(47,111,94,0.85)] transition-colors hover:border-accent-deep hover:bg-accent-deep active:translate-y-px disabled:pointer-events-none disabled:opacity-40"
+        className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-accent bg-accent px-3.5 py-1.5 text-[12.5px] font-medium text-paper transition-colors hover:border-accent-deep hover:bg-accent-deep disabled:pointer-events-none disabled:opacity-40"
       >
         <FilePdfIcon size={15} weight="bold" />
         {exporting ? '正在导出' : '导出 PDF'}
-      </MagneticButton>
+      </button>
 
-      <MagneticButton
+      <button
+        type="button"
         onClick={onCompatReport}
         disabled={reportDisabled}
         title={canReport ? '对当前图层生成兼容性自检报告' : '先加载一个图层'}
-        className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-studio-line bg-studio-3/70 px-3 py-1.5 text-[12.5px] font-medium text-studio-ink transition-colors hover:border-studio-ink-3 hover:bg-studio-3 active:translate-y-px disabled:pointer-events-none disabled:opacity-40"
+        className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-studio-line bg-studio-3/70 px-3 py-1.5 text-[12.5px] font-medium text-studio-ink transition-colors hover:border-studio-ink-3 hover:bg-studio-3 disabled:pointer-events-none disabled:opacity-40"
       >
         <ShieldCheckIcon size={15} weight="bold" />
         {reporting ? '正在检查' : '兼容性报告'}
-      </MagneticButton>
+      </button>
 
       {/* 用一句话改图：把当前项目与图层带进 AI 工作台。
           放在「导出 / 报告」这一组之后：这组是"交差"链路，
           AI 改图是另一条链路，紧挨着容易被当成同一件事的两步。 */}
-      <MagneticButton
+      <button
+        type="button"
         onClick={onOpenAi}
         disabled={aiDisabled}
         title={aiDisabled ? aiBlockedReason : '把当前项目与图层带进 AI 工作台，用一句话提议改动'}
-        className="ml-1 inline-flex items-center justify-center gap-1.5 rounded-lg border border-studio-line bg-studio-3/70 px-3 py-1.5 text-[12.5px] font-medium text-studio-ink transition-colors hover:border-studio-ink-3 hover:bg-studio-3 active:translate-y-px disabled:pointer-events-none disabled:opacity-40"
+        className="ml-1 inline-flex items-center justify-center gap-1.5 rounded-lg border border-studio-line bg-studio-3/70 px-3 py-1.5 text-[12.5px] font-medium text-studio-ink transition-colors hover:border-studio-ink-3 hover:bg-studio-3 disabled:pointer-events-none disabled:opacity-40"
       >
         <SparkleIcon size={15} weight="bold" />
         用一句话改图
-      </MagneticButton>
+      </button>
 
-      {/* 栅格显示档位。
-          放在这组按钮之后、不去挤右边的健康状态区：它管的是底图怎么上屏，
-          跟"导出 / 报告"是两条不同的心智模型，挨在一起反而看不明白。 */}
+      {/* 栅格显示档位：只在项目里有栅格时才出现。
+          纯矢量项目摆一排"栅格显示"，用户切了没反应还以为出 bug 了（2026-11-14 实测反馈）。 */}
+      {hasRaster ? (
       <div className="ml-1 flex items-center gap-2">
         <span className="text-[11.5px] text-studio-ink-3">栅格显示</span>
         <div
@@ -221,6 +239,7 @@ export default function Toolbar({
           </span>
         ))}
       </div>
+      ) : null}
 
       <span className="flex-1" />
 

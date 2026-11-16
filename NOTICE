@@ -67,15 +67,13 @@ Copyright (c) 2016-2020 Even Rouault 等），许可全文随上游源码分发
 
 本项目不包含、不分发任何 Esri 专有软件或数据。ArcGIS 是 Esri 的注册商标。
 
-官网首屏示例图（web/public/site/china-sheet.png 与 china-sheet.webp）
+官网首屏示例图（web/public/site/world-sheet.png 与 world-sheet.webp）
 由本工具真实出图，图中所用数据来源如下：
 
 - Natural Earth 自然地理底图与主要河流 — 公共领域（Public Domain），
   https://www.naturalearthdata.com
-- DataV.GeoAtlas 中国省级行政区划 — 公开数据接口，
-  https://geo.datav.aliyun.com
 
-两者的许可与出处另见 samples/manifest.json（随仓库入库，逐条记录每个样本的
+它的许可与出处另见 samples/manifest.json（随仓库入库，逐条记录每个样本的
 来源与许可；样本数据本身不入库，按需另行下载）。
 
 网站其余配图（web/public/site/ 下的 confirm-card.jpg、canvas-frame.jpg、

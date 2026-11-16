@@ -11,7 +11,7 @@ import { MagneticLink } from './motion/MagneticLink';
 import { Deliverables } from './motion/Deliverables';
 import { GateStack } from './motion/GateStack';
 import { ScrollChoreography } from './motion/ScrollChoreography';
-import { formatPixelGate } from './motion/ConfirmCardBody';
+import { ConfirmCardBody, formatPixelGate } from './motion/ConfirmCardBody';
 import { SiteHeader } from './motion/SiteHeader';
 
 /**
@@ -73,15 +73,46 @@ const NAV = [
   { href: RELEASES_URL, label: '下载' },
 ] as const;
 
-/* ── 两次真实运行留下的像元口径 ──────────────────────────────────────
-   涂色那次的执行前确认卡（截图见 web/public/site/confirm-card.jpg）：
-     全图 1,200 个像元，这次会改 165 个（13.8%）。
-   调色那次的预演结果：全图 1,200 个像元，会改 1,170 个（97.5%）。
-   两个数字都来自真实运行，不是估的；口径脚注在页脚。 */
+/* ── 真实运行留下的像元口径 ──────────────────────────────────────────
+   2026-11-16 一次真实运行（引擎 /api/op/preview 实算，不是估的）：
+     涂色：全图 3,600 个像元，这次会改 400 个（11.1%）；
+     调色：全图 3,600 个像元，会改 3,600 个（100% —— 调色本就是整幅操作）。
+   素材是 Natural Earth 公开底图裁出的一小块（60×60 像元），
+   口径脚注在页脚。 */
 
-const PAINT_AFFECTED = 165;
-const PAINT_TOTAL = 1200;
-const RECOLOR_AFFECTED = 1170;
+const PAINT_AFFECTED = 400;
+const PAINT_TOTAL = 3600;
+const RECOLOR_AFFECTED = 3600;
+
+/**
+ * 涂色那次确认卡的四行闸门（**引擎预演出来的原值**）。
+ *
+ * 官网渲染这张卡用的是组件（不是位图截图）：位图再大也会糊，
+ * 数字还会与页面其它地方走散。组件与画布共用 ConfirmCardBody，改版自动同步。
+ */
+const PAINT_GATES = [
+  {
+    label: '将影响的像元',
+    value: formatPixelGate(PAINT_AFFECTED, PAINT_TOTAL, PAINT_AFFECTED / PAINT_TOTAL),
+  },
+  { label: '目标文件', value: '区域底图.tif' },
+  { label: '将生成的备份', value: '区域底图.tif.bak.<yyyyMMdd-HHmmss>（与原文件同目录）' },
+  { label: '操作类型', value: '涂色' },
+];
+
+/**
+ * 首屏浮层那张用**精简版**：浮层只有图面宽度的三分之一，完整的备份名一放进去
+ * 就折三行、卡片长得撑出图面。完整口径留给 S2 段那张大卡。
+ */
+const PAINT_GATES_HERO = [
+  {
+    label: '将影响的像元',
+    value: formatPixelGate(PAINT_AFFECTED, PAINT_TOTAL, PAINT_AFFECTED / PAINT_TOTAL),
+  },
+  { label: '目标文件', value: '区域底图.tif' },
+  { label: '将生成的备份', value: '区域底图.tif.bak.<时间戳>' },
+  { label: '操作类型', value: '涂色' },
+];
 
 /**
  * 像元影响面的两段数字（不带百分比）。
@@ -152,8 +183,8 @@ const AI_ROLES = [
  *
  * 数字只有一条规矩：必须能说清是哪次运行、什么参数下的。
  * 这四条的出处（不许改口径时不说出处）：
- *   - 像元影响面：2026-10-22 一次真实涂色操作的执行前确认卡
- *     （web/public/site/confirm-card.jpg），数字与画布的 formatPixelGate 同源；
+ *   - 像元影响面：2026-11-16 一次真实涂色运行的引擎预演结果
+ *     （/api/op/preview 实算），数字与画布的 formatPixelGate 同源；
  *   - 目标文件：同一次运行里写回的那个文件；
  *   - 导出规格：引擎封单页 PDF 的默认页面参数（A4 横版 841.89×595.28 pt、
  *     图纸 DPI 150，见 src/engine/export/pdf.ts），前端不传这两个值；
@@ -165,7 +196,7 @@ const HERO_FACTS = [
   {
     label: '将影响的像元',
     value: pixelPair(PAINT_AFFECTED, PAINT_TOTAL),
-    note: '2026-10-22 一次真实涂色操作，占全图 13.8%',
+    note: '2026-11-16 一次真实涂色运行，占全图 11.1%',
   },
   {
     label: '目标文件',
@@ -192,7 +223,7 @@ const STEPS = [
     title: '解压',
     body: '下载绿色压缩包，解压，双击里面的 START.cmd。不用装 Node，不用装 GDAL，不用改设置——包里已经带全了。',
     code: [
-      '图签-便携版.zip',
+      'cartouche-portable-0.1.0.zip',
       '  └─ 解压到任意一个文件夹（路径里有中文、有空格都行）',
       '  └─ 双击 START.cmd',
       '',
@@ -202,10 +233,12 @@ const STEPS = [
   },
   {
     n: '02',
-    title: '登记',
-    body: '一个项目 = 一次交差任务。把你放图件的文件夹登记进来，工具在旁边建一个 .cartouche/ 放清单、产出物与留痕，你的图件一个字节都不会被搬动或改写。',
+    title: '选一个文件夹',
+    body: '点「选一个文件夹」，系统会弹出选目录的对话框，你挑那个装图件的文件夹。工具在它旁边建一个 .cartouche/ 放清单、产出物与留痕，你的图件一个字节都不会被搬动或改写。',
     code: [
-      '# 在画布上：把放图件的文件夹填进去，点「登记并新建」',
+      '# 在画布上：点「选一个文件夹」',
+      '# → 在系统对话框里挑你的图件文件夹',
+      '',
       '# 自带示例数据在',
       '  %LOCALAPPDATA%\cartouche\workspace\示例数据',
       '# 你的东西和它放在一起，删掉便携包也不会丢。',
@@ -274,6 +307,14 @@ const ABOUT = [
   {
     title: '本机运行',
     body: '引擎只监听回环地址，图件的读写都在你自己的文件夹里。图件与像元不出本机，也不做遥测。接上模型服务后，图层清单（名称、字段、要素数、坐标系）会发给模型服务——发送前可以先看。',
+  },
+  {
+    title: '大文件不卡死',
+    body: '一个 187 MB 的矢量图层，整层转换要一分钟。工具会先按你眼前这一屏裁一份给你看，平移缩放自动补齐；缓存建好之后，同一屏只要 0.7 秒。',
+  },
+  {
+    title: '多图层的容器自己挑',
+    body: 'GeoPackage、KML、KMZ 里层数太多时，不必先回 ArcGIS 里拆开。勾选要哪几层，工具就装哪几层；装了什么、跳过了什么，都会写在界面上。',
   },
   {
     title: '不依赖商业授权',
@@ -404,18 +445,17 @@ export default function Home() {
                   只留一道发丝边 + 投影，让它像一张摊在制图台上的成图。 */}
               <figure data-hero="figure" className="relative">
                 <div className="relative">
-                  {/* 容器 aspect 必须跟成图一致（1756/1319 ≈ 1.331），
+                  {/* 容器 aspect 必须跟成图一致（1242/730 ≈ 1.70)，
                       再用 object-contain 兜底 —— 图面一定完整。
-                      WebP 是给页面读的（509KB），PNG 是原图（4.7MB，只在
-                      不支持 WebP 时才下载）。 */}
-                  <div className="relative aspect-[1756/1319] w-full overflow-hidden bg-surface shadow-product ring-1 ring-line">
+                      WebP 是给页面读的，PNG 是原图（只在不支持 WebP 时才下载）。 */}
+                  <div className="relative aspect-[1242/730] w-full overflow-hidden bg-surface shadow-product ring-1 ring-line">
                     <picture>
-                      <source srcSet="./site/china-sheet.webp" type="image/webp" />
+                      <source srcSet="./site/world-sheet.webp" type="image/webp" />
                       <img
-                        src="./site/china-sheet.png"
-                        alt="图签自己出的图面：中国省级行政区与主要河流图，带图例、比例尺、指北针与标题栏"
-                        width={1756}
-                        height={1319}
+                        src="./site/world-sheet.png"
+                        alt="图签自己出的图面：世界陆地与水系，带图例、比例尺、指北针与标题栏"
+                        width={1242}
+                        height={730}
                         loading="eager"
                         decoding="async"
                         fetchPriority="high"
@@ -427,19 +467,20 @@ export default function Home() {
                   {/* 工具 → 成品 的因果：确认卡浮在图面上。
                       位置避开图面自己画的四个要素
                       （指北针右上、图例与比例尺左下、标题栏右下），
-                      压住的只是底图本身。 */}
+                      压住的只是底图本身。
+
+                      这里渲染的是**组件**而不是位图截图：位图再大也会糊，
+                      而且数字会与页面上的口径走散。组件与画布共用同一份
+                      渲染逻辑（ConfirmCardBody），改版自动同步。 */}
                   <figure
                     data-hero="card"
-                    className="reveal absolute left-[54%] top-[24%] z-10 w-[34%] rotate-[-1.2deg] overflow-hidden rounded-panel border border-line bg-surface shadow-product"
+                    className="reveal absolute left-[54%] top-[24%] z-10 w-[34%] rotate-[-1.2deg]"
                   >
-                    <img
-                      src="./site/confirm-card.jpg"
-                      alt="确认卡：执行前写明将影响的像元数、目标文件、将生成的备份名与操作类型"
-                      width={556}
-                      height={398}
-                      loading="eager"
-                      decoding="async"
-                      className="w-full"
+                    <ConfirmCardBody
+                      variant="paper"
+                      title="确认这次改动"
+                      opLabel="raster.paint"
+                      gates={PAINT_GATES_HERO}
                     />
                   </figure>
                 </div>
@@ -447,7 +488,7 @@ export default function Home() {
                   data-hero="caption"
                   className="reveal mt-5 font-mono text-body-sm text-ink-3"
                 >
-                  示例：中国省级行政区与主要河流图 · 图签自己出的图面
+                  示例：世界陆地与水系 · 图签自己出的图面
                 </figcaption>
               </figure>
             </div>
@@ -518,20 +559,19 @@ export default function Home() {
               </a>
             </div>
 
-            {/* 真实确认卡截图（暗底原图）：**不复刻**。
-                复刻成纸色卡 = 「官网说的和真东西不一样」。 */}
+            {/* 真实确认卡：**组件渲染**，不是位图截图 ——
+                位图再大也会糊，数字还会与页面口径走散。
+                下面的四个值就是引擎预演算出来的（一次真实涂色运行）。 */}
             <figure data-s2="figure" className="reveal">
-              <img
-                src="./site/confirm-card.jpg"
-                alt="工具里的执行前确认卡（真实截图）：四行闸门与「取消 / 确认执行」"
-                width={556}
-                height={398}
-                loading="lazy"
-                decoding="async"
-                className="w-full rounded-panel border border-ink-line"
+              <ConfirmCardBody
+                variant="ink"
+                title="确认这次改动"
+                opLabel="raster.paint"
+                gates={PAINT_GATES}
+                className="rounded-panel border border-ink-line bg-ink-surface"
               />
               <figcaption className="mt-4 font-mono text-body-sm leading-relaxed text-paper/85">
-                示例：2026-10-22 的一次真实涂色操作 —— 这就是工具里的那张卡
+                示例：2026-11-16 的一次真实涂色操作 —— 这就是工具里的那张卡
               </figcaption>
             </figure>
           </div>
@@ -915,7 +955,7 @@ export default function Home() {
                       </dt>
                       <dd className="mt-1.5 text-body leading-relaxed text-paper/85">
                         密钥用 DPAPI 加密存在本机，从不明文落盘。见
-                        <a href="ai.html" className="text-paper underline underline-offset-4">
+                        <a href="canvas.html" className="text-paper underline underline-offset-4">
                           AI 接入
                         </a>
                         。
@@ -950,7 +990,7 @@ export default function Home() {
                     </svg>
                   </div>
                   <p className="mt-4 font-mono text-body-sm text-paper/85">
-                    图签框特写 · 出图工作台实拍
+                    出图工作台实拍 · 栅格底图叠矢量图层
                   </p>
                 </div>
 
@@ -1038,8 +1078,8 @@ export default function Home() {
           {/* 口径脚注：数据从哪来、到什么时候、什么会变 */}
           <div className="mt-8 border-t border-line pt-6 text-body-sm leading-relaxed text-ink-3">
             <p>
-              口径说明：页面上的像元数与百分比来自 2026-10-22
-              的<strong className="font-semibold text-ink-2">两次</strong>真实运行记录——一次涂色（165 / 1 200）与一次调色（1 170 / 1 200），原始留痕在项目的
+              口径说明：页面上的像元数与百分比来自 2026-11-16
+              的<strong className="font-semibold text-ink-2">两次</strong>真实运行记录——一次涂色（400 / 3 600）与一次调色（3 600 / 3 600），由引擎预演实算得出，原始留痕在项目的
               <span className="font-mono">.cartouche/history.jsonl</span> 里。不同数据源的像元大小与精度不同，像元数、影响面与比例尺会随之变化。
               功能仍在开发中，页面所述能力以仓库当前实现为准。
             </p>

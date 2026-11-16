@@ -21,6 +21,9 @@
  * 产品若只认一家，别人就**根本用不了**这个功能 —— 而报错只会说
  * 「该操作尚未支持」，用户根本看不出是自己的 key 不被认。
  */
+import { mkdirSync, existsSync, rmSync, statSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { dirname, join } from 'node:path';
 import {
   redactSecrets,
   MINIMAX_MODELS,
@@ -79,6 +82,88 @@ function sessionOf(providerId: string): ProviderSession {
   return s;
 }
 
+/**
+ * 每条接入线**持久化密钥**的环境变量名（2026-11-15 多厂商裁定）。
+ *
+ * 约定由 scripts/set-key.ps1 与 scripts/run-engine.ps1 共同遵守：
+ * DPAPI 密文存 %LOCALAPPDATA%\cartouche\keys\<接入线id>.txt，
+ * 启动时按这份表解密注入 <大写ID>_API_KEY。
+ * ollama 不用密钥、custom 的 key 跟着端点走 —— 两家都不在此表（只收会话态）。
+ */
+const PERSISTED_ENV: Readonly<Record<string, string>> = {
+  'minimax-cn': 'MINIMAX_API_KEY',
+  'minimax-intl': 'MINIMAX_INTL_API_KEY',
+  glm: 'GLM_API_KEY',
+  dashscope: 'DASHSCOPE_API_KEY',
+  ark: 'ARK_API_KEY',
+  deepseek: 'DEEPSEEK_API_KEY',
+  moonshot: 'MOONSHOT_API_KEY',
+  siliconflow: 'SILICONFLOW_API_KEY',
+};
+
+/** 持久化密钥文件所在目录（与 roots.json / handles.json 同一套配置目录约定） */
+function keysDir(): string {
+  const base = process.env.CARTOUCHE_CONFIG_DIR ?? process.env.LOCALAPPDATA ?? '.';
+  return join(base, 'cartouche', 'keys');
+}
+
+function persistedKeyPath(providerId: string): string {
+  return join(keysDir(), providerId + '.txt');
+}
+
+/** 这条接入线的 key 有没有「记住这台电脑」（DPAPI 密文文件存在） */
+export function isPersisted(providerId: string): boolean {
+  return PERSISTED_ENV[providerId] !== undefined && existsSync(persistedKeyPath(providerId));
+}
+
+/**
+ * 把页面粘来的 key 写成 DPAPI 密文（「记住这台电脑」）。
+ *
+ * 红线与 set-key.ps1 完全一致：磁盘上只有 DPAPI 密文（ConvertFrom-SecureString
+ * 的输出，绑定当前 Windows 用户），明文只经 stdin 管道进入加密进程，
+ * **不进命令行参数**（命令行会被进程列表看见），不进任何日志，不进仓库。
+ */
+export function persistApiKey(providerId: string, key: string): void {
+  if (!PERSISTED_ENV[providerId]) {
+    throw new Error('该接入线不支持记住密钥（本机 Ollama 不用密钥；自定义端点的 key 跟着端点走）');
+  }
+  const trimmed = key.trim();
+  if (trimmed.length < 8) throw new Error('key 太短，看起来不像有效密钥');
+  const file = persistedKeyPath(providerId);
+  mkdirSync(dirname(file), { recursive: true });
+  // key 经 stdin 传给 PowerShell（内存管道）；文件路径走环境变量（命令行里没有密钥）
+  const script =
+    '$plain=[Console]::In.ReadToEnd().Replace("\r","").Replace("\n","");' +
+    'if(-not $plain){exit 1}' +
+    '$sec=ConvertTo-SecureString $plain -AsPlainText -Force;' +
+    'ConvertFrom-SecureString -SecureString $sec | Set-Content -LiteralPath $env:CARTOUCHE_KEYFILE;';
+  const res = spawnSync('powershell.exe', ['-NoProfile', '-Command', script], {
+    input: trimmed,
+    env: { ...process.env, CARTOUCHE_KEYFILE: file },
+    encoding: 'utf8',
+  });
+  if (res.status !== 0 || !existsSync(file)) {
+    throw new Error('持久化失败：DPAPI 加密没有产出密文文件');
+  }
+}
+
+/** 撤销「记住这台电脑」：删掉 DPAPI 密文文件；返回删除前是否存在 */
+export function clearPersistedApiKey(providerId: string): boolean {
+  if (!PERSISTED_ENV[providerId]) return false;
+  const file = persistedKeyPath(providerId);
+  if (!existsSync(file)) return false;
+  rmSync(file, { force: true });
+  return true;
+}
+
+/** 从持久化环境变量读这条接入线的密钥（启动脚本注入） */
+function persistedApiKey(providerId: string): string | null {
+  const name = PERSISTED_ENV[providerId];
+  if (!name) return null;
+  const v = process.env[name];
+  return v && v.trim() ? v.trim() : null;
+}
+
 /** 环境变量里的密钥（由启动脚本注入） */
 function envApiKey(): string | null {
   const v = process.env.MINIMAX_API_KEY;
@@ -114,13 +199,14 @@ export function currentApiKey(providerId: string = activeProviderId): string | n
   const s = sessions.get(providerId);
   if (s?.key) return s.key;
   if (providerId === envProviderId()) return envApiKey();
-  return null;
+  return persistedApiKey(providerId);
 }
 
 /** 当前密钥来自哪条路径——只暴露来源，不暴露内容 */
 export function currentKeySource(providerId: string = activeProviderId): KeySource {
   if (sessions.get(providerId)?.key) return 'session';
   if (providerId === envProviderId() && envApiKey()) return 'env';
+  if (persistedApiKey(providerId)) return 'env';
   return 'none';
 }
 
@@ -170,6 +256,8 @@ export function scrub(text: string): string {
 export interface LlmProviderStatus {
   readonly id: string;
   readonly displayName: string;
+  /** 有没有「记住这台电脑」的 DPAPI 密文（重启后不用重填） */
+  readonly persisted: boolean;
   readonly baseUrl: string;
   /** 这个端点提供不提供模型清单接口 */
   readonly modelsSupported: boolean;
@@ -210,6 +298,7 @@ function providerStatus(entry: LlmProviderEntry): LlmProviderStatus {
     effortSupported: entry.effortSupported === true,
     ...(entry.note ? { note: entry.note } : {}),
     configured: Boolean(currentApiKey(entry.id)),
+    persisted: isPersisted(entry.id),
     active: entry.id === activeProviderId,
     customEndpoint: entry.customEndpoint === true,
   };
@@ -229,7 +318,7 @@ export function llmStatus(): LlmStatus {
     source: currentKeySource(),
     // 拉过一次之后就用拉到的真清单；还没拉过就给代码里的离线兜底清单
     models,
-    effortLevels: entry?.effortSupported === true ? MINIMAX_EFFORT_LEVELS : [],
+    effortLevels: entry?.effortLevels ?? [],
     providers: LLM_PROVIDERS.map(providerStatus),
   };
 }

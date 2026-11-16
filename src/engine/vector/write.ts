@@ -48,7 +48,7 @@
  */
 import { copyFileSync, existsSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
-import { basename, join } from 'node:path';
+import { basename, dirname, join, sep } from 'node:path';
 import { tools } from '../gdal/runner.ts';
 import { replaceFileAtomically } from '../gdal/writeback.ts';
 import type { GdalLocation } from '../gdal/env.ts';
@@ -79,8 +79,12 @@ const SHAPEFILE_MANAGED_SUFFIXES: readonly string[] = [
 
 /** 相对路径的目录部分；根目录下的文件返回空串。 */
 function dirOf(rel: string): string {
-  const slash = rel.lastIndexOf('/');
-  return slash >= 0 ? rel.slice(0, slash) : '';
+  // 归一成 / 再取目录：调用方可能传来 Windows 反斜杠路径
+  // （2026-11-14 实测事故：HTTP 流程的 target 是 path.relative() 的反斜杠产物，
+  //   这里只认 / 导致 dirRel 变成空串，写回产物全部落到了工作区根目录顶层）。
+  const norm = rel.split(sep).join('/');
+  const slash = norm.lastIndexOf('/');
+  return slash >= 0 ? norm.slice(0, slash) : '';
 }
 
 /** 按扩展名判断写回格式。认不出来就报错，不猜。 */

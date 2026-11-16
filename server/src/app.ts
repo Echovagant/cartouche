@@ -28,7 +28,12 @@ import {
   runHealthCheck,
   renderCompatReport,
   renderRasterPng,
+  VectorConvertError,
   vectorToGeoJson,
+  buildVectorPyramid,
+  findPyramid,
+  pyramidLevelForZoom,
+  probeLayer,
   datasetExtent,
   buildPdfFromJpeg,
   executePlan,
@@ -54,11 +59,15 @@ import {
   setActiveProvider,
   setCustomBaseUrl,
   setSessionApiKey,
+  persistApiKey,
+  clearPersistedApiKey,
+  isPersisted,
   detectProviderMismatch,
 } from './llm.ts';
 import { findProvider } from '@cartouche/engine';
 import { buildContextPreview, checkPlanAgainstContract, createPlan } from './llm-plan.ts';
 import { loadRegisteredRoots, registerRoot, unregisterRoot } from './roots.ts';
+import { readSettings, writeSettings } from './settings.ts';
 import { isFolderPickerSupported, pathForHandle, pickFolder } from './folder-picker.ts';
 
 /**
@@ -226,11 +235,20 @@ function resolveTarget(root: string | null, rel: string): WorkspaceTarget {
   if (isAbsolute(rel) || /^[A-Za-z]:/.test(rel)) {
     throw new PathEscapeError(rel);
   }
-  if (!root) {
+  let rootAbs: string | null;
+  if (root && /^folder-\d+$/.test(root)) {
+    // 弹窗选出来的目录以**代号**（folder-N）出现在前端：引擎内部换算回绝对路径，
+    // 边界判定照旧走已登记根 —— 绝对路径从头到尾不出引擎（见 folder-picker.ts 的约定）。
+    const resolved = pathForHandle(root);
+    if (!resolved) throw new PathEscapeError(root);
+    rootAbs = resolve(resolved);
+  } else {
+    rootAbs = root ? resolve(root) : null;
+  }
+  if (!rootAbs) {
     // 不给 root：相对默认根。store.resolve 内部还会挡掉 `../` 逃逸
     return { store, relative: rel, absolute: store.resolve(rel) };
   }
-  const rootAbs = resolve(root);
   const abs = resolve(rootAbs, rel);
   // 相对路径不得逃出它自己声明的那个根
   if (!isInside(rootAbs, abs)) throw new PathEscapeError(rel);
@@ -351,7 +369,10 @@ function prepareOps(
     } else if (rid !== chosenRootId) {
       throw new Error('一次操作里的所有目标必须在同一个已登记根之下');
     }
-    rewritten.push({ ...op, params: { ...op.params, target: t.relative } });
+    // 归一成 / 分隔（与 store 路径契约一致）：path.relative() 在 Windows 上给反斜杠，
+    // 而写回层的 dirOf/路径拼装只认 / —— 不归一的话写回产物会落到工作区根目录
+    // （2026-11-14 实测事故：矢量写回的文件全部落到根目录顶层，原文件没被替换）。
+    rewritten.push({ ...op, params: { ...op.params, target: t.relative.split(sep).join('/') } });
   }
 
   return { store: chosen ?? store, ops: rewritten };
@@ -612,6 +633,48 @@ function foldCasePath(p: string): string {
       return;
     }
 
+    // 「记住这台电脑」：把页面粘来的 key 写成 DPAPI 密文（本机、仓库外）。
+    // 红线与 set-key.ps1 一致：不落明文、不进日志；写入即对当前接入线生效。
+    if (url.pathname === '/api/llm/persist-key' && req.method === 'POST') {
+      void (async () => {
+        try {
+          const body = JSON.parse((await readBody(req, res)).toString('utf8') || '{}') as {
+            providerId?: string;
+            apiKey?: string;
+          };
+          const providerId = body.providerId?.trim() || currentProviderId();
+          const key = body.apiKey?.trim() ?? '';
+          if (!key) {
+            json(400, { error: 'bad_request', message: '缺少 apiKey：要记住的密钥没有收到' });
+            return;
+          }
+          persistApiKey(providerId, key);
+          setActiveProvider(providerId);
+          setSessionApiKey(providerId, key);
+          json(200, { ok: true, persisted: true, provider: providerId });
+        } catch (err) {
+          json(400, { error: 'bad_request', message: (err as Error).message });
+        }
+      })();
+      return;
+    }
+
+    if (url.pathname === '/api/llm/persist-key' && req.method === 'DELETE') {
+      void (async () => {
+        try {
+          const body = JSON.parse((await readBody(req, res)).toString('utf8') || '{}') as {
+            providerId?: string;
+          };
+          const providerId = body.providerId?.trim() || currentProviderId();
+          const removed = clearPersistedApiKey(providerId);
+          json(200, { ok: true, removed, provider: providerId });
+        } catch (err) {
+          json(400, { error: 'bad_request', message: (err as Error).message });
+        }
+      })();
+      return;
+    }
+
     if (url.pathname === '/api/llm/session-key' && req.method === 'POST') {
       void (async () => {
         try {
@@ -845,9 +908,14 @@ function foldCasePath(p: string): string {
           const bbox = bboxParam
             ? (bboxParam.split(',').map(Number) as [number, number, number, number])
             : undefined;
-          // 默认出 EPSG:4326 的图：前端 MapLibre 的 image source 是**按经纬度角点**贴图的，
-          // 所以 PNG 必须是 4326 的，否则投影坐标系的栅格会与 bbox 对不上位（错开一块）。
-          const targetCrs = url.searchParams.get('targetCrs') ?? 'EPSG:4326';
+          // 默认出 **EPSG:3857（Web Mercator）**的图。
+          //
+          // 为什么不是 4326（2026-11-16 实测修正）：前端 MapLibre 用的是**墨卡托**，
+          // 它的 image source 把图片按经纬度四角贴成一个矩形 —— 那张图片的内容
+          // **也必须是墨卡托的视图**，否则内容会被二次形变（4326 的线性经纬内容
+          // 塞进墨卡托四角），栅格与矢量图层就对不上位（实测：明显错开一块）。
+          // bbox 仍按 4326 的经纬度传，引擎用 -te_srs 告诉 gdalwarp 这一点。
+          const targetCrs = url.searchParams.get('targetCrs') ?? 'EPSG:3857';
           // 拉伸档位只认 auto / none。非法值必须 400，不能默默忽略 ——
           // 默默忽略等于用户以为切了档、其实没切，是最难查的那种"静默失败"。
           const stretchParam = url.searchParams.get('stretch');
@@ -887,19 +955,142 @@ function foldCasePath(p: string): string {
           const rel = url.searchParams.get('path') ?? '';
           const root = url.searchParams.get('root');
           const limitParam = url.searchParams.get('limit');
+          // bbox：视口分块加载（EPSG:4326 的 minX,minY,maxX,maxY，逗号分隔）。
+          // 给了就只返回与视口相交且裁剪到视口内的要素 —— 超大图层的引擎侧基础。
+          const bboxParam = url.searchParams.get('bbox');
+          let bbox: [number, number, number, number] | undefined;
+          if (bboxParam) {
+            const nums = bboxParam.split(',').map(Number);
+            if (nums.length !== 4 || nums.some((v) => !Number.isFinite(v))) {
+              json(400, { error: 'bad_request', message: 'bbox 必须是 4 个数字（minX,minY,maxX,maxY）' });
+              return;
+            }
+            bbox = [nums[0]!, nums[1]!, nums[2]!, nums[3]!];
+          }
+          // 金字塔直取（分块加载第二阶段）：缓存里按 zoom 挑一级，从小缓存文件裁
+          // —— 比对原始大文件裁快一到两个数量级。没有缓存就原样走原始裁剪：
+          // pyramid=auto 只是"能用则用"，不改变任何行为承诺。
+          const zoomParam = Number(url.searchParams.get('zoom'));
+          let convertPath = resolveWorkspacePath(root, rel);
+          let pyramidLevel: ReturnType<typeof pyramidLevelForZoom> = null;
+          if (url.searchParams.get('pyramid') === 'auto') {
+            try {
+              const info = findPyramid(convertPath);
+              pyramidLevel = info
+                ? pyramidLevelForZoom(info.levels, Number.isFinite(zoomParam) ? zoomParam : 9)
+                : null;
+              if (pyramidLevel && info) {
+                convertPath = join(info.dir, `${info.hash}-${pyramidLevel.name}.geojson`);
+              }
+            } catch {
+              pyramidLevel = null; // 缓存探测失败不拦路：原始裁剪照走
+            }
+          }
+          const layerNames = url.searchParams.getAll('layer');
           const res = await vectorToGeoJson(gdalLoc, {
-            path: resolveWorkspacePath(root, rel),
+            path: convertPath,
+            ...(layerNames.length ? { layers: layerNames } : {}),
             // ⚠️ 必须显式换算到 4326：ogr2ogr 不给 -t_srs 时**按源 CRS 输出**。
             //    投影坐标系的矢量会带着 UTM 东坐标/北坐标出去（如 816690, 3381042），
             //    MapLibre 当成经纬度解析 → 要素跑到几百万度外，画布上什么都看不见。
             //    实测：`-t_srs EPSG:4326` 输出的是 lon/lat 序（x=经度）。
             targetCrs: 'EPSG:4326',
             ...(limitParam ? { limit: Number(limitParam) } : {}),
+            ...(bbox ? { bbox } : {}),
           });
-          json(200, res);
+          json(200, pyramidLevel ? { ...res, level: pyramidLevel.name } : res);
+        } catch (err) {
+          // 体积闸（payload-too-large）单独给 413 + 稳定错误码：前端把它翻译成
+          // "按当前视口分块重试"，其余 500 才是真正的内部错误。
+          const tooLarge = err instanceof VectorConvertError && err.code === 'payload-too-large';
+          const bad = err instanceof PathEscapeError ? 400 : tooLarge ? 413 : 500;
+          json(bad, {
+            error: bad === 400 ? 'bad_request' : tooLarge ? 'payload_too_large' : 'internal',
+            message: scrub((err as Error).message),
+          });
+        }
+      })();
+      return;
+    }
+
+    if (url.pathname === '/api/data/layers' && req.method === 'GET') {
+      void (async () => {
+        try {
+          if (!gdalLoc) {
+            json(503, { error: 'gdal_unavailable', message: '未找到 GDAL 运行时，出图与体检不可用；请先运行 npm run doctor' });
+            return;
+          }
+          const rel = url.searchParams.get('path') ?? '';
+          const root = url.searchParams.get('root');
+          const abs = resolveWorkspacePath(root, rel);
+          // 探测本身很便宜（ogrinfo -so，几百毫秒），图层选择器点开时才调
+          const info = await probeLayer(gdalLoc, abs);
+          json(200, { path: rel, layerNames: info.layerNames });
         } catch (err) {
           const bad = err instanceof PathEscapeError ? 400 : 500;
           json(bad, { error: bad === 400 ? 'bad_request' : 'internal', message: scrub((err as Error).message) });
+        }
+      })();
+      return;
+    }
+
+    if (url.pathname === '/api/settings' && (req.method === 'GET' || req.method === 'PUT')) {
+      void (async () => {
+        try {
+          if (req.method === 'GET') {
+            json(200, readSettings());
+            return;
+          }
+          const body = await readBody(req, res);
+          const parsed = JSON.parse(body.toString('utf8') || '{}') as {
+            bootAnimation?: string;
+            reduceMotion?: boolean;
+          };
+          if (parsed.bootAnimation !== undefined) {
+            if (
+              parsed.bootAnimation !== 'always' &&
+              parsed.bootAnimation !== 'first-visit' &&
+              parsed.bootAnimation !== 'never'
+            ) {
+              json(400, {
+                error: 'bad_request',
+                message: 'bootAnimation 只能是 always / first-visit / never',
+              });
+              return;
+            }
+          }
+          json(
+            200,
+            writeSettings({
+              ...(parsed.bootAnimation ? { bootAnimation: parsed.bootAnimation } : {}),
+              ...(typeof parsed.reduceMotion === 'boolean'
+                ? { reduceMotion: parsed.reduceMotion }
+                : {}),
+            }),
+          );
+        } catch (err) {
+          json(400, { error: 'bad_request', message: scrub((err as Error).message) });
+        }
+      })();
+      return;
+    }
+
+    if (url.pathname === '/api/data/pyramid' && req.method === 'POST') {
+      void (async () => {
+        try {
+          if (!gdalLoc) {
+            json(503, { error: 'gdal_unavailable', message: '未找到 GDAL 运行时，出图与体检不可用；请先运行 npm run doctor' });
+            return;
+          }
+          const body = await readBody(req, res);
+          const req0 = JSON.parse(body.toString('utf8') || '{}') as { path?: string; root?: string };
+          const abs = resolveWorkspacePath(req0.root ?? null, req0.path ?? '');
+          // 构建可能要几分钟（对全量源多做几遍简化）：并发构建在引擎里按 hash 去重，
+          // 已有缓存直接短路 —— 前端 fire-and-forget 调这里也安全。
+          const result = await buildVectorPyramid(gdalLoc, { path: abs });
+          json(200, result);
+        } catch (err) {
+          json(500, { error: 'internal', message: scrub((err as Error).message) });
         }
       })();
       return;
@@ -1110,7 +1301,20 @@ function foldCasePath(p: string): string {
             json(400, { error: 'bad_request', message: '缺少 path：告诉引擎要登记哪个文件夹' });
             return;
           }
-          json(200, registerRoot(roots, path, body.label));
+          // 回给前端的只可以是**无路径**的安全形状（与 GET 同一套映射）——
+          // registerRoot 的返回值里带着绝对路径，直接 json 出去就等于把
+          // 用户目录送进浏览器（GET 那边早就消毒了，POST 这里不能漏）。
+          const registered = registerRoot(roots, path, body.label);
+          const defaultRootForShow = roots.list().find((r) => r.builtin)?.path ?? '';
+          const relShow = relative(defaultRootForShow, registered.path);
+          const insideShow =
+            registered.builtin || (!relShow.startsWith('..') && !isAbsolute(relShow));
+          json(200, {
+            id: registered.id,
+            label: registered.label,
+            builtin: registered.builtin,
+            ...(insideShow && relShow ? { location: relShow.split(sep).join('\\') } : {}),
+          });
         } catch (err) {
           json(400, { error: 'bad_request', message: scrub((err as Error).message) });
         }
@@ -1150,7 +1354,13 @@ function foldCasePath(p: string): string {
     if (url.pathname === '/api/project/manifest' && req.method === 'GET') {
       void (async () => {
         try {
-          const p = url.searchParams.get('path') ?? '';
+          // path 与 handle 二选一：弹窗选的项目只有代号，路径留在引擎里
+          const handle = url.searchParams.get('handle');
+          const p = handle ? (pathForHandle(handle) ?? '') : (url.searchParams.get('path') ?? '');
+          if (!p) {
+            json(400, { error: 'bad_request', message: '缺少 path（或 handle）：告诉引擎是哪个项目' });
+            return;
+          }
           const m = await projects.readManifest(p);
           json(200, m ? { exists: true, manifest: m } : { exists: false });
         } catch (err) {
@@ -1165,24 +1375,27 @@ function foldCasePath(p: string): string {
         try {
           const body = JSON.parse((await readBody(req, res)).toString('utf8')) as {
             path?: string;
+            /** 弹窗选出来的项目目录代号（绝对路径不出引擎） */
+            handle?: string;
             manifest?: ProjectManifest;
             create?: boolean;
             name?: string;
           };
-          if (!body.path) {
-            json(400, { error: 'bad_request', message: '缺少 path：告诉引擎是哪个文件夹' });
+          const projectPath = body.handle ? (pathForHandle(body.handle) ?? '') : (body.path ?? '');
+          if (!projectPath) {
+            json(400, { error: 'bad_request', message: '缺少 path（或 handle）：告诉引擎是哪个文件夹' });
             return;
           }
           // create：写一份空清单。**已存在就不覆盖** —— 免得把用户已经配好的项目冲掉。
           if (body.create) {
-            const existing = await projects.readManifest(body.path);
+            const existing = await projects.readManifest(projectPath);
             if (existing) {
               json(200, { ok: true, manifest: existing, created: false });
               return;
             }
-            const name = (body.name ?? '').trim() || defaultProjectName(body.path);
+            const name = (body.name ?? '').trim() || defaultProjectName(projectPath);
             const m = newManifest(name);
-            await projects.writeManifest(body.path, m);
+            await projects.writeManifest(projectPath, m);
             json(200, { ok: true, manifest: m, created: true });
             return;
           }
@@ -1192,12 +1405,12 @@ function foldCasePath(p: string): string {
           }
           // operations 是**只增不减的日志**：前端自动保存带回来的那份可能是旧的，
           // 直接整份覆盖会把服务端刚记下的操作抹掉。这里做并集（见 mergeOperations）。
-          const existing = await projects.readManifest(body.path);
+          const existing = await projects.readManifest(projectPath);
           const operations = mergeOperations(
             existing?.operations ?? [],
             Array.isArray(body.manifest.operations) ? body.manifest.operations : [],
           );
-          await projects.writeManifest(body.path, { ...body.manifest, operations });
+          await projects.writeManifest(projectPath, { ...body.manifest, operations });
           json(200, { ok: true, operations: operations.length });
         } catch (err) {
           json(400, { error: 'bad_request', message: scrub((err as Error).message) });
@@ -1241,7 +1454,8 @@ function foldCasePath(p: string): string {
     if (url.pathname === '/api/project/outputs' && req.method === 'GET') {
       void (async () => {
         try {
-          const p = url.searchParams.get('path') ?? '';
+          const handle = url.searchParams.get('handle');
+          const p = handle ? (pathForHandle(handle) ?? '') : (url.searchParams.get('path') ?? '');
           json(200, { outputs: await projects.listOutputs(p) });
         } catch (err) {
           json(400, { error: 'bad_request', message: scrub((err as Error).message) });
@@ -1255,16 +1469,19 @@ function foldCasePath(p: string): string {
         try {
           const body = JSON.parse((await readBody(req, res)).toString('utf8')) as {
             path?: string;
+            /** 弹窗选出来的项目目录代号（绝对路径不出引擎） */
+            handle?: string;
             name?: string;
             dataBase64?: string;
           };
-          if (!body.path || !body.name || !body.dataBase64) {
-            json(400, { error: 'bad_request', message: '缺少 path / name / dataBase64：告诉引擎存到哪个项目、叫什么名字、内容是什么' });
+          const projectPath = body.handle ? (pathForHandle(body.handle) ?? '') : (body.path ?? '');
+          if (!projectPath || !body.name || !body.dataBase64) {
+            json(400, { error: 'bad_request', message: '缺少 path（或 handle）/ name / dataBase64：告诉引擎存到哪个项目、叫什么名字、内容是什么' });
             return;
           }
           const data = Buffer.from(body.dataBase64, 'base64');
           const relative = await projects.writeOutput(
-            body.path,
+            projectPath,
             body.name,
             new Uint8Array(data),
           );
@@ -1654,7 +1871,12 @@ function foldCasePath(p: string): string {
           if (req.method === 'GET' && url.pathname === '/api/fs/list') {
             const p = url.searchParams.get('path') ?? '';
             const s = storeFor(url.searchParams.get('root'), p);
-            json(200, { entries: await s.store.list(s.relative) });
+            // 点开头的条目不进加载列表：`.cartouche/` 是工具自己的状态目录，
+            // 把它列出来，用户就会把 project.json 当图层加载（2026-11-14 实测事故：
+            // 清单被当矢量去转，失败报错还污染了项目清单）。这不是文件管理器，
+            // 是数据加载器 —— 系统文件/工具目录没有出现在这里的理由。
+            const entries = (await s.store.list(s.relative)).filter((name) => !name.startsWith('.'));
+            json(200, { entries });
             return;
           }
           if (req.method === 'POST') {

@@ -27,7 +27,7 @@
  * 下面那两条的 note 里写明了为什么 —— 别偷偷加回来。
  */
 import type { CredentialReader, KeyProvider, LlmCredentials, LlmProviderId } from '../key-provider.ts';
-import { MINIMAX_MODELS } from '../key-provider.ts';
+import { MINIMAX_MODELS, MINIMAX_EFFORT_LEVELS } from '../key-provider.ts';
 
 /** 一条接入线（厂商 × 端点 × 凭证类型） */
 export interface LlmProviderEntry {
@@ -70,6 +70,15 @@ export interface LlmProviderEntry {
    * 认不出来就不提示 —— **认不出就不提示**，不能硬猜。
    */
   readonly keyPrefixes: readonly string[];
+  /**
+   * 思考强度档位（2026-11-15 按各家官方文档逐线核实）。
+   *
+   * 各家定义**不一样**：MiniMax 与 DeepSeek 用 OpenAI 兼容的 reasoning_effort
+   * （前者 low~max 五档、后者只有 high/max 两档）；GLM / 百炼 / 火山是布尔型
+   * 思考开关（enable_thinking / thinking），不是档位 —— 不给 effortLevels，
+   * 界面就不显示档位选择。ollama / custom 不在此列。
+   */
+  readonly effortLevels?: readonly string[];
   /** 给用户看的提醒（协议差异、套餐条款…）；没有就不显示 */
   readonly note?: string;
   /** 是不是「用户自己填端点」的那种（界面要给一个 URL 输入框） */
@@ -109,8 +118,9 @@ export const LLM_PROVIDERS: readonly LlmProviderEntry[] = [
     family: 'minimax',
     keyPrefixes: ['sk-cp-', 'sk-api-'],
     effortSupported: true,
+    effortLevels: MINIMAX_EFFORT_LEVELS,
     fallbackModels: MINIMAX_MODELS,
-    note: '与 MiniMax 国际版是两套账号体系，key 不通用。',
+    note: '与 MiniMax 国际版是两套账号体系，key 不通用。计费两把 key：M Plan（订阅积分池，minimax.cn/m-plan）与按量 API（积分制）——粘哪把就按哪把扣费，M Plan 可在平台设置里开「额度用完自动扣积分」。M2.7/M2.5/M2.1/M2 将于 2026-11-18 退役。',
   },
   {
     id: 'minimax-intl',
@@ -121,7 +131,7 @@ export const LLM_PROVIDERS: readonly LlmProviderEntry[] = [
     keyPrefixes: ['sk-cp-', 'sk-api-'],
     effortSupported: true,
     fallbackModels: MINIMAX_MODELS,
-    note: '与国内版是两套账号体系，key 不通用。',
+    note: '与国内版是两套账号体系，key 不通用。M2.7/M2.5/M2.1/M2 将于 2026-11-18 退役（自动路由到 M3.1 Flash）。计费请看 minimax.io 官方定价页。',
   },
   {
     id: 'glm',
@@ -130,6 +140,8 @@ export const LLM_PROVIDERS: readonly LlmProviderEntry[] = [
     modelsSupported: true,
     family: 'glm',
     keyPrefixes: [],
+    fallbackModels: ['glm-5.3', 'glm-5.3-flash', 'glm-5.3-flashx', 'glm-5.2', 'glm-5.1'],
+    note: '计费两把 key：GLM Coding Plan（订阅积分池，限编程工具）与标准 API Key（按量计费，通用无限制）——粘哪把就按哪把扣费。思考开关是布尔型（enable_thinking），不是档位；现役为 5.3 系。',
   },
   {
     id: 'dashscope',
@@ -138,7 +150,8 @@ export const LLM_PROVIDERS: readonly LlmProviderEntry[] = [
     modelsSupported: true,
     family: 'dashscope',
     keyPrefixes: [],
-    note: '只接按量计费。Coding Plan 套餐（key 以 sk-sp- 开头）不接：条款限定在 AI 编程工具内使用，禁止 API 调用。',
+    fallbackModels: ['qwen4-max-preview', 'qwen3.7-plus', 'qwen3.8'],
+    note: '只接按量计费。Coding Plan 套餐（key 以 sk-sp- 开头）不接：条款限定在 AI 编程工具内使用，禁止 API 调用。思考是布尔型开关（enable_thinking），不是档位。',
   },
   {
     id: 'ark',
@@ -147,7 +160,8 @@ export const LLM_PROVIDERS: readonly LlmProviderEntry[] = [
     modelsSupported: true,
     family: 'ark',
     keyPrefixes: [],
-    note: '只接按量计费。Coding Plan 套餐不接：条款限定在 AI 编程工具内使用，且官方只给了 Anthropic 协议路径。',
+    fallbackModels: ['doubao-seed-2.1-pro', 'doubao-seed-1.8', 'doubao-seed-code'],
+    note: '计费两把 key：Ark Plan（订阅积分池，兼容 Anthropic 协议）与按量计费 API——本项目走 OpenAI 兼容协议，请粘按量计费的 API Key。思考走 thinking 参数，不是档位。',
   },
   {
     id: 'deepseek',
@@ -156,6 +170,9 @@ export const LLM_PROVIDERS: readonly LlmProviderEntry[] = [
     modelsSupported: true,
     family: 'deepseek',
     keyPrefixes: [],
+    fallbackModels: ['deepseek-flash', 'deepseek-v4-pro'],
+    effortLevels: ['high', 'max'],
+    note: 'DeepSeek 无订阅套餐，只有按量计费（token × 单价）。旧模型名 deepseek-chat / deepseek-reasoner 已于 2026-07 弃用。思考模式走 reasoning_effort（仅 high / max 两档），省略即非思考模式。',
   },
   {
     id: 'moonshot',
@@ -164,6 +181,8 @@ export const LLM_PROVIDERS: readonly LlmProviderEntry[] = [
     modelsSupported: true,
     family: 'moonshot',
     keyPrefixes: [],
+    fallbackModels: ['kimi-k3.1-pro', 'kimi-k3.1-pro-highspeed', 'kimi-k3'],
+    note: 'moonshot-v1 与 kimi-k2.5 已于 2026-08-31 下线；现役为 Kimi K3 / K3.1 Pro。',
   },
   {
     id: 'siliconflow',

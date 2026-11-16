@@ -93,7 +93,7 @@ export interface GdalTools {
   readonly warp: (args: readonly string[]) => Promise<ToolResult>;
   readonly edit: (args: readonly string[]) => Promise<ToolResult>;
   readonly ogrInfo: (args: readonly string[]) => Promise<ToolResult>;
-  readonly ogr2ogr: (args: readonly string[]) => Promise<ToolResult>;
+  readonly ogr2ogr: (args: readonly string[], options?: { readonly timeoutMs?: number }) => Promise<ToolResult>;
   readonly buildOverviews: (args: readonly string[]) => Promise<ToolResult>;
   readonly buildVrt: (args: readonly string[]) => Promise<ToolResult>;
 }
@@ -112,7 +112,7 @@ export function tools(loc: GdalLocation): GdalTools {
     warp: (args) => runTool(loc, `gdalwarp${sfx}`, args),
     edit: (args) => runTool(loc, `gdal_edit.py${sfx}`, args),
     ogrInfo: (args) => runTool(loc, `ogrinfo${sfx}`, args),
-    ogr2ogr: (args) => runTool(loc, `ogr2ogr${sfx}`, args),
+    ogr2ogr: (args, options) => runTool(loc, `ogr2ogr${sfx}`, args, options),
     buildOverviews: (args) => runTool(loc, `gdaladdo${sfx}`, args),
     buildVrt: (args) => runTool(loc, `gdalbuildvrt${sfx}`, args),
   };

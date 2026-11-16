@@ -76,15 +76,11 @@ Write-Output ("{0} {1}x{2} {3}KB" -f $dst, (Get-Item $dst).Length, 0, 0)
 
 await mkdir(outDir, { recursive: true });
 
-// 1. 确认卡：从整屏截图里裁出卡片本体（周围是压暗的地图，留一点边当阴影底）
-const cardSrc = join(root, 'shots', 'edit-confirm-card.png');
-if (existsSync(cardSrc)) {
-  await cropToJpeg(cardSrc, join(outDir, 'confirm-card.jpg'), { x: 496, y: 196, w: 556, h: 398 }, 900);
-} else {
-  console.warn('[site-assets] 没有 shots/edit-confirm-card.png，确认卡素材需先跑一次浏览器实测');
-}
+// 1. 确认卡：**不再出位图** —— 官网改成用组件渲染（ConfirmCardBody），
+//    矢量永远清晰，数字与页面口径同源，也不会再出现"图上是旧数字"。
+//    （旧的 confirm-card.jpg 是从整屏截图里裁的 556px 位图，放大就糊。）
 
-// 2. 出图（带图框）与自检报告：README 那两张已经是压好的 jpg，直接复制
+// 2. 出图工作台与自检报告：README 那两张已经是压好的 jpg，直接复制
 for (const [src, dst] of [
   ['assets/canvas.jpg', 'canvas-frame.jpg'],
   ['assets/report.jpg', 'report.jpg'],
@@ -101,27 +97,30 @@ for (const [src, dst] of [
 console.log('[site-assets] 完成');
 
 /**
- * 3. 首屏主图：中国图面的网页版。
+ * 3. 首屏主图：图签自己出的图面（world-sheet.png）。
  *
- * china-sheet.png 是**图签自己出的图面原图**（引擎/画布的真实输出，4.7MB）。
- * 直接当首屏主图太重，压到 WebP 后是 509KB —— 比原来那张
- * export-pdf.png（871KB）还轻，文字锐度肉眼无差。
+ * world-sheet.png 是**图签自己出的图面原图**（引擎/画布的真实输出：
+ * 地图 + 完整版式图面要素 —— 图框、图例、比例尺、指北针、标题栏）。
+ * 直接当首屏主图太重，压到 WebP 后给页面读。
+ *
+ * 素材用**公开数据**（Natural Earth，公共领域），画面里不出现任何
+ * 特定国家或行政区信息（2026-11-16 用户要求）。
  *
  * sharp 是 Next.js 带进来的传递依赖，仓库没有把它列为直接依赖；
  * 这里动态引入，取不到就跳过（产物已经入库，没有 sharp 也不影响站点跑）。
  */
-const chinaPng = join(outDir, 'china-sheet.png');
-const chinaWebp = join(outDir, 'china-sheet.webp');
-if (existsSync(chinaPng)) {
+const sheetPng = join(outDir, 'world-sheet.png');
+const sheetWebp = join(outDir, 'world-sheet.webp');
+if (existsSync(sheetPng)) {
   try {
     const { default: sharp } = await import('sharp');
-    await sharp(chinaPng).webp({ quality: 88, effort: 6, smartSubsample: true }).toFile(chinaWebp);
-    const { size } = await import('node:fs/promises');
-    const stat = await size(chinaWebp);
-    console.log(`[site-assets] china-sheet.png -> china-sheet.webp（${Math.round(stat / 1024)}KB）`);
+    await sharp(sheetPng).webp({ quality: 88, effort: 6, smartSubsample: true }).toFile(sheetWebp);
+    const { statSync } = await import('node:fs');
+    const stat = statSync(sheetWebp);
+    console.log(`[site-assets] world-sheet.png -> world-sheet.webp（${Math.round(stat.size / 1024)}KB）`);
   } catch (err) {
     console.warn(`[site-assets] 跳过 WebP 转换（${err.message}）——站点会退回 PNG 源图`);
   }
 } else {
-  console.warn('[site-assets] 没有 china-sheet.png，跳过 WebP 转换');
+  console.warn('[site-assets] 没有 world-sheet.png，跳过 WebP 转换');
 }

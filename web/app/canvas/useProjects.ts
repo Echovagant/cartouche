@@ -12,18 +12,25 @@
  *     项目数据一律落在项目目录的 `.cartouche/` 里，浏览器里不留副本。
  *
  * 路径语义（与引擎的契约一致）：
- *   - `path` 一律是**项目的绝对路径**（项目根在哪）；
- *   - 引擎请求里的 `path` 一律是**相对项目根**的路径，`root` 才是项目根。
+ *   - 项目定位用 {@link ProjectRef}：手填的是绝对路径，弹窗选的是**代号**（folder-N）；
+ *   - 弹窗选的项目，绝对路径**从头到尾不出引擎**（见 server/src/folder-picker.ts），
+ *     前端只拿代号，所有请求都带着代号走；
+ *   - 引擎请求里的相对路径 `path` 一律相对项目根，`root` 才是项目根。
  *     两者不要混：这里管前者，useEngine 管后者。
  */
 
 import { useCallback, useEffect, useState } from 'react';
 import { ENGINE_BASE } from '../engine-base';
-import type { ProjectManifest, ProjectOutput, ProjectSummary, WorkspaceRoot } from './types';
+import type { ProjectManifest, ProjectOutput, ProjectRef, ProjectSummary } from './types';
 
-export type { ProjectManifest, ProjectOutput, ProjectSummary, WorkspaceRoot } from './types';
+export type { ProjectManifest, ProjectOutput, ProjectRef, ProjectSummary } from './types';
 
-const RECENT_KEY = 'cartouche.recent-projects';
+/**
+ * 存储键带上 v2：旧键（无版本号）里存的是上一版界面的数据，
+ * 里面还有开发期测试留下的项目路径 —— 换键让那些旧条目**全部退役**，
+ * 而不是在界面上一个个洗掉。
+ */
+const RECENT_KEY = 'cartouche.recent-projects.v2';
 
 /** 本地最近项目：只存在浏览器里，不外传、也不落进项目目录 */
 function readRecent(): ProjectSummary[] {
@@ -37,7 +44,9 @@ function readRecent(): ProjectSummary[] {
         (item): item is ProjectSummary =>
           typeof item === 'object' &&
           item !== null &&
-          typeof (item as ProjectSummary).path === 'string',
+          typeof (item as ProjectSummary).name === 'string' &&
+          (typeof (item as ProjectSummary).path === 'string' ||
+            typeof (item as ProjectSummary).handle === 'string'),
       )
       .slice(0, 10);
   } catch {
@@ -71,54 +80,40 @@ async function request(url: string, init?: RequestInit): Promise<Response> {
     return await fetch(url, init);
   } catch (err) {
     throw new Error(
-      `无法连接引擎服务 ${ENGINE_BASE}（请确认已运行 npm run dev:server）：${(err as Error).message}`,
+      `无法连接引擎服务 ${ENGINE_BASE}（请确认引擎已经启动）：${(err as Error).message}`,
     );
   }
 }
 
 /**
- * 列出引擎已登记的工作区根。
+ * 把 ProjectRef 拆成请求体 / 查询参数里的定位字段。
  *
- * 失败时**抛错**而不是返回空数组：引擎没起来和「一个根都没登记」
- * 是两回事，混成空数组会让界面说谎。
+ * 有代号用代号（路径不出引擎）；手填的场景才带路径。
+ * 两者都缺是调用方的 bug，当场抛 —— 不发一个注定 400 的请求。
  */
-export async function listRoots(): Promise<WorkspaceRoot[]> {
-  const res = await request(`${ENGINE_BASE}/api/workspace/roots`);
-  if (!res.ok) throw new Error(await readErrorMessage(res));
-  const body = (await res.json()) as { roots?: WorkspaceRoot[] };
-  return body.roots ?? [];
+function refFields(ref: ProjectRef): { path: string } | { handle: string } {
+  if (ref.handle) return { handle: ref.handle };
+  if (ref.path) return { path: ref.path };
+  throw new Error('项目的定位信息缺失：既没有路径也没有代号。');
+}
+
+/** 项目定位 → 查询串（manifest / outputs 的 GET 用）：代号优先 */
+function refQuery(ref: ProjectRef): string {
+  const fields = refFields(ref);
+  return 'handle' in fields
+    ? `handle=${encodeURIComponent(fields.handle)}`
+    : `path=${encodeURIComponent(fields.path)}`;
 }
 
 /**
- * 撤销一个根的登记。
- *
- * 与 listRoots 一样是模块级函数（不挂在 hook 的状态里）：
- * 「已登记的工作区」是**引擎的注册表**，不是这层前端的状态。
- *
- * 撤销凭**根的 id**，不是路径 —— 前端根本不知道绝对路径（见 types.ts 的说明）。
- *
- * 失败时抛错，**不写进 hook 的 error 状态**——撤销失败的消息要显示在
- * 那个按钮旁边（用户正要撤销哪一条，就在那儿说清楚哪一条没撤掉），
- * 不该变成页面顶上的一条全局横幅。
- */
-export async function unregisterRoot(id: string): Promise<void> {
-  const res = await request(`${ENGINE_BASE}/api/workspace/roots`, {
-    method: 'DELETE',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ id }),
-  });
-  if (!res.ok) throw new Error(await readErrorMessage(res));
-}
-
-/**
- * 弹系统的文件夹选择框，让用户自己挑工作区。
+ * 弹系统的文件夹选择框，让用户自己挑放图件的文件夹。
  *
  * 为什么不靠浏览器：`showDirectoryPicker()` 给的是**句柄**，没有绝对路径；
  * 而引擎是按路径找目录的，用不上句柄。所以这条路走不通，
  * 只能让**本机的引擎**去弹那个框（见 server/src/folder-picker.ts）。
  *
  * 返回的是**代号**与文件夹名，**没有绝对路径** ——
- * 绝对路径里有用户名，不能让它进浏览器（见 types.ts 的说明）。
+ * 绝对路径只留在引擎那边（代号表也落盘在引擎的配置目录里）。
  *
  * 用户取消时返回 null（不是错误）。
  */
@@ -139,20 +134,16 @@ export async function pickFolder(): Promise<{ handle: string; label: string } | 
 }
 
 /**
- * 登记一个工作区。
+ * 把文件夹交给孩子引擎干活（登记成引擎的工作区根）。
  *
- * 两种来源：
- *  - `handle`：弹窗选出来的目录（前端只有代号）
- *  - `path`  ：用户自己敲的路径（少数场景仍需要，比如从命令行调起）
+ * 对用户不出现「登记」这个词：这是引擎内部的边界管理，界面不把它当回事。
+ * 幂等：同一个目录重复交底，引擎返回的还是那一条。
  */
-export async function registerWorkspace(
-  input: { handle: string } | { path: string },
-  label?: string,
-): Promise<void> {
+async function ensureRoot(input: { path: string } | { handle: string }): Promise<void> {
   const res = await request(`${ENGINE_BASE}/api/workspace/roots`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(label ? { ...input, label } : input),
+    body: JSON.stringify(input),
   });
   if (!res.ok) throw new Error(await readErrorMessage(res));
 }
@@ -171,6 +162,13 @@ function blobToBase64(blob: Blob): Promise<string> {
   });
 }
 
+/** 从定位方式里取一个能显示的后备名 */
+function refName(ref: ProjectRef): string {
+  if (ref.label) return ref.label;
+  if (ref.path) return ref.path.split(/[\\/]+/).filter(Boolean).pop() ?? ref.path;
+  return ref.handle ?? '未命名项目';
+}
+
 export function useProjects() {
   const [recent, setRecent] = useState<readonly ProjectSummary[]>([]);
   const [loading, setLoading] = useState(true);
@@ -182,52 +180,38 @@ export function useProjects() {
   }, []);
 
   /** 把打开过的项目记到本地，方便下次直接点开 */
-  const remember = useCallback((path: string, m: ProjectManifest) => {
+  const remember = useCallback((ref: ProjectRef, m: ProjectManifest) => {
     const summary: ProjectSummary = {
-      path,
+      ...(ref.path ? { path: ref.path } : {}),
+      ...(ref.handle ? { handle: ref.handle } : {}),
       name: m.name,
       updatedAt: m.updatedAt,
       layerCount: m.layers.length,
-      // 给人看的相对位置：项目在哪个工作区下。
-      // 绝对路径只留在 `path` 里（那是调引擎要用的），**不显示**。
+      // 给人看的相对位置：项目在哪个文件夹下。
+      // 绝对路径**不进浏览器**（弹窗流程）或**只在本地存储里**（手填流程），**不显示**。
       location: m.name,
     };
-    const next = [summary, ...readRecent().filter((p) => p.path !== path)].slice(0, 10);
+    const key = ref.path ?? ref.handle ?? '';
+    const next = [
+      summary,
+      ...readRecent().filter((p) => (p.path ?? p.handle ?? '') !== key),
+    ].slice(0, 10);
     writeRecent(next);
     setRecent(next);
   }, []);
 
-  /**
-   * 把文件夹登记成引擎的工作区根。
-   *
-   * 幂等：同一个目录重复登记，引擎返回的还是那一条（不会拿到两个 id）。
-   */
-  const registerRoot = useCallback(async (path: string): Promise<void> => {
-    try {
-      const res = await request(`${ENGINE_BASE}/api/workspace/roots`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ path }),
-      });
-      if (!res.ok) throw new Error(await readErrorMessage(res));
-      setError(null);
-    } catch (err) {
-      setError((err as Error).message);
-      throw err;
-    }
-  }, []);
-
+  /** 新建项目：文件夹里还没有项目清单时用它 */
   const createProject = useCallback(
-    async (path: string): Promise<ProjectManifest> => {
-      // 先登记成根：项目目录不在任何已登记根之下的话，引擎根本定位不到它
-      await registerRoot(path);
+    async (ref: ProjectRef): Promise<ProjectManifest> => {
+      // 先把文件夹交给引擎（内部登记成根）：不登记的话引擎定位不到它
+      await ensureRoot(refFields(ref));
       const res = await request(`${ENGINE_BASE}/api/project/manifest`, {
         method: 'PUT',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
-          path,
+          ...refFields(ref),
           create: true,
-          name: path.split(/[\\/]+/).filter(Boolean).pop() ?? path,
+          name: refName(ref),
         }),
       });
       if (!res.ok) {
@@ -241,21 +225,25 @@ export function useProjects() {
         setError(message);
         throw new Error(message);
       }
-      remember(path, body.manifest);
+      remember(ref, body.manifest);
       setError(null);
       return body.manifest;
     },
-    [registerRoot, remember],
+    [remember],
   );
 
+  /**
+   * 打开项目：文件夹里已经有项目清单（`.cartouche/`）时用它。
+   *
+   * 项目可能是在别的机器上建的（清单存在、但本机引擎还没交底过这个目录），
+   * 所以**打开时也要交底一次**，否则引擎定位不到它。
+   *
+   * @returns 清单；文件夹里还没有项目时返回 null（调用方决定要不要当场新建）
+   */
   const openProject = useCallback(
-    async (path: string): Promise<ProjectManifest | null> => {
-      // 项目可能是在别的机器上建的（.cartouche 存在、但本机没登记过这个目录），
-      // 所以**打开时也要登记一次**，否则引擎定位不到它。
-      await registerRoot(path);
-      const res = await request(
-        `${ENGINE_BASE}/api/project/manifest?path=${encodeURIComponent(path)}`,
-      );
+    async (ref: ProjectRef): Promise<ProjectManifest | null> => {
+      await ensureRoot(refFields(ref));
+      const res = await request(`${ENGINE_BASE}/api/project/manifest?${refQuery(ref)}`);
       if (!res.ok) {
         const message = `读取项目失败：${await readErrorMessage(res)}`;
         setError(message);
@@ -263,18 +251,18 @@ export function useProjects() {
       }
       const body = (await res.json()) as { exists?: boolean; manifest?: ProjectManifest };
       if (!body.exists || !body.manifest) return null;
-      remember(path, body.manifest);
+      remember(ref, body.manifest);
       setError(null);
       return body.manifest;
     },
-    [registerRoot, remember],
+    [remember],
   );
 
-  const saveManifest = useCallback(async (path: string, m: ProjectManifest): Promise<void> => {
+  const saveManifest = useCallback(async (ref: ProjectRef, m: ProjectManifest): Promise<void> => {
     const res = await request(`${ENGINE_BASE}/api/project/manifest`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ path, manifest: m }),
+      body: JSON.stringify({ ...refFields(ref), manifest: m }),
     });
     if (!res.ok) {
       const message = `保存项目清单失败：${await readErrorMessage(res)}`;
@@ -284,8 +272,8 @@ export function useProjects() {
     setError(null);
   }, []);
 
-  const listOutputs = useCallback(async (path: string): Promise<ProjectOutput[]> => {
-    const res = await request(`${ENGINE_BASE}/api/project/outputs?path=${encodeURIComponent(path)}`);
+  const listOutputs = useCallback(async (ref: ProjectRef): Promise<ProjectOutput[]> => {
+    const res = await request(`${ENGINE_BASE}/api/project/outputs?${refQuery(ref)}`);
     if (!res.ok) return [];
     const body = (await res.json()) as { outputs?: ProjectOutput[] };
     return body.outputs ?? [];
@@ -297,34 +285,30 @@ export function useProjects() {
    * 用 FileReader 而不是手工拼 base64：几 MB 的 PDF 手工拼会慢，而且
    * `String.fromCharCode(...bytes)` 那样展开还会爆调用栈。
    */
-  const writeOutput = useCallback(async (path: string, name: string, data: Blob): Promise<string> => {
-    const dataBase64 = await blobToBase64(data);
-    const res = await request(`${ENGINE_BASE}/api/project/output`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ path, name, dataBase64 }),
-    });
-    if (!res.ok) {
-      const message = `保存产出物失败：${await readErrorMessage(res)}`;
-      setError(message);
-      throw new Error(message);
-    }
-    const body = (await res.json()) as { relative?: string };
-    setError(null);
-    return body.relative ?? '';
-  }, []);
+  const writeOutput = useCallback(
+    async (ref: ProjectRef, name: string, data: Blob): Promise<string> => {
+      const dataBase64 = await blobToBase64(data);
+      const res = await request(`${ENGINE_BASE}/api/project/output`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ ...refFields(ref), name, dataBase64 }),
+      });
+      if (!res.ok) {
+        const message = `保存产出物失败：${await readErrorMessage(res)}`;
+        setError(message);
+        throw new Error(message);
+      }
+      const body = (await res.json()) as { relative?: string };
+      setError(null);
+      return body.relative ?? '';
+    },
+    [],
+  );
 
   return {
     recent,
     loading,
     error,
-    registerRoot,
-    /**
-     * 已登记的工作区根（模块级函数，见文件上方）。
-     * 一并挂出来：这个 hook 就是「项目相关的引擎调用」的唯一入口。
-     */
-    listRoots,
-    unregisterRoot,
     createProject,
     openProject,
     saveManifest,

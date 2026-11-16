@@ -44,12 +44,40 @@ export interface GeoJsonPayload {
   readonly geojson: unknown;
   readonly featureCount: number;
   readonly truncated: boolean;
+  /** 多图层源的加载说明（只装了第一层、有几层没装之类）。服务端一直有，前端原先没接 */
+  readonly note?: string;
+  /** 多图层源里没能转换出来的图层名 */
+  readonly skippedLayers?: readonly string[];
+  /** 实际装进来的图层名（多图层源或明确选层时才有） */
+  readonly layers?: readonly string[];
+}
+
+/** 多图层容器的图层清单（图层选择器的数据源） */
+export interface VectorLayersPayload {
+  readonly path: string;
+  readonly layerNames: readonly string[];
 }
 
 export interface CompatReportPayload {
   readonly markdown: string;
   readonly hasBlocker: boolean;
   readonly manualChecks: readonly string[];
+}
+
+/** 视口金字塔（构建/缓存查询）的返回体 */
+export interface PyramidPayload {
+  readonly hash: string;
+  /** 建成的层级（粗→细）；空数组 = 该源不适合建塔（点层/太小/多图层容器） */
+  readonly levels: readonly {
+    readonly name: string;
+    readonly tolerance: number;
+    readonly bytes: number;
+    readonly zoomMax: number;
+  }[];
+  /** levels 为空时的说明 */
+  readonly note?: string;
+  /** true = 缓存已存在，没有重新构建 */
+  readonly cached?: boolean;
 }
 
 /** 数据集的地理范围（EPSG:4326，lon/lat 序） */
@@ -64,7 +92,15 @@ export interface ExtentPayload {
 /** 所有引擎调用统一返回这个形状：调用点不用写 try/catch，也不会漏掉错误分支 */
 export type Result<T> =
   | { readonly ok: true; readonly data: T }
-  | { readonly ok: false; readonly error: string };
+  | {
+      readonly ok: false;
+      readonly error: string;
+      /**
+       * 机器可读错误码（如 payload_too_large / aborted），没有就不带。
+       * 调用点要**区分处理**的失败靠它，不靠解析 message 字符串。
+       */
+      readonly code?: string;
+    };
 
 export type HealthStatus = 'checking' | 'ready' | 'offline';
 
@@ -118,7 +154,30 @@ export interface EngineApi {
   readonly isPending: (key: string) => boolean;
   readonly reloadHealth: () => void;
   readonly listDir: (path?: string) => Promise<Result<string[]>>;
-  readonly fetchGeoJson: (path: string, limit?: number) => Promise<Result<GeoJsonPayload>>;
+  readonly fetchGeoJson: (
+    path: string,
+    options?: {
+      /** 要素数上限 */
+      limit?: number;
+      /**
+       * 视口裁剪（EPSG:4326 的 [minX, minY, maxX, maxY]）：只回与视口相交且裁剪到
+       * 视口内的要素。大文件的分块加载靠它 —— 引擎侧 -clipdst 已就位（第一阶段）。
+       */
+      bbox?: readonly [number, number, number, number];
+      /** pyramid=auto：引擎缓存里有视口金字塔就按 zoom 挑一级，从小缓存裁 */
+      pyramid?: boolean;
+      /** 当前地图 zoom（挑金字塔级用；不传引擎按中档处理） */
+      zoom?: number;
+      /** 图层选择器：只装这些图层（多图层容器）；不装就维持引擎默认语义 */
+      layers?: readonly string[];
+      /** 中止请求：moveend 连续触发时打断上一次还没回来的裁剪 */
+      signal?: AbortSignal;
+    },
+  ) => Promise<Result<GeoJsonPayload>>;
+  /** 预建视口金字塔（幂等；引擎对并发构建按 hash 去重，有缓存直接短路） */
+  readonly buildPyramid: (path: string) => Promise<Result<PyramidPayload>>;
+  /** 列多图层容器里的图层清单（图层选择器点开时才调；探测几百毫秒） */
+  readonly fetchVectorLayers: (path: string) => Promise<Result<VectorLayersPayload>>;
   readonly fetchExtent: (path: string) => Promise<Result<ExtentPayload>>;
   readonly rasterUrl: (path: string, options: RasterUrlOptions) => string;
   readonly fetchCompatReport: (path: string) => Promise<Result<CompatReportPayload>>;
@@ -143,13 +202,17 @@ async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
   }
   if (!res.ok) {
     let detail = `HTTP ${res.status}`;
+    let code: string | undefined;
     try {
-      const body = (await res.json()) as { message?: string };
+      const body = (await res.json()) as { message?: string; error?: string };
       if (body?.message) detail = body.message;
+      if (body?.error) code = body.error;
     } catch {
       /* 错误体不是 JSON（例如代理返回的 HTML），保留状态码 */
     }
-    throw new Error(detail);
+    const err = new Error(detail);
+    if (code) (err as { code?: string }).code = code;
+    throw err;
   }
   return (await res.json()) as T;
 }
@@ -178,7 +241,12 @@ export function useEngine(root?: string | null): EngineApi {
     } catch (err) {
       const message = (err as Error).message || String(err);
       setError(message);
-      return { ok: false, error: message };
+      // 请求被中止（moveend 连续触发打断上一次）不是故障：带上 aborted 码让调用点静默处理
+      const code =
+        err instanceof DOMException && err.name === 'AbortError'
+          ? 'aborted'
+          : (err as { code?: string }).code;
+      return code ? { ok: false, error: message, code } : { ok: false, error: message };
     } finally {
       setPending((prev) => ({ ...prev, [key]: false }));
     }
@@ -219,12 +287,55 @@ export function useEngine(root?: string | null): EngineApi {
   );
 
   const fetchGeoJson = useCallback(
-    (path: string, limit?: number) =>
+    (
+      path: string,
+      options?: {
+        limit?: number;
+        bbox?: readonly [number, number, number, number];
+        pyramid?: boolean;
+        zoom?: number;
+        layers?: readonly string[];
+        signal?: AbortSignal;
+      },
+    ) =>
       run('geojson', async () => {
         const params = new URLSearchParams({ path });
-        if (limit !== undefined) params.set('limit', String(limit));
+        if (options?.limit !== undefined) params.set('limit', String(options.limit));
+        if (options?.bbox) params.set('bbox', options.bbox.map((n) => n.toFixed(8)).join(','));
+        if (options?.pyramid) params.set('pyramid', 'auto');
+        if (options?.zoom !== undefined) params.set('zoom', String(options.zoom));
+        // 图层名可能含逗号（KML 常见），所以一个图层一个 layer= 参数，不做逗号拼接
+        for (const name of options?.layers ?? []) params.append('layer', name);
         if (root) params.set('root', root);
-        return requestJson<GeoJsonPayload>(`${ENGINE_BASE}/api/data/geojson?${params.toString()}`);
+        return requestJson<GeoJsonPayload>(
+          `${ENGINE_BASE}/api/data/geojson?${params.toString()}`,
+          options?.signal ? { signal: options.signal } : undefined,
+        );
+      }),
+    [run, root],
+  );
+
+  /** 预建视口金字塔：fire-and-forget 也能用（引擎并发去重 + 缓存短路） */
+  const buildPyramid = useCallback(
+    (path: string) =>
+      run('pyramid', () =>
+        requestJson<PyramidPayload>(`${ENGINE_BASE}/api/data/pyramid`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          // root 为空时**不要**带这个键：不带才是"相对默认根"的语义
+          body: JSON.stringify({ path, ...(root ? { root } : {}) }),
+        }),
+      ),
+    [run, root],
+  );
+
+  /** 列多图层容器的图层清单（图层选择器数据源） */
+  const fetchVectorLayers = useCallback(
+    (path: string) =>
+      run('layers', async () => {
+        const params = new URLSearchParams({ path });
+        if (root) params.set('root', root);
+        return requestJson<VectorLayersPayload>(`${ENGINE_BASE}/api/data/layers?${params.toString()}`);
       }),
     [run, root],
   );
@@ -440,6 +551,8 @@ export function useEngine(root?: string | null): EngineApi {
       listDir,
       fetchGeoJson,
       fetchExtent,
+      buildPyramid,
+      fetchVectorLayers,
       rasterUrl,
       fetchCompatReport,
       exportPdf,
@@ -456,6 +569,8 @@ export function useEngine(root?: string | null): EngineApi {
       listDir,
       fetchGeoJson,
       fetchExtent,
+      buildPyramid,
+      fetchVectorLayers,
       rasterUrl,
       fetchCompatReport,
       exportPdf,

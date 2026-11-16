@@ -102,7 +102,9 @@ test('登记根：不给 content-type 也会被拒', async () => {
 test('登记根：application/json 照常成功（原有功能不受影响）', async () => {
   const { status, json } = await register('application/json', JSON.stringify({ path: targetDir }));
   assert.equal(status, 200);
-  assert.ok(json && typeof json.path === 'string', '应回登记后的根信息');
+  // 登记的响应与 GET 同一套安全形状：给 id/label，**不给**绝对路径（见 workspace-privacy 的约定）
+assert.ok(json && typeof json.id === 'string' && typeof json.label === 'string', '应回登记后的根信息（无路径形状）');
+assert.equal('path' in json, false, '登记响应不许带绝对路径');
   assert.equal(json.builtin, false);
 });
 

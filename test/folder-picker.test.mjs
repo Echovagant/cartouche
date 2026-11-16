@@ -11,8 +11,14 @@
  * **没有绝对路径**，引擎按路径定位工作区，用不上），所以这条路走不通。
  *
  * 但这个工具是**跑在用户自己电脑上的本机服务**（127.0.0.1:8787）——
- * 让它弹一个 Windows 原生的文件夹选择框，是最合身也最省事的做法：
- * 用户看到的是资源管理器里那个熟悉的树形选择框，选完直接拿到绝对路径。
+ * 让它弹一个 Windows 原生的文件夹选择框，是最合身也最省事的做法。
+ *
+ * ## 这些断言锁的是「实测踩过的坑」，别照着记忆改
+ *
+ * 2026-11-15 实测：这台机器上手写 COM `IFileOpenDialog` **创建不出对话框**
+ * （`CoCreateInstance` 返回 `E_NOINTERFACE`），用户点按钮只会看到「点了没反应」。
+ * 现在用的是 WinForms `OpenFileDialog` + `ValidateNames = false`，
+ * 路径从对话框自己的编辑框读回来（`IShellItem::GetDisplayName` 这台机器上是坏的）。
  *
  * ## 安全边界
  *
@@ -29,22 +35,100 @@ import {
   buildFolderPickerScript,
   parseFolderPickerOutput,
   isFolderPickerSupported,
+  interpretPickerExit,
 } from '../server/src/folder-picker.ts';
 
 describe('文件夹选择对话框', () => {
-  test('生成的 PowerShell 脚本必须调起 WinForms 的文件夹选择框', () => {
+  test('生成的 PowerShell 脚本必须用 WinForms 的现代对话框', () => {
     const ps = buildFolderPickerScript();
-    assert.match(ps, /System\.Windows\.Forms\.FolderBrowserDialog/);
+    assert.match(ps, /System\.Windows\.Forms\.OpenFileDialog/);
     assert.match(ps, /Add-Type -AssemblyName System\.Windows\.Forms/);
+    // ValidateNames=false + CheckFileExists=false = 「选文件夹」模式
+    assert.match(ps, /ValidateNames = \$false/);
+    assert.match(ps, /CheckFileExists = \$false/);
     // 老式的 Shell.Application BrowseForFolder 在 PowerShell 5.1 下实测调不起来
     assert.ok(!ps.includes('Shell.Application'), '不要用 Shell.Application（实测在本机调不起来）');
     // 本机的 .NET 版本没有 UseDescriptionForTitle，设了会直接报错
     assert.ok(!ps.includes('UseDescriptionForTitle'), '本机 .NET 没有 UseDescriptionForTitle 属性');
   });
 
-  test('脚本必须以 UTF-8 写出中文提示，且不把路径编码坏', () => {
+  test('不许改回手写 COM IFileOpenDialog——实测在这台机器上创建不出来', () => {
     const ps = buildFolderPickerScript();
-    assert.match(ps, /chcp 65001|OutputEncoding/);
+    assert.ok(
+      !ps.includes('IFileOpenDialog'),
+      '不要用手写 COM IFileOpenDialog（实测 CoCreateInstance 返回 E_NOINTERFACE，对话框根本弹不出来）',
+    );
+    assert.ok(
+      !ps.includes('GetDisplayName'),
+      '不要从 IShellItem 取路径（实测 GetDisplayName 返回 RPC_E_INVALID_REFERENCE，裸 vtable 直接访问冲突）',
+    );
+  });
+
+  test('脚本必须是纯 ASCII：C# 源码按 ANSI 代码页解码，中文会让编译失败', () => {
+    const ps = buildFolderPickerScript();
+    const nonAscii = [...ps].filter((ch) => (ch.codePointAt(0) ?? 0) > 0x7f);
+    assert.equal(
+      nonAscii.length,
+      0,
+      `脚本里出现了非 ASCII 字符：${JSON.stringify(nonAscii.join(''))}`,
+    );
+  });
+
+  test('中文标题走环境变量，不能写进脚本源码', () => {
+    const ps = buildFolderPickerScript();
+    assert.match(ps, /\$env:CARTOUCHE_PICK_TITLE/);
+    assert.match(ps, /\$env:CARTOUCHE_PICK_HINT/);
+  });
+
+  test('对话框要归到前台窗口名下，否则会被浏览器压住看不见', () => {
+    const ps = buildFolderPickerScript();
+    assert.match(ps, /GetForegroundWindow/);
+    assert.match(ps, /ShowDialog\(\[/);
+  });
+
+  test('弹框前必须先让子进程 DPI-aware，否则在 150% 屏上是拉伸出来的糊图', () => {
+    const ps = buildFolderPickerScript();
+    assert.match(ps, /SetProcessDpiAwarenessContext/, '要调 SetProcessDpiAwarenessContext');
+    assert.match(ps, /MakeDpiAware/);
+    // 必须在创建对话框之前调用：进程一旦创建过窗口，这次调用就永远失败
+    const call = ps.indexOf('MakeDpiAware()');
+    const create = ps.indexOf('New-Object System.Windows.Forms.OpenFileDialog');
+    assert.ok(call > 0 && create > 0, '脚本里要有这两步');
+    assert.ok(call < create, 'DPI 调用必须早于对话框创建');
+  });
+
+  test('用户取消必须用独立退出码 3，不能和脚本出错混在一起', () => {
+    const ps = buildFolderPickerScript();
+    assert.match(ps, /exit 3/);
+    // 退出码 1 是 PowerShell 脚本自己报错时用的，引擎要把它当成错误抛出去
+    assert.ok(!/\bexit 1\b/.test(ps), '不要用 exit 1 表示取消（那和脚本报错撞码了）');
+  });
+
+  test('退出码 3 = 用户取消；其它非 0 = 脚本出错，必须把原因带出去', () => {
+    assert.deepEqual(interpretPickerExit(3, ''), { kind: 'cancelled' });
+
+    const failed = interpretPickerExit(1, "At line:1 char:1\n+ // x\n+ ~~\n    The term '//' is not recognized");
+    assert.equal(failed.kind, 'failed');
+    assert.match(failed.message, /没能正常打开/);
+    // 报错内容要出现在消息里，否则前端只剩一句「选文件夹失败」
+    assert.match(failed.message, /not recognized/);
+
+    const noStderr = interpretPickerExit(1, '');
+    assert.equal(noStderr.kind, 'failed');
+    assert.match(noStderr.message, /退出码 1/);
+  });
+
+  test('路径必须以 UTF-8 写出，且 PowerShell 注释用 #（// 不是 PowerShell 注释）', () => {
+    const ps = buildFolderPickerScript();
+    assert.match(ps, /OutputEncoding/);
+    // C# 块之外的部分才是 PowerShell：那里出现 // 会被当成命令去执行。
+    // 实测踩过：`// 对话框归到…` 直接报「The term '//' is not recognized」。
+    const [beforeCsharp, afterCsharp] = ps.split("'@ -ReferencedAssemblies System.Windows.Forms");
+    const powershellPart = beforeCsharp.split("Add-Type -TypeDefinition @'")[0] + afterCsharp;
+    assert.ok(
+      !powershellPart.includes('//'),
+      `PowerShell 部分的注释要用 # ：${powershellPart}`,
+    );
   });
 
   test('用户选了就返回绝对路径', () => {

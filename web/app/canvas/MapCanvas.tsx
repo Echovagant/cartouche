@@ -35,6 +35,7 @@ import {
   type MapOptions,
 } from 'maplibre-gl';
 import { drawSheet, metersPerPixelAt, pdfScaleDenominator, type SheetLegendItem } from './sheet';
+import { LegendPanel } from './LegendPanel';
 import type {
   EditGesture,
   EditPreview,
@@ -215,6 +216,13 @@ export interface MapCanvasProps {
   /** 点击地图上的要素时回调 */
   onSelectFeatures: (features: SelectedFeature[]) => void;
   /**
+   * 视口变化（moveend）派发：把当前 EPSG:4326 bbox 交给上层。
+   *
+   * 分块（chunked）图层的"按视口重裁补数据"由上层决定做不做 —— 这里只管
+   * 每次视口停下来时喊一声，防抖与包含判定都在上层。
+   */
+  onViewportChange?: (bbox: readonly [number, number, number, number]) => void;
+  /**
    * 当前编辑工具。
    *
    * 不是「查看」时，地图的拖拽手势交给工具（画笔 / 框选），
@@ -326,6 +334,7 @@ export default function MapCanvas({
   initialView,
   preserveViewLayerIds,
   onSelectFeatures,
+  onViewportChange,
   editTool = 'view',
   onEditGesture,
   editPreview = null,
@@ -333,6 +342,8 @@ export default function MapCanvas({
 }: MapCanvasProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const overlayRef = useRef<HTMLCanvasElement | null>(null);
+  /** 画布容器（图例面板的定位参照） */
+  const stageRootRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MlMap | null>(null);
   const [styleReady, setStyleReady] = useState(false);
 
@@ -355,6 +366,9 @@ export default function MapCanvas({
   sheetMetaRef.current = sheetMeta;
   const onSelectRef = useRef(onSelectFeatures);
   onSelectRef.current = onSelectFeatures;
+  /** 视口变化派发（moveend）：分块图层的父层在这里补拉数据，ref 挡住回调重建 */
+  const onViewportChangeRef = useRef(onViewportChange);
+  onViewportChangeRef.current = onViewportChange;
 
   /**
    * 编辑相关的最新值。
@@ -384,13 +398,17 @@ export default function MapCanvas({
     const bounds = map.getBounds();
     return [bounds.getWest(), bounds.getSouth(), bounds.getEast(), bounds.getNorth()];
   }, []);
-
-  /** 图面要素的图例：图层名 + 色块 */
+  /**
+   * 图面要素的图例：图层名 + 色块。
+   *
+   * 名字**去掉扩展名**：图例是给人读的说明（"陆地与海洋"），
+   * 而不是文件列表（"陆地与海洋.tif"）。文件列表在侧栏，那里才该带扩展名。
+   */
   const legend = useCallback((): SheetLegendItem[] => {
     return layersRef.current
       .filter((layer) => layer.visible)
       .map((layer) => ({
-        name: layer.name,
+        name: layer.name.replace(/\.[^./\\]+$/, ''),
         color: layer.kind === 'raster' ? '#b08d57' : '#2f6f5e',
       }));
   }, []);
@@ -418,7 +436,11 @@ export default function MapCanvas({
       operator: sheetMetaRef.current.operator,
       producedAt: sheetMetaRef.current.producedAt,
       metersPerPixel: metersPerPixelAt(map.getZoom(), center.lat),
-      legend: legend(),
+      // 屏幕预览**不画图例**：图例是界面（独立 DOM 面板，可拖动/可调透明度），
+      // 不该当成像素压在编辑画布上（2026-11-16 用户裁定）。
+      legend: [],
+      // 屏幕预览形态：标题栏不上屏（导出 PDF 仍是完整版式）
+      preview: true,
     });
   }, [legend]);
 
@@ -727,6 +749,8 @@ export default function MapCanvas({
       refreshRaster();
       syncOverlaySize();
       paintOverlay();
+      // 视口 bbox 派发给上层：分块（chunked）图层的重裁由它决定要不要做
+      onViewportChangeRef.current?.(currentBBox(map));
     };
     map.on('moveend', onMoveEnd);
 
@@ -895,6 +919,9 @@ export default function MapCanvas({
     for (const [layerId, data] of vectorData) {
       if (fittedRef.current.has(layerId)) continue;
       if (shouldKeepView(layerId)) continue;
+      // 分块（chunked）层：手里这份只是视口裁剪出的一小块，按它 fit 等于没动；
+      // 视野交给 extents effect 按全量范围定 —— 别在这里抢先 fitted 掉
+      if (layersRef.current.find((layer) => layer.id === layerId)?.chunked) continue;
       const bounds = geoJsonBounds(data);
       if (!bounds) continue;
       const safe = clampBounds(bounds);
@@ -1068,7 +1095,7 @@ export default function MapCanvas({
   );
 
   return (
-    <div className="relative h-full w-full">
+    <div className="relative h-full w-full" ref={stageRootRef}>
       {/*
         容器要**套一层**：MapLibre 会给自己的容器加上 .maplibregl-map，
         而 maplibre-gl.css 是**无层级**样式（Tailwind 的类在 @layer utilities 里）——
@@ -1084,6 +1111,12 @@ export default function MapCanvas({
         className="pointer-events-none absolute inset-0"
         aria-hidden="true"
       />
+      {/*
+        图例：独立的界面层（z-20，高于画布），可拖动、可调透明度、可折叠。
+        刻意**不**画进上面的 canvas —— 画布是"直接编辑图像"的地方，
+        压在上面的说明会挡事（2026-11-16 用户裁定）。
+      */}
+      <LegendPanel items={legend()} containerRef={stageRootRef} />
       {engineError ? (
         <div className="absolute inset-0 z-10 flex items-center justify-center bg-studio/92 p-6">
           <div

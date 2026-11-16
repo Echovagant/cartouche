@@ -30,29 +30,23 @@ test('MiniMaxProvider：配置后返回凭据，默认走国内版接入点', as
   assert.equal(await p.hasCredentials('local'), true);
 });
 
-test('MiniMaxProvider：离线兜底清单 = 2026-10-24 真 key 拉到的那 9 个模型', async () => {
+test('MiniMaxProvider：离线兜底清单只留还在售的型号', async () => {
   const p = new MiniMaxProvider({ readApiKey: () => null });
   const models = await p.listModels();
   assert.ok(models.includes('MiniMax-M3.1-Flash'), '应包含 MiniMax-M3.1-Flash');
   assert.ok(models.includes('MiniMax-M3'), '应包含 MiniMax-M3');
-  // 这一份清单的来源是**实测**：2026-10-24 用真 key 调 GET /models 的真实返回。
-  //
-  // 旧断言「M2.x 系列官方已下线」是 2026-10-21 照官网页面得出的结论 ——
-  // 照页面猜上下线靠不住：账号能调的模型才算数，而 M2.x 现在明明还在清单里。
-  // 所以这里钉死那份实测清单，免得下次又照着页面把它改回去。
+  // 清单跟着「账号实际能调的型号」走：
+  //   2026-10-24 用真 key 调 GET /models，那把订阅 key 能调到 M2 全系；
+  //   2026-11-15 按官方在售清单核对，M2.7/M2.5/M2.1/M2 **将于 2026-11-18 退役**
+  //   （老用户自动路由到 M3.1 Flash），所以兜底清单里不再留它们 ——
+  //   留着会让离线兜底选出一个当天就调不了的型号。
   assert.deepEqual(
     [...models].sort(),
-    [
-      'MiniMax-M2',
-      'MiniMax-M2.1',
-      'MiniMax-M2.1-highspeed',
-      'MiniMax-M2.5',
-      'MiniMax-M2.5-highspeed',
-      'MiniMax-M2.7',
-      'MiniMax-M2.7-highspeed',
-      'MiniMax-M3',
-      'MiniMax-M3.1-Flash',
-    ].sort(),
+    ['MiniMax-M3', 'MiniMax-M3.1-Flash'].sort(),
+  );
+  assert.ok(
+    ![...models].some((m) => m.startsWith('MiniMax-M2')),
+    'M2 系已于 2026-11-18 退役，不该再出现在兜底清单里',
   );
 });
 

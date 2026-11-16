@@ -97,7 +97,7 @@ export function ScrollChoreography() {
          **B0（成品图面）没有入场动画**：第一帧就是一张完整可看的图。
          旧实现把主图放在 t=0.9 才淡入（duration 0.9），那一拍已经删掉——
          「首帧即高潮」，等 0.9 秒才出图等于开场什么都没发生。
-         B6 原来画的是外层 CSS 图框；换成图签自己出的中国图面后，
+         B6 原来画的是外层 CSS 图框；换成图签自己出的图面后，
          图面自带图框（工具画的），再套一层会重影 —— 改成确认卡落下。 */
       const hero = gsap.timeline({ defaults: { ease: 'power3.out' } });
       hero

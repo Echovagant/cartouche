@@ -52,6 +52,8 @@ export interface EditToolbarProps {
   readonly onPreviewLevels: () => void;
   /** 正在预演 / 执行：按钮置灰，防重复提交 */
   readonly busy: boolean;
+  /** 内嵌形态：去掉自己的条状外壳，与导出/报告那组合成一行（外壳由外层统一出） */
+  readonly inline?: boolean;
 }
 
 interface ToolSpec {
@@ -95,9 +97,16 @@ export default function EditToolbar({
   onLevelsChange,
   onPreviewLevels,
   busy,
+  inline = false,
 }: EditToolbarProps) {
   return (
-    <div className="flex flex-wrap items-center gap-2 border-b border-studio-line bg-studio-2/40 px-4 py-2">
+    <div
+      className={
+        inline
+          ? 'contents'
+          : 'flex flex-wrap items-center gap-2 border-b border-studio-line bg-studio-2/40 px-4 py-2'
+      }
+    >
       {TOOLS.map(({ id, label, title, Icon }) => {
         const active = tool === id;
         // 每个工具按**自己**的原因置灰：
