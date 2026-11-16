@@ -200,7 +200,7 @@ const HERO_FACTS = [
   },
   {
     label: '目标文件',
-    value: '底图.tff',
+    value: '区域底图.tif',
     note: '同一次运行：写回的就是这一个文件',
   },
   {
@@ -463,26 +463,6 @@ export default function Home() {
                       />
                     </picture>
                   </div>
-
-                  {/* 工具 → 成品 的因果：确认卡浮在图面上。
-                      位置避开图面自己画的四个要素
-                      （指北针右上、图例与比例尺左下、标题栏右下），
-                      压住的只是底图本身。
-
-                      这里渲染的是**组件**而不是位图截图：位图再大也会糊，
-                      而且数字会与页面上的口径走散。组件与画布共用同一份
-                      渲染逻辑（ConfirmCardBody），改版自动同步。 */}
-                  <figure
-                    data-hero="card"
-                    className="reveal absolute left-[54%] top-[24%] z-10 w-[34%] rotate-[-1.2deg]"
-                  >
-                    <ConfirmCardBody
-                      variant="paper"
-                      title="确认这次改动"
-                      opLabel="raster.paint"
-                      gates={PAINT_GATES_HERO}
-                    />
-                  </figure>
                 </div>
                 <figcaption
                   data-hero="caption"
