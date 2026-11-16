@@ -33,12 +33,27 @@ import type { GdalLocation } from '../gdal/env.ts';
 import { probeLayer } from '../vector/read.ts';
 import { datasetExtent } from './dataset-extent.ts';
 
+/**
+ * 金字塔的三档简化级别：粗 / 中 / 细。
+ *
+ * 档位是**固定的**，不是可配的：容差按"数据范围对角线 ÷ 除数"定，
+ * 分档理由与除数见文件头注释。多一档少一档都会让缓存与选级逻辑失去意义
+ * （选级只认 zoomMax 这一个维度）。
+ */
 export type PyramidLevelName = 'coarse' | 'mid' | 'fine';
 
+/**
+ * 一级简化缓存的实测档案。
+ *
+ * 选级看 zoomMax，核对"到底减没减重"看 vertices —— **不看 bytes**：
+ * GeoJSON 输出器的浮点精度通常比源文件宽，顶点删掉一半字节也可能不见小。
+ */
 export interface PyramidLevel {
+  /** 档位名：coarse / mid / fine */
   readonly name: PyramidLevelName;
   /** 简化容差（度，EPSG:4326 单位） */
   readonly tolerance: number;
+  /** 该级缓存文件的字节数 */
   readonly bytes: number;
   /** 该级简化后的顶点总数（与源比、与相邻级比才知道有没有真的减重） */
   readonly vertices: number;

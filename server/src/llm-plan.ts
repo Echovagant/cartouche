@@ -70,14 +70,27 @@ export interface PlanFieldContext {
   readonly type: string;
 }
 
+/**
+ * 送进模型的那份图层上下文（**逐字段挑出来的**，不是整个图层对象）。
+ *
+ * 为什么要挑：图层对象本身带着路径、显示名、引擎内部字段，
+ * 整个丢给模型等于把本地文件系统信息发出去。留在这里的每一样
+ * 都是"回答这句话用得上"的，其余一律不带。
+ */
 export interface PlanLayerContext {
+  /** 图层 id（画布内的稳定标识，不含路径信息） */
   readonly id: string;
+  /** 图层种类：栅格 / 矢量 */
   readonly kind: 'raster' | 'vector';
   /** 项目内相对路径（不含盘符、不含 `..`） */
   readonly path: string;
+  /** 该层当前是否可见（不可见的层不带要素） */
   readonly visible: boolean;
+  /** 不透明度 0~1 */
   readonly opacity: number;
+  /** 字段清单（名字 + 类型）；没有字段的层给空数组 */
   readonly fields: readonly PlanFieldContext[];
+  /** 要素总数；探测不到时为 null（null = 不知道，不是 0） */
   readonly featureCount: number | null;
   /** 坐标系标识（EPSG 代码或截断后的 WKT） */
   readonly crs: string | null;
@@ -773,6 +786,19 @@ export const AI_OP_DENY: Readonly<Record<string, string>> = {
   'feature.delete': '会删数据：让模型从一句模糊的话里推出删除动作，风险和收益不成比例',
 };
 
+/**
+ * 列出这次允许模型提议的 op，以及它们各自的参数契约。
+ *
+ * 三道过滤缺一不可，少一道就会出静默的功能缺口：
+ *   - 引擎注册表里**真的实现了**（implemented）：没实现的别塞进提示词，
+ *     塞了模型就会提议一个跑不起来的操作；
+ *   - 前缀白名单（raster./vector.）加逐个点名（feature.summarize）：
+ *     把会删数据的 feature.delete 挡在外面；
+ *   - schema 里有这个 op 的参数定义：没有契约就没法校验，模型写了也是白写。
+ *
+ * 契约直接取自 ops.schema.json —— 提示词里的参数说明与校验用的是同一份，
+ * 两边不会走样。
+ */
 export function opCatalog(schema: SchemaNode, implemented: readonly string[]): OpCatalogEntry[] {
   const allowed = schema.$defs?.['operation']?.properties?.['op']?.enum ?? [];
   const out: OpCatalogEntry[] = [];
@@ -870,12 +896,24 @@ export class PlanRequestError extends Error {
   }
 }
 
+/**
+ * 一次「要 JSON」的对话请求参数。
+ *
+ * 单独于普通对话（chatOnce）的原因：一份计划不是一句话，是一份 JSON 文档，
+ * token 上限与解析方式都不一样，所以另开一条路。
+ */
 export interface ChatJsonOptions {
+  /** 调用的密钥（只在这一次请求里用一次，不落盘、不回显） */
   readonly apiKey: string;
+  /** 端点根地址（不带路径，函数自己拼 /chat/completions） */
   readonly baseUrl: string;
+  /** 模型名（须在可用清单内，换台机器才跑得动） */
   readonly model: string;
+  /** 思考深度档位；只对认这个参数的接入线生效 */
   readonly effort?: string | undefined;
+  /** 提示词全文（含裁剪后的上下文与 op 目录） */
   readonly prompt: string;
+  /** 输出的 token 上限；不给就用引擎侧的默认值 */
   readonly maxTokens?: number | undefined;
   /** 注入的 fetch（测试用） */
   readonly fetchImpl?: MinimaxFetch | undefined;
@@ -1041,14 +1079,31 @@ export interface PrecheckOutcome {
   readonly unimplemented: boolean;
 }
 
+/**
+ * 引擎前置校验的入口：拿一条操作去问引擎"这条到底做不做得了"。
+ *
+ * 由 app.ts 注入（那边才握着 GDAL 运行时与调度器），本模块不直接依赖引擎 ——
+ * 闸门逻辑因此可以脱离引擎单独测。
+ */
 export type PrecheckFn = (spec: OperationSpec) => Promise<PrecheckOutcome>;
 
+/**
+ * 前置校验的四种结论。
+ *
+ * `unpreviewable` 单独分出来：引擎对"预演不了影响面"的 op 也给 ok:false，
+ * 那是**能力边界**不是校验失败 —— 混进 fail 会让界面误报"这条操作有错"。
+ */
 export type PrecheckStatus = 'pass' | 'fail' | 'unimplemented' | 'unpreviewable';
 
+/** 计划里某一条操作的前置校验结论 */
 export interface PrecheckEntry {
+  /** 该操作在计划里的序号（对应 plan.ops 的下标） */
   readonly opIndex: number;
+  /** 操作名（如 raster.paint） */
   readonly op: string;
+  /** 结论 */
   readonly status: PrecheckStatus;
+  /** 人话说明；status 为 pass 时为 null */
   readonly message: string | null;
 }
 

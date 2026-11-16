@@ -119,6 +119,12 @@ export function readSchema(): unknown {
   return JSON.parse(readFileSync(p, 'utf8'));
 }
 
+/**
+ * 引擎声明的操作总数（从 ops.schema.json 的 op 枚举数出来）。
+ *
+ * 启动时打出来给人看：schema 里少登记一个 op，
+ * 那个操作在界面上就根本选不到 —— 数字对不上就是漏了。
+ */
 export function opCount(): number {
   const schema = readSchema() as {
     $defs: { operation: { properties: { op: { enum: string[] } } } };
@@ -518,6 +524,13 @@ function statusForPlan(error: string | null): number {
   }
 }
 
+/**
+ * 组装引擎的 HTTP 服务（Node 原生 http，不引框架）。
+ *
+ * 路由走一条 if 链而不是路由器：引擎只有一个消费者（本机画布），
+ * 少一层依赖就少一份升级负担。跨域放行、请求体上限、错误体形状
+ * 都在这里定死，前端按这套约定调用。
+ */
 export function createEngineServer(): Server {
   return createServer((req, res) => {
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
