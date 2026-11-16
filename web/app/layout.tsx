@@ -114,6 +114,18 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         />
 
         {/*
+          加载动画的开关（data-boot）同样必须在**首帧之前**定下来。
+          静态导出会把启动屏标记预渲染进 HTML —— 只靠 JS 判断的话，
+          选了「从不播放」的用户仍会先看到一闪而过的启动屏。
+          这里读 localStorage 写 <html data-boot="off">，CSS 据此在渲染前就藏掉它。
+        */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `(function(){try{var m=localStorage.getItem('cartouche.boot.animation');document.documentElement.setAttribute('data-boot',m==='never'?'off':'on');}catch(e){document.documentElement.setAttribute('data-boot','on');}})();`,
+          }}
+        />
+
+        {/*
           官网的深浅段（data-surface）也必须在首帧之前定下来：
           深色段上的玻璃导航要换深色皮，晚了半秒就是一次"闪白"。
 

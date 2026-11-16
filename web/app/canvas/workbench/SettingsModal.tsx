@@ -3,8 +3,9 @@
 /**
  * 设置（Ctrl+, 或活动栏齿轮）：VS Code 的「设置」位。
  *
- * 三项，都是**本机偏好**，存 localStorage，不进仓库不上传：
+ * 四项，都是**本机偏好**，存 localStorage，不进仓库不上传：
  *   - 主题：全站明暗（与导航/状态栏的开关是同一份状态）；
+ *   - 加载动画：启动屏与打开项目时的加载反馈，总是播 / 仅首次访问 / 从不播；
  *   - 引擎地址：默认 127.0.0.1:8787；改完刷新页面生效 —— 引擎要真的在那个地址上；
  *   - 减弱动效：覆盖系统的 prefers-reduced-motion（对动效敏感的用户）。
  */
@@ -16,15 +17,26 @@ import {
   readReduceMotionOverride,
   setReduceMotionOverride,
 } from '../project/useReducedMotion';
+import {
+  BOOT_ANIMATION_HINTS,
+  BOOT_ANIMATION_LABELS,
+  applyBootAttr,
+  readBootAnimationMode,
+  setBootAnimationMode,
+  type BootAnimationMode,
+} from '../project/useBootAnimation';
 
 export interface SettingsModalProps {
   readonly open: boolean;
   readonly onClose: () => void;
 }
 
+const BOOT_MODES: readonly BootAnimationMode[] = ['always', 'first-visit', 'never'];
+
 export function SettingsModal({ open, onClose }: SettingsModalProps) {
   const [engineBase, setEngineBase] = useState('');
   const [reduceMotion, setReduceMotion] = useState(false);
+  const [bootMode, setBootMode] = useState<BootAnimationMode>('first-visit');
   const [saved, setSaved] = useState(false);
 
   useEffect(() => {
@@ -35,6 +47,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
       setEngineBase('');
     }
     setReduceMotion(readReduceMotionOverride());
+    setBootMode(readBootAnimationMode());
     setSaved(false);
   }, [open]);
 
@@ -49,6 +62,10 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
       /* 隐私模式下写不了 */
     }
     setReduceMotionOverride(reduceMotion);
+    // 加载动画：写完立刻生效（启动屏下一次打开画布时按新设置走；
+    // 打开项目时的加载态本次会话内就跟着变）
+    setBootAnimationMode(bootMode);
+    applyBootAttr(bootMode);
     setSaved(true);
   };
 
@@ -86,6 +103,39 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
               </p>
             </div>
             <ThemeToggle />
+          </div>
+
+          {/* 加载动画 */}
+          <div>
+            <div className="text-[13px] font-medium text-studio-ink">加载动画</div>
+            <p className="mt-0.5 text-[12px] leading-relaxed text-studio-ink-3">
+              打开画布时的启动屏，以及打开项目时的加载反馈。改完立即生效。
+            </p>
+            <div
+              role="radiogroup"
+              aria-label="加载动画"
+              className="mt-2 inline-flex overflow-hidden rounded-md border border-studio-line"
+            >
+              {BOOT_MODES.map((mode) => (
+                <button
+                  key={mode}
+                  type="button"
+                  role="radio"
+                  aria-checked={bootMode === mode}
+                  onClick={() => setBootMode(mode)}
+                  className={`px-3 py-1.5 font-mono text-[11.5px] transition-colors ${
+                    bootMode === mode
+                      ? 'bg-accent text-paper'
+                      : 'text-studio-ink-2 hover:bg-studio-3 hover:text-studio-ink'
+                  } ${mode === BOOT_MODES[0] ? '' : 'border-l border-studio-line'}`}
+                >
+                  {BOOT_ANIMATION_LABELS[mode]}
+                </button>
+              ))}
+            </div>
+            <p className="mt-1.5 text-[11.5px] leading-relaxed text-studio-ink-3">
+              {BOOT_ANIMATION_HINTS[bootMode]}
+            </p>
           </div>
 
           {/* 引擎地址 */}

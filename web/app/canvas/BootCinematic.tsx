@@ -22,6 +22,7 @@
  * 状态词是启动期真实并行发生的三件事（连引擎 / 装地图内核 / 准备图面）。
  */
 import { useEffect, useRef } from 'react';
+import { readBootAnimationMode } from './project/useBootAnimation';
 
 const STATUSES = ['连接图签引擎', '装载地图内核', '准备图面'] as const;
 const READY_WORD = '就绪';
@@ -59,6 +60,18 @@ export function BootCinematic({
     if (startedRef.current) return;
     startedRef.current = true;
 
+    // 「从不播放」：整个启动屏跳过，把接力棒直接交给工作台。
+    // 首帧的隐藏由 layout 的内联脚本 + CSS 完成（html[data-boot='off']），
+    // 所以这里不会看到任何闪屏 —— 只是不播动画而已。
+    const mode = readBootAnimationMode();
+    if (mode === 'never') {
+      screenRef.current?.style.setProperty('display', 'none');
+      document.getElementById('boot-curtain-1')?.style.setProperty('display', 'none');
+      document.getElementById('boot-curtain-2')?.style.setProperty('display', 'none');
+      onRevealRef.current();
+      return;
+    }
+
     const screen = screenRef.current;
     const bar = barRef.current;
     const statusText = statusTextRef.current;
@@ -75,13 +88,16 @@ export function BootCinematic({
 
     const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-    /* 回头客判定：12h 内来过 → 加速模式（进度 ×3、最短停留压到 1s） */
+    /* 回头客判定：12h 内来过 → 加速模式（进度 ×3、最短停留压到 1s）。
+       「总是播放」模式下不做这个加速 —— 用户要的就是每次都完整看一遍。 */
     let fast = false;
-    try {
-      const last = Number(localStorage.getItem(LS_KEY) || 0);
-      fast = last > 0 && Date.now() - last < REVISIT_WINDOW;
-    } catch {
-      /* localStorage 不可用就当首访 */
+    if (mode !== 'always') {
+      try {
+        const last = Number(localStorage.getItem(LS_KEY) || 0);
+        fast = last > 0 && Date.now() - last < REVISIT_WINDOW;
+      } catch {
+        /* localStorage 不可用就当首访 */
+      }
     }
     const minDisplay = fast ? FAST_MIN_DISPLAY : MIN_DISPLAY;
     const speed = fast ? 3 : 1;

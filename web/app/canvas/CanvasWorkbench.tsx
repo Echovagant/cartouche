@@ -27,6 +27,7 @@ import EditToolbar from './EditToolbar';
 import LayerPanel from './LayerPanel';
 import LayoutPanel, { type LayoutPreviewInput } from './LayoutPanel';
 import MapCanvas, { type MapCanvasHandle } from './MapCanvas';
+import { ProjectLoading } from './ProjectLoading';
 import Toolbar from './Toolbar';
 import { MarkdownView } from './markdown';
 import { ActionButton, TextField } from './ui';
@@ -51,6 +52,8 @@ import {
 import { useEditTools } from './useEditTools';
 import { useEngine, type CompatReportPayload } from './useEngine';
 import { useProjects } from './useProjects';
+import { useBootAnimationMode } from './project/useBootAnimation';
+import { prefersReducedMotion } from './project/useReducedMotion';
 import {
   describeAiEntry,
   type AiEntryContext,
@@ -171,6 +174,8 @@ export default function CanvasWorkbench() {
   /** 设置（Ctrl+,）/ 快速打开（Ctrl+P） */
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [quickOpenOpen, setQuickOpenOpen] = useState(false);
+  /** 加载动画的播放方式（设置页可改；'never' 时启动屏与加载态的动效都关） */
+  const [bootMode] = useBootAnimationMode();
   /** 底部面板（Ctrl+J）：属性表 / 改图记录 */
   const [panelOpen, setPanelOpen] = useState(false);
   const [panelTab, setPanelTab] = useState<PanelTab>('attributes');
@@ -474,6 +479,20 @@ export default function CanvasWorkbench() {
 
   /* ───────── 图层数据 ───────── */
 
+  /**
+   * 打开项目/加图层时的加载进度（画布区遮罩）。
+   *
+   * 大文件转换要几十秒，没有这层反馈界面就像卡死。
+   * 只统计**矢量**图层 —— 栅格只查范围（毫秒级），不值得为它闪一下遮罩。
+   */
+  const [layerLoading, setLayerLoading] = useState<{
+    readonly done: number;
+    readonly total: number;
+    readonly current: string | null;
+  } | null>(null);
+  /** 并发加载的序号：只有最后一次加载能改/清进度（旧请求晚回来不能盖掉新的） */
+  const loadingSeqRef = useRef(0);
+
   /** 中止某层在途请求并登记新的中止器：同层新请求打断旧请求 */
   const abortChunkLoad = useCallback((layerId: string): AbortController => {
     chunkAbortRef.current.get(layerId)?.abort();
@@ -504,101 +523,121 @@ export default function CanvasWorkbench() {
       const owner = projectKeyRef.current;
       const stillMine = (): boolean => projectKeyRef.current === owner;
       const chunkedMarks = new Map<string, boolean>();
-      for (const layer of target) {
-        /** 拉一份矢量数据（bbox 不给 = 全量）并落进 vectorData */
-        const pull = async (
-          bbox?: ViewBBox,
-          layers?: readonly string[],
-        ): Promise<{ ok: boolean; code?: string; error?: string; note?: string }> => {
-          const res = await engine.fetchGeoJson(layer.path, {
-            bbox,
-            layers,
-            signal: abortChunkLoad(layer.id).signal,
-          });
-          if (!res.ok) return { ok: false, code: res.code, error: res.error };
-          if (!stillMine()) return { ok: false, code: 'aborted' };
-          setVectorData((prev) => {
-            const next = new Map(prev);
-            next.set(layer.id, res.data.geojson);
-            return next;
-          });
-          return { ok: true, note: res.data.note };
-        };
-        const selectedLayers = opts?.layersFor?.get(layer.id);
+      // 加载进度（画布区遮罩）：只统计矢量层（栅格只查范围，毫秒级）
+      const seq = (loadingSeqRef.current += 1);
+      const vectorTotal = target.filter((l) => l.kind === 'vector').length;
+      let vectorDone = 0;
+      if (vectorTotal > 0) {
+        setLayerLoading({ done: 0, total: vectorTotal, current: null });
+      }
+      const setProgress = (done: number, current: string | null): void => {
+        // 只有最后一次加载能改进度：旧请求晚回来不能盖掉新请求的状态
+        if (loadingSeqRef.current !== seq) return;
+        setLayerLoading({ done, total: vectorTotal, current });
+      };
+      try {
+        for (const layer of target) {
+          /** 拉一份矢量数据（bbox 不给 = 全量）并落进 vectorData */
+          const pull = async (
+            bbox?: ViewBBox,
+            layers?: readonly string[],
+          ): Promise<{ ok: boolean; code?: string; error?: string; note?: string }> => {
+            const res = await engine.fetchGeoJson(layer.path, {
+              bbox,
+              layers,
+              signal: abortChunkLoad(layer.id).signal,
+            });
+            if (!res.ok) return { ok: false, code: res.code, error: res.error };
+            if (!stillMine()) return { ok: false, code: 'aborted' };
+            setVectorData((prev) => {
+              const next = new Map(prev);
+              next.set(layer.id, res.data.geojson);
+              return next;
+            });
+            return { ok: true, note: res.data.note };
+          };
+          const selectedLayers = opts?.layersFor?.get(layer.id);
 
-        if (layer.kind === 'vector') {
-          let settled = false;
-          if (layer.chunked) {
-            // 分块层恢复：直接按当前视口拉，不做全量尝试
-            //（每开一次项目都撞一次闸 = 干等一场注定失败的转换）
-            const vp = mapHandleRef.current?.getViewport();
-            if (vp) {
-              const res = await pull(vp.bbox, selectedLayers);
-              if (res.ok) {
-                chunkBBoxRef.current.set(layer.id, vp.bbox);
-                settled = true;
-              } else if (res.code !== 'aborted') {
-                setBanner(`读取 ${layer.path} 失败：${res.error}`);
-                ok = false;
-                continue;
-              } else {
-                continue;
-              }
-            }
-            // 地图还没建好（vp 为空）：落到下面的全量尝试兜底
-          }
-          if (!settled) {
-            const res = await pull(undefined, selectedLayers);
-            if (!res.ok) {
-              if (res.code === 'aborted') continue;
-              const vp =
-                res.code === 'payload_too_large' ? mapHandleRef.current?.getViewport() : null;
+          if (layer.kind === 'vector') {
+            // 进度上报：告诉用户正在读哪个文件（大文件要读几十秒）
+            setProgress(vectorDone, layer.name);
+            let settled = false;
+            if (layer.chunked) {
+              // 分块层恢复：直接按当前视口拉，不做全量尝试
+              //（每开一次项目都撞一次闸 = 干等一场注定失败的转换）
+              const vp = mapHandleRef.current?.getViewport();
               if (vp) {
-                const retry = await pull(vp.bbox, selectedLayers);
-                if (retry.ok) {
-                  chunkedMarks.set(layer.id, true);
+                const res = await pull(vp.bbox, selectedLayers);
+                if (res.ok) {
                   chunkBBoxRef.current.set(layer.id, vp.bbox);
-                  setBanner(
-                    `${layer.name} 太大，已按当前视口分块加载 —— 缩放平移会自动补齐；整层加载请先简化数据。`,
-                  );
-                  // 后台预建视口金字塔（分块工程第二阶段）：幂等、并发去重、
-                  // 有缓存直接短路 —— 建成后每次视口补数据从小缓存裁，快一到两个量级。
-                  // 失败静默：原始裁剪照常工作，金字塔只是加速器不是依赖。
-                  void engine.buildPyramid(layer.path);
-                } else if (retry.code !== 'aborted') {
-                  setBanner(`读取 ${layer.path} 失败：${retry.error}`);
+                  settled = true;
+                } else if (res.code !== 'aborted') {
+                  setBanner(`读取 ${layer.path} 失败：${res.error}`);
                   ok = false;
                   continue;
                 } else {
                   continue;
                 }
-              } else {
-                setBanner(`读取 ${layer.path} 失败：${res.error}`);
-                ok = false;
-                continue;
+              }
+              // 地图还没建好（vp 为空）：落到下面的全量尝试兜底
+            }
+            if (!settled) {
+              const res = await pull(undefined, selectedLayers);
+              if (!res.ok) {
+                if (res.code === 'aborted') continue;
+                const vp =
+                  res.code === 'payload_too_large' ? mapHandleRef.current?.getViewport() : null;
+                if (vp) {
+                  const retry = await pull(vp.bbox, selectedLayers);
+                  if (retry.ok) {
+                    chunkedMarks.set(layer.id, true);
+                    chunkBBoxRef.current.set(layer.id, vp.bbox);
+                    setBanner(
+                      `${layer.name} 太大，已按当前视口分块加载 —— 缩放平移会自动补齐；整层加载请先简化数据。`,
+                    );
+                    // 后台预建视口金字塔（分块工程第二阶段）：幂等、并发去重、
+                    // 有缓存直接短路 —— 建成后每次视口补数据从小缓存裁，快一到两个量级。
+                    // 失败静默：原始裁剪照常工作，金字塔只是加速器不是依赖。
+                    void engine.buildPyramid(layer.path);
+                  } else if (retry.code !== 'aborted') {
+                    setBanner(`读取 ${layer.path} 失败：${retry.error}`);
+                    ok = false;
+                    continue;
+                  } else {
+                    continue;
+                  }
+                } else {
+                  setBanner(`读取 ${layer.path} 失败：${res.error}`);
+                  ok = false;
+                  continue;
+                }
+              }
+              // 多图层源的加载说明（>20 层只装了第一层之类）：装了什么、跳了什么，说清楚
+              else if (res.note) {
+                setBanner(res.note);
               }
             }
-            // 多图层源的加载说明（>20 层只装了第一层之类）：装了什么、跳了什么，说清楚
-            else if (res.note) {
-              setBanner(res.note);
-            }
           }
-        }
 
-        // extent 查的是**全量**范围：fitBounds 要把人带到数据的完整范围上，
-        // 而不是当前视口那一小块（分块层尤其重要，栅格也靠它）
-        const extentRes = await engine.fetchExtent(layer.path);
-        if (extentRes.ok) {
-          if (!stillMine()) return { ok, chunkedMarks };
-          const bbox = extentRes.data.bbox;
-          setExtents((prev) => {
-            const next = new Map(prev);
-            next.set(layer.id, [bbox[0], bbox[1], bbox[2], bbox[3]]);
-            return next;
-          });
+          // extent 查的是**全量**范围：fitBounds 要把人带到数据的完整范围上，
+          // 而不是当前视口那一小块（分块层尤其重要，栅格也靠它）
+          const extentRes = await engine.fetchExtent(layer.path);
+          if (extentRes.ok) {
+            if (!stillMine()) return { ok, chunkedMarks };
+            const bbox = extentRes.data.bbox;
+            setExtents((prev) => {
+              const next = new Map(prev);
+              next.set(layer.id, [bbox[0], bbox[1], bbox[2], bbox[3]]);
+              return next;
+            });
+          }
+          if (layer.kind === 'vector') vectorDone += 1;
         }
+        return { ok, chunkedMarks };
+      } finally {
+        // 进度收尾：不管怎么退出（成功/失败/换项目），遮罩都要撤掉
+        if (loadingSeqRef.current === seq) setLayerLoading(null);
       }
-      return { ok, chunkedMarks };
     },
     [engine.fetchGeoJson, engine.fetchExtent, engine.buildPyramid, abortChunkLoad],
   );
@@ -1433,6 +1472,16 @@ export default function CanvasWorkbench() {
                     <LayerArrival layerCount={layers.length} />
                     <SelectionShutter stageRef={stageRef} selectedCount={selected.length} />
                     <ExportDevelop active={engine.isPending('export')} />
+                    {layerLoading ? (
+                      <ProjectLoading
+                        done={layerLoading.done}
+                        total={layerLoading.total}
+                        current={layerLoading.current}
+                        // 动效可关（设置里的「加载动画」选"从不播放"，或系统减弱动效）；
+                        // 但文字提示始终在 —— 那是信息，不是动效
+                        animated={bootMode !== 'never' && !prefersReducedMotion()}
+                      />
+                    ) : null}
                   </div>
                 </div>
                 {/* 底部面板（VS Code 的面板位）：属性表 / 改图记录，Ctrl+J 开合 */}

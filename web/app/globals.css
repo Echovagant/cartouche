@@ -904,3 +904,22 @@
   .boot-odo-stack, .boot-rv > *, .boot-curtain { transition: none !important; }
   .boot-status::before { animation: none; }
 }
+
+/* ═══════ 加载动画开关（data-boot） ═══════
+   layout 的内联脚本在首帧前把设置写进 <html data-boot>：
+   「从不播放」→ off → 启动屏在渲染前就被藏掉（零闪屏）。
+   静态导出会把启动屏标记预渲染进 HTML，只靠 JS 判断会闪一下。 */
+html[data-boot='off'] .boot-screen,
+html[data-boot='off'] .boot-curtain {
+  display: none !important;
+}
+
+/* 打开项目时的加载态：呼吸光带（动效可关，关掉时元素根本不渲染） */
+@keyframes boot-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.35; transform: scale(0.82); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .boot-pulse { animation: none !important; }
+}
