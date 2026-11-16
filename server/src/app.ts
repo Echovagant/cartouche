@@ -634,8 +634,8 @@ function foldCasePath(p: string): string {
       return;
     }
 
-    // ⚠️ 引擎侧能力，前端暂未接入（冒烟脚本 scripts/smoke-engine.mjs 在用）：
-    //    op 契约目前由引擎内置读取（见 useEngine 的 previewOp），这条 HTTP 口留给外部工具。
+    // op 契约的 HTTP 口：前端读契约走的是引擎内置路径，这条留给外部工具
+    // （冒烟脚本 scripts/smoke-engine.mjs 在用）。
     if (url.pathname === '/api/ops/schema') {
       json(200, readSchema());
       return;
@@ -1433,8 +1433,9 @@ function foldCasePath(p: string): string {
       return;
     }
 
-    // ⚠️ 引擎侧能力，前端暂未接入（冒烟脚本在用）：操作留痕目前由画布经
-    //    /api/op/execute 顺带追加，还没有「查看历史」的界面——闭环待做。
+    // 操作留痕的读取口。界面已存在：画布底部面板的「改图记录」tab
+    // 读的是 manifest.operations（经 /api/op/execute 追加）；这条 GET
+    // 直接读 history.jsonl，给外部工具与脚本用。
     if (url.pathname === '/api/project/history' && req.method === 'GET') {
       void (async () => {
         try {
@@ -1632,8 +1633,9 @@ function foldCasePath(p: string): string {
      * 路径口径与其它接口一致：`path` 必须是相对路径，落在已登记根之下；
      * 绝对路径与 `..` 一律 400（resolveTarget 内部走 store.resolve）。
      */
-    // ⚠️ 引擎侧能力，前端暂未接入（冒烟脚本在用）：按窗口读像元是
-    //    「局部修改不整图重写」的地基，界面接线待做。
+    // 帧信息查询（尺寸/波段/仿射变换/坐标系/有没有金字塔）。
+    // 前端目前用 /api/raster/grid 拿编辑换算要的网格；这条多带
+    // hasOverviews（给"要不要建金字塔"的提示用），留作外部工具口。
     if (url.pathname === '/api/raster/frame' && req.method === 'POST') {
       void (async () => {
         try {
@@ -1678,8 +1680,9 @@ function foldCasePath(p: string): string {
      * 失败不静默：建不出来就回 500 并带上原因（磁盘不够 / GDAL 报错），
      * 用户点"建金字塔"却什么都没发生、又没提示，是最坏的一种体验。
      */
-    // ⚠️ 引擎侧能力，前端暂未接入（冒烟脚本在用）：建金字塔概览，
-    //    大图缩放时的快速预览要靠它——界面接线待做。
+    // 手动建金字塔的口。常规路径不用它：写回（paint/replace/另存）之后
+    // RasterEditor 会**自动**建金字塔（#ensureOverviews，见 raster/ops.ts），
+    // 这条是给外部工具对存量旧图补建用的。
     if (url.pathname === '/api/raster/overview' && req.method === 'POST') {
       void (async () => {
         try {
