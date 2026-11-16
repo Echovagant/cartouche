@@ -57,10 +57,12 @@ export function ProjectLoading({ done, total, current, animated }: ProjectLoadin
       aria-live="polite"
       data-testid="project-loading"
     >
-      <div className="flex w-[280px] flex-col gap-3">
+      {/* 底衬：加载发生在**任意底图**上（深色影像、浅色纸面），
+          没有底衬的话文字会跟底图糊在一起 —— 用户看到的只是"灰了一块"。 */}
+      <div className="flex w-[300px] flex-col gap-3 rounded-panel border border-studio-line bg-studio-2/95 px-4 py-3.5 shadow-[var(--studio-panel-shadow)]">
         <div className="flex items-baseline justify-between">
-          <span className="font-mono text-[11px] tracking-[0.3em] text-studio-ink-3">{label}</span>
-          <span className="tnum font-mono text-[11px] text-studio-ink-3">{percent}%</span>
+          <span className="font-mono text-[11px] tracking-[0.3em] text-studio-ink-2">{label}</span>
+          <span className="tnum font-mono text-[11px] text-studio-ink-2">{percent}%</span>
         </div>
 
         {/* 进度条：底槽 + 填充（填充宽度是真实进度，不是假动画） */}
@@ -79,7 +81,7 @@ export function ProjectLoading({ done, total, current, animated }: ProjectLoadin
               className="h-1.5 w-1.5 shrink-0 rounded-full bg-accent"
             />
           ) : null}
-          <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-studio-ink-3">
+          <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-studio-ink-2">
             {current ? `正在读取 ${current}` : '正在读取图层数据'}
           </span>
         </div>

@@ -145,7 +145,7 @@ export function LegendPanel({ items, containerRef }: LegendPanelProps) {
 
   return (
     <div
-      className="absolute z-20 w-[190px] select-none rounded border border-studio-line bg-studio-2/92 shadow-[var(--studio-panel-shadow)]"
+      className="absolute z-20 w-[190px] select-none rounded border border-studio-line bg-studio-2/95 shadow-[var(--studio-panel-shadow)]"
       style={{
         left: `${state.x * 100}%`,
         top: `${state.y * 100}%`,
@@ -155,18 +155,19 @@ export function LegendPanel({ items, containerRef }: LegendPanelProps) {
       onPointerUp={onPointerUp}
       onPointerCancel={onPointerUp}
     >
-      {/* 标题条：拖这里挪位置 */}
+      {/* 标题条：拖这里挪位置。折叠态只剩这一条 —— 它浮在地图上，
+          必须比展开态更实一点（不然用户看不见它在哪儿）。 */}
       <div
         onPointerDown={onPointerDown}
-        className="flex cursor-grab items-center gap-1.5 border-b border-studio-line px-2 py-1.5 active:cursor-grabbing"
+        className="flex cursor-grab items-center gap-1.5 border-b border-studio-line bg-studio-3/70 px-2 py-1.5 active:cursor-grabbing"
         title="拖动挪位置"
       >
-        <span className="font-mono text-[10.5px] tracking-[0.14em] text-studio-ink-3">图例</span>
+        <span className="font-mono text-[10.5px] tracking-[0.14em] text-studio-ink-2">图例</span>
         <span className="flex-1" />
         <button
           type="button"
           onClick={() => update({ collapsed: !state.collapsed })}
-          className="rounded px-1 font-mono text-[10.5px] text-studio-ink-3 transition-colors hover:text-studio-ink"
+          className="rounded px-1 font-mono text-[10.5px] text-studio-ink-2 transition-colors hover:text-studio-ink"
           title={state.collapsed ? '展开' : '折叠'}
           aria-label={state.collapsed ? '展开图例' : '折叠图例'}
         >
@@ -175,7 +176,7 @@ export function LegendPanel({ items, containerRef }: LegendPanelProps) {
         <button
           type="button"
           onClick={() => update({ hidden: true })}
-          className="rounded px-1 font-mono text-[10.5px] text-studio-ink-3 transition-colors hover:text-studio-ink"
+          className="rounded px-1 font-mono text-[10.5px] text-studio-ink-2 transition-colors hover:text-studio-ink"
           title="隐藏图例"
           aria-label="隐藏图例"
         >
