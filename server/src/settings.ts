@@ -29,6 +29,8 @@ export type BootAnimationSetting = 'always' | 'first-visit' | 'never';
 export interface CartoucheSettings {
   /** 加载动画：总是播放 / 仅首次访问（默认）/ 从不播放 */
   readonly bootAnimation?: BootAnimationSetting;
+  /** 减弱动效：强制关掉所有入场/反馈动画（覆盖系统的 prefers-reduced-motion） */
+  readonly reduceMotion?: boolean;
 }
 
 function isBootAnimation(value: unknown): value is BootAnimationSetting {
@@ -41,8 +43,11 @@ export function readSettings(): CartoucheSettings {
     if (!existsSync(settingsFile)) return {};
     const raw = JSON.parse(readFileSync(settingsFile, 'utf8')) as unknown;
     if (typeof raw !== 'object' || raw === null) return {};
-    const obj = raw as { bootAnimation?: unknown };
-    return isBootAnimation(obj.bootAnimation) ? { bootAnimation: obj.bootAnimation } : {};
+    const obj = raw as { bootAnimation?: unknown; reduceMotion?: unknown };
+    return {
+      ...(isBootAnimation(obj.bootAnimation) ? { bootAnimation: obj.bootAnimation } : {}),
+      ...(typeof obj.reduceMotion === 'boolean' ? { reduceMotion: obj.reduceMotion } : {}),
+    };
   } catch {
     return {};
   }
@@ -57,6 +62,7 @@ export function writeSettings(patch: Partial<CartoucheSettings>): CartoucheSetti
   const next: CartoucheSettings = {
     ...current,
     ...(patch.bootAnimation !== undefined ? { bootAnimation: patch.bootAnimation } : {}),
+    ...(patch.reduceMotion !== undefined ? { reduceMotion: patch.reduceMotion } : {}),
   };
   try {
     mkdirSync(dirname(settingsFile), { recursive: true });

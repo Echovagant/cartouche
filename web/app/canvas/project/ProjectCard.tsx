@@ -16,7 +16,7 @@
 import { MapTrifoldIcon } from '@phosphor-icons/react';
 import type { ProjectSummary } from '../types';
 import { formatStamp, projectKey, sheetNumber } from './project-utils';
-import { usePrefersReducedMotion } from './useReducedMotion';
+import { useReduceMotionDecision } from './useReducedMotion';
 
 export interface ProjectCardProps {
   readonly project: ProjectSummary;
@@ -25,7 +25,10 @@ export interface ProjectCardProps {
 }
 
 export function ProjectCard({ project, disabled = false, onOpen }: ProjectCardProps) {
-  const reduced = usePrefersReducedMotion();
+  // 三态：pending（还没问引擎）也按"要减弱"处理 —— 宁可少一次位移反馈，
+  // 也不给动效敏感的用户闪一下。
+  const motion = useReduceMotionDecision();
+  const reduced = motion !== 'off';
   const number = sheetNumber(projectKey(project), project.updatedAt);
   const stamp = formatStamp(project.updatedAt);
 

@@ -18,6 +18,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const read = (...p) => readFileSync(join(root, ...p), 'utf8');
 
 const pref = read('web', 'app', 'canvas', 'project', 'useBootAnimation.ts');
+const engineSettings = read('web', 'app', 'canvas', 'project', 'engineSettings.ts');
 const settings = read('web', 'app', 'canvas', 'workbench', 'SettingsModal.tsx');
 const layout = read('web', 'app', 'layout.tsx');
 const css = read('web', 'app', 'globals.css');
@@ -82,8 +83,8 @@ describe('加载动画设置', () => {
     );
     assert.match(
       workbench,
-      /bootMode !== 'never' && !prefersReducedMotion\(\)/,
-      '动效开关要同时听「加载动画」设置与系统的减弱动效',
+      /bootMode !== 'never' && reduceMotion === 'off'/,
+      '动效开关要同时听「加载动画」设置与减弱动效（pending 按减弱处理）',
     );
   });
 
@@ -121,28 +122,27 @@ describe('加载动画设置的持久化（跨浏览器 / 跨访问地址）', (
   test('前端：本地缓存 + 引擎同步，缺一不可', () => {
     assert.match(pref, /fetchEngineBootMode/, '要能向引擎问设置');
     assert.match(pref, /saveBootModeToEngine/, '保存时要同步到引擎');
-    assert.match(pref, /isBootAnimationSynced/, '要记录"本地已与引擎核对过"');
     assert.match(
-      pref,
-      /cartouche\.boot\.synced/,
+      engineSettings,
+      /isEngineSettingsSynced/,
+      '要记录"本地已与引擎核对过"',
+    );
+    assert.match(
+      engineSettings,
+      /cartouche\.settings\.synced/,
       '核对标记用独立存储键（与设置值分开）',
     );
   });
 
-  test('启动决策链：本地核对过就零延迟，没核对过先问引擎', () => {
+  test('启动决策链：问引擎（核对过用短超时），问不到就按本地', () => {
     assert.match(
       boot,
-      /isBootAnimationSynced\(\)\) return readBootAnimationMode\(\)/,
-      '本地核对过 → 直接用，不等引擎',
+      /await fetchEngineSettings\(isEngineSettingsSynced\(\) \? 500 : 800\)/,
+      '核对过 → 短超时问（毫秒级，不拖慢启动）；没核对过 → 给足时间',
     );
     assert.match(
       boot,
-      /await fetchEngineBootMode\(800\)/,
-      '没核对过 → 先问引擎（换浏览器才能拿到同一份设置）',
-    );
-    assert.match(
-      boot,
-      /fromEngine \?\? readBootAnimationMode\(\)/,
+      /if \(!settings\)[\s\S]{0,160}?readBootAnimationMode\(\)/,
       '问不到引擎 → 按本地来（引擎没起也不能让用户看到错的设置）',
     );
   });
@@ -159,9 +159,99 @@ describe('加载动画设置的持久化（跨浏览器 / 跨访问地址）', (
   test('设置页显示的是生效中的那一份（换浏览器后不能显示本地默认值）', () => {
     assert.match(
       settings,
-      /fetchEngineBootMode\(800\)\.then\(\(fromEngine\) => \{[\s\S]{0,120}?setBootMode\(fromEngine\)/,
+      /fetchEngineSettings\(800\)\.then\(\(settings\) => \{[\s\S]{0,200}?setBootMode\(settings\.bootAnimation\)/,
       '设置页打开时要向引擎核对一次',
     );
     assert.match(settings, /saveBootModeToEngine\(bootMode\)/, '保存时要同步到引擎');
+  });
+});
+
+describe('减弱动效（搬引擎 + 补齐判断点）', () => {
+  const reduced = read('web', 'app', 'canvas', 'project', 'useReducedMotion.ts');
+  const motion = read('web', 'app', 'canvas', 'CanvasMotion.tsx');
+  const settingsModal = read('web', 'app', 'canvas', 'workbench', 'SettingsModal.tsx');
+  const serverSettings = read('server', 'src', 'settings.ts');
+
+  test('引擎侧存 reduceMotion', () => {
+    assert.match(serverSettings, /reduceMotion\?: boolean/, '引擎设置要有这一项');
+  });
+
+  test('三层优先级：设置页覆盖 > 引擎 > 系统', () => {
+    assert.match(
+      reduced,
+      /prefers-reduced-motion: reduce/,
+      '系统设置仍是兜底',
+    );
+    assert.match(reduced, /fetchEngineSettings/, '要向引擎问');
+    assert.match(
+      reduced,
+      /settings\.reduceMotion \? 'on' : 'off'/,
+      '引擎的值要参与决策',
+    );
+    assert.match(
+      reduced,
+      /'pending'/,
+      '要有 pending 态：还没问引擎时一律按"减弱"处理',
+    );
+  });
+
+  test('CanvasMotion 的动效编排必须走统一判断（原来只看系统设置）', () => {
+    // ⚠️ 2026-11-16 实测发现的既有 bug：CanvasMotion 四处都只看 matchMedia，
+    //    用户在设置页勾了「减弱动效」也不起作用。
+    assert.match(motion, /useReduceMotionDecision/, '要改用统一判断');
+    const rawMatches = motion.match(/matchMedia\('\(prefers-reduced-motion: reduce\)'\)/g) ?? [];
+    assert.equal(
+      rawMatches.length,
+      0,
+      `CanvasMotion 里不该再有裸的 matchMedia 判断（还有 ${rawMatches.length} 处）`,
+    );
+    // 四个编排都要用决策
+    const decisions = motion.match(/motion !== 'off'/g) ?? [];
+    assert.ok(decisions.length >= 4, `四个编排都要按决策跳过（找到 ${decisions.length} 处）`);
+  });
+
+  test('启动屏：减弱动效开启时不播（启动屏本身就是动效）', () => {
+    assert.match(
+      boot,
+      /mode === 'never' \|\| reduced/,
+      '减弱动效时整个启动屏跳过',
+    );
+  });
+
+  test('设置页：减弱动效的读写都走引擎', () => {
+    assert.match(settingsModal, /saveEngineSettings\(\{ reduceMotion \}\)/, '保存要同步引擎');
+    assert.match(
+      settingsModal,
+      /typeof settings\.reduceMotion === 'boolean'\) setReduceMotion\(settings\.reduceMotion\)/,
+      '打开设置页要显示引擎上的值',
+    );
+  });
+
+  test('本地有值时也要后台核对引擎（设置可能在别的浏览器里改过）', () => {
+    // ⚠️ 2026-11-16 实测踩到：核对标记是永久的 → 引擎把减弱动效关掉后，
+    //    本地缓存还停在"减弱"，启动屏就一直不播。
+    assert.match(
+      reduced,
+      /void fetchEngineSettings\(\)\.then/,
+      'hook 必须无条件问引擎（不因本地有值而跳过）',
+    );
+    assert.doesNotMatch(
+      reduced,
+      /if \(local\) \{[\s\S]{0,120}?return;/,
+      '不能因为本地有值就提前 return（那正是旧 bug 的形状）',
+    );
+  });
+
+  test('启动决策总是问一次引擎（别只信本地缓存）', () => {
+    assert.match(
+      boot,
+      /await fetchEngineSettings\(isEngineSettingsSynced\(\) \? 500 : 800\)/,
+      '启动屏要问引擎（本机毫秒级；引擎没起则超时回落本地）',
+    );
+    assert.doesNotMatch(
+      boot,
+      /isEngineSettingsSynced\(\)\)[\s\S]{0,80}?return \{ mode: readBootAnimationMode\(\)/,
+      '不能因为"已核对过"就完全不信引擎',
+    );
   });
 });

@@ -12,6 +12,10 @@
  *  - `prefers-reduced-motion` 时全部退化为不动画（不闪烁、不剥夺功能）；
  *  - 动效只负责"表达状态变化"，不承载任何信息——关掉动效，功能一条不少。
  *
+ * ⚠️ 减弱动效的判断**必须走 useReduceMotionDecision()**（设置页的覆盖 + 引擎的
+ *    机器级设置 + 系统设置三层），不能只看 matchMedia —— 2026-11-16 实测发现：
+ *    这里原来四处都只读系统设置，用户在设置页勾了「减弱动效」也不起作用。
+ *
  * 三个编排：
  *  1. **开机**：面板从两侧滑入，图纸从暗处"显影"出来；
  *  2. **图层就位**：地图区做一次曝光扫描，图层卡片逐个落位；
@@ -20,6 +24,7 @@
 import { useRef } from 'react';
 import gsap from 'gsap';
 import { useGSAP } from '@gsap/react';
+import { useReduceMotionDecision } from './project/useReducedMotion';
 
 gsap.registerPlugin(useGSAP);
 
@@ -31,23 +36,28 @@ export function CanvasBoot({
 }: {
   leftRef: React.RefObject<HTMLElement | null>;
   rightRef: React.RefObject<HTMLElement | null>;
-  stageRef: React.RefObject<HTMLElement | null>;
+  stageRef: React.RefObject<HTMLDivElement | null>;
 }) {
-  useGSAP(() => {
-    const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    if (reduced) return;
+  // 三态：pending（还没问引擎）与 on（减弱）都不播 —— 宁可少一次入场动画
+  const motion = useReduceMotionDecision();
 
-    const left = leftRef.current;
-    // 右栏是**可选**的：新版工作台没有右侧面板，没挂 ref 就跳过那一段
-    const right = rightRef.current;
-    const stage = stageRef.current;
-    if (!left || !stage) return;
+  useGSAP(
+    () => {
+      if (motion !== 'off') return;
 
-    const tl = gsap.timeline({ defaults: { ease: 'power3.out' } });
-    tl.from(left, { xPercent: -6, autoAlpha: 0, duration: 0.7 })
-      .from(stage, { scale: 0.985, autoAlpha: 0, duration: 0.9, ease: 'power4.out' }, '-=0.5');
-    if (right) tl.from(right, { xPercent: 6, autoAlpha: 0, duration: 0.7 }, '-=0.75');
-  });
+      const left = leftRef.current;
+      // 右栏是**可选**的：新版工作台没有右侧面板，没挂 ref 就跳过那一段
+      const right = rightRef.current;
+      const stage = stageRef.current;
+      if (!left || !stage) return;
+
+      const tl = gsap.timeline({ defaults: { ease: 'power3.out' } });
+      tl.from(left, { xPercent: -6, autoAlpha: 0, duration: 0.7 })
+        .from(stage, { scale: 0.985, autoAlpha: 0, duration: 0.9, ease: 'power4.out' }, '-=0.5');
+      if (right) tl.from(right, { xPercent: 6, autoAlpha: 0, duration: 0.7 }, '-=0.75');
+    },
+    { dependencies: [motion] },
+  );
 
   return null;
 }
@@ -65,6 +75,7 @@ export function LayerArrival({
 }) {
   const sweepRef = useRef<HTMLDivElement | null>(null);
   const first = useRef(true);
+  const motion = useReduceMotionDecision();
 
   useGSAP(
     () => {
@@ -72,9 +83,8 @@ export function LayerArrival({
         first.current = false;
         return;
       }
-      const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
       const sweep = sweepRef.current;
-      if (!sweep || reduced) return;
+      if (!sweep || motion !== 'off') return;
 
       const tl = gsap.timeline();
       tl.fromTo(
@@ -83,7 +93,7 @@ export function LayerArrival({
         { yPercent: 120, autoAlpha: 0.85, duration: 0.85, ease: 'power2.inOut' },
       ).to(sweep, { autoAlpha: 0, duration: 0.35 });
     },
-    { dependencies: [layerCount] },
+    { dependencies: [layerCount, motion] },
   );
 
   return (
@@ -113,15 +123,15 @@ export function SelectionShutter({
   selectedCount: number;
 }) {
   const prev = useRef(0);
+  const motion = useReduceMotionDecision();
 
   useGSAP(
     () => {
       const before = prev.current;
       prev.current = selectedCount;
       if (selectedCount <= 0 || before > 0) return;
-      const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
       const stage = stageRef.current;
-      if (reduced || !stage) return;
+      if (motion !== 'off' || !stage) return;
 
       gsap.fromTo(
         stage,
@@ -136,7 +146,7 @@ export function SelectionShutter({
         },
       );
     },
-    { dependencies: [selectedCount] },
+    { dependencies: [selectedCount, motion] },
   );
 
   return null;
@@ -154,13 +164,13 @@ export function ExportDevelop({
   active: boolean;
 }) {
   const bandRef = useRef<HTMLDivElement | null>(null);
+  const motion = useReduceMotionDecision();
 
   useGSAP(
     () => {
       const band = bandRef.current;
       if (!active || !band) return;
-      const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-      if (reduced) return;
+      if (motion !== 'off') return;
 
       const tl = gsap.timeline({ repeat: -1, repeatDelay: 0.25 });
       tl.fromTo(
@@ -169,7 +179,7 @@ export function ExportDevelop({
         { xPercent: 110, autoAlpha: 0.9, duration: 0.9, ease: 'power1.inOut' },
       ).to(band, { autoAlpha: 0, duration: 0.2 });
     },
-    { dependencies: [active] },
+    { dependencies: [active, motion] },
   );
 
   return (

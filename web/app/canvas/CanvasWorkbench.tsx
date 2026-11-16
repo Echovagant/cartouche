@@ -53,7 +53,7 @@ import { useEditTools } from './useEditTools';
 import { useEngine, type CompatReportPayload } from './useEngine';
 import { useProjects } from './useProjects';
 import { useBootAnimationMode } from './project/useBootAnimation';
-import { prefersReducedMotion } from './project/useReducedMotion';
+import { useReduceMotionDecision } from './project/useReducedMotion';
 import {
   describeAiEntry,
   type AiEntryContext,
@@ -176,6 +176,11 @@ export default function CanvasWorkbench() {
   const [quickOpenOpen, setQuickOpenOpen] = useState(false);
   /** 加载动画的播放方式（设置页可改；'never' 时启动屏与加载态的动效都关） */
   const [bootMode] = useBootAnimationMode();
+  /**
+   * 减弱动效的三态决策：pending（还没问引擎）与 on（要减弱）都不播动效。
+   * 加载态的呼吸光带受它控制；文字提示不受影响（那是信息）。
+   */
+  const reduceMotion = useReduceMotionDecision();
   /** 底部面板（Ctrl+J）：属性表 / 改图记录 */
   const [panelOpen, setPanelOpen] = useState(false);
   const [panelTab, setPanelTab] = useState<PanelTab>('attributes');
@@ -1477,9 +1482,9 @@ export default function CanvasWorkbench() {
                         done={layerLoading.done}
                         total={layerLoading.total}
                         current={layerLoading.current}
-                        // 动效可关（设置里的「加载动画」选"从不播放"，或系统减弱动效）；
+                        // 动效可关（设置里的「加载动画」选"从不播放"，或减弱动效开启）；
                         // 但文字提示始终在 —— 那是信息，不是动效
-                        animated={bootMode !== 'never' && !prefersReducedMotion()}
+                        animated={bootMode !== 'never' && reduceMotion === 'off'}
                       />
                     ) : null}
                   </div>

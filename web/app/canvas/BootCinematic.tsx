@@ -24,11 +24,19 @@
 import { useEffect, useRef } from 'react';
 import {
   applyBootAttr,
-  fetchEngineBootMode,
-  isBootAnimationSynced,
   readBootAnimationMode,
+  setBootAnimationMode,
   type BootAnimationMode,
 } from './project/useBootAnimation';
+import {
+  fetchEngineSettings,
+  isEngineSettingsSynced,
+  markEngineSettingsSynced,
+} from './project/engineSettings';
+import {
+  prefersReducedMotion,
+  setReduceMotionOverride,
+} from './project/useReducedMotion';
 
 const STATUSES = ['连接图签引擎', '装载地图内核', '准备图面'] as const;
 const READY_WORD = '就绪';
@@ -75,25 +83,40 @@ export function BootCinematic({
      *
      * 引擎是**权威**（机器级设置，换浏览器、换访问地址都一致）；
      * localStorage 是**缓存**（负责首帧零闪屏）。
-     *   - 本地已核对过 → 直接用，零延迟；
-     *   - 没核对过（首访 / 换浏览器 / 换地址）→ 问引擎，问完写回本地并打标记。
-     * 问不到引擎（引擎没起）→ 按本地来，不能让用户看到个错的设置。
+     *
+     * **总是问一次引擎**（本机毫秒级响应，感知不到；引擎没起则超时回落本地）：
+     * 设置可能在另一个浏览器里被改过，只信本地缓存会读到旧值
+     * （2026-11-16 实测：引擎把减弱动效关掉后，本地缓存还停在"减弱"，
+     *   启动屏就一直不播）。
+     *
+     * 一次请求拿两件事：播不播（加载动画）+ 减不减弱动效。
      */
-    const decideMode = async (): Promise<BootAnimationMode> => {
-      if (isBootAnimationSynced()) return readBootAnimationMode();
-      const fromEngine = await fetchEngineBootMode(800);
-      return fromEngine ?? readBootAnimationMode();
+    const decide = async (): Promise<{ mode: BootAnimationMode; reduced: boolean }> => {
+      const settings = await fetchEngineSettings(isEngineSettingsSynced() ? 500 : 800);
+      if (!settings) {
+        return { mode: readBootAnimationMode(), reduced: prefersReducedMotion() };
+      }
+      const mode = settings.bootAnimation ?? readBootAnimationMode();
+      let reduced = prefersReducedMotion();
+      if (typeof settings.reduceMotion === 'boolean') {
+        reduced = settings.reduceMotion;
+        setReduceMotionOverride(settings.reduceMotion);
+      }
+      setBootAnimationMode(mode);
+      markEngineSettingsSynced();
+      return { mode, reduced };
     };
 
     const run = async (): Promise<void> => {
-      const mode = await decideMode();
+      const { mode, reduced } = await decide();
       // 问完了：撤掉"待定"标记（首帧期间启动屏是藏着的，现在按结论亮相）
       applyBootAttr(mode, false);
 
-      // 「从不播放」：整个启动屏跳过，把接力棒直接交给工作台。
+      // 「从不播放」或「减弱动效」：启动屏本身就是动效 —— 两种情况都不播，
+      // 直接把接力棒交给工作台。
       // 首帧的隐藏由 layout 的内联脚本 + CSS 完成（html[data-boot='off']），
       // 所以这里不会看到任何闪屏 —— 只是不播动画而已。
-      if (mode === 'never') {
+      if (mode === 'never' || reduced) {
         screenRef.current?.style.setProperty('display', 'none');
         document.getElementById('boot-curtain-1')?.style.setProperty('display', 'none');
         document.getElementById('boot-curtain-2')?.style.setProperty('display', 'none');
@@ -114,8 +137,6 @@ export function BootCinematic({
     // 提升函数声明（done/exit）不继承 null 收窄：收窄后的引用固定下来再用
     const root = screen;
     const odoCols = Array.from(screen.querySelectorAll<HTMLElement>('.boot-odo-col'));
-
-    const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
     /* 回头客判定：12h 内来过 → 加速模式（进度 ×3、最短停留压到 1s）。
        「总是播放」模式下不做这个加速 —— 用户要的就是每次都完整看一遍。 */

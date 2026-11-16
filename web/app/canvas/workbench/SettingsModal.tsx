@@ -27,6 +27,7 @@ import {
   setBootAnimationMode,
   type BootAnimationMode,
 } from '../project/useBootAnimation';
+import { fetchEngineSettings, saveEngineSettings } from '../project/engineSettings';
 
 export interface SettingsModalProps {
   readonly open: boolean;
@@ -54,8 +55,10 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
     // 本地缓存还没跟引擎核对过（换浏览器 / 换访问地址）→ 向引擎问一次：
     // 设置页显示的必须是**当前生效**的那份，不能是本地的默认值
     // （否则会出现"设置里写着从不播放、实际却在播"的错觉）。
-    void fetchEngineBootMode(800).then((fromEngine) => {
-      if (fromEngine) setBootMode(fromEngine);
+    void fetchEngineSettings(800).then((settings) => {
+      if (!settings) return;
+      if (settings.bootAnimation) setBootMode(settings.bootAnimation);
+      if (typeof settings.reduceMotion === 'boolean') setReduceMotion(settings.reduceMotion);
     });
   }, [open]);
 
@@ -70,6 +73,8 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
       /* 隐私模式下写不了 */
     }
     setReduceMotionOverride(reduceMotion);
+    // 减弱动效也同步到引擎（机器级设置，跨浏览器/换地址都跟着走）
+    void saveEngineSettings({ reduceMotion });
     // 加载动画：写完立刻生效（启动屏下一次打开画布时按新设置走；
     // 打开项目时的加载态本次会话内就跟着变），并同步到引擎 ——
     // 引擎是权威副本，换浏览器、换访问地址都跟着走。
@@ -187,7 +192,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
           <span className="text-[12px] text-studio-ink-3">
             {saved
               ? '已保存 —— 引擎地址与动效设置刷新页面后生效'
-              : '加载动画存在本机引擎上（换浏览器、换地址都跟着走）；其余偏好存在浏览器里。都不上传。'}
+              : '加载动画与减弱动效存在本机引擎上（换浏览器、换地址都跟着走）；主题存在浏览器里。都不上传。'}
           </span>
           <div className="flex items-center gap-2">
             <ActionButton variant="ghost" onClick={onClose}>

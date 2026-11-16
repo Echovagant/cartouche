@@ -1039,6 +1039,7 @@ function foldCasePath(p: string): string {
           const body = await readBody(req, res);
           const parsed = JSON.parse(body.toString('utf8') || '{}') as {
             bootAnimation?: string;
+            reduceMotion?: boolean;
           };
           if (parsed.bootAnimation !== undefined) {
             if (
@@ -1053,7 +1054,15 @@ function foldCasePath(p: string): string {
               return;
             }
           }
-          json(200, writeSettings({ ...(parsed.bootAnimation ? { bootAnimation: parsed.bootAnimation } : {}) }));
+          json(
+            200,
+            writeSettings({
+              ...(parsed.bootAnimation ? { bootAnimation: parsed.bootAnimation } : {}),
+              ...(typeof parsed.reduceMotion === 'boolean'
+                ? { reduceMotion: parsed.reduceMotion }
+                : {}),
+            }),
+          );
         } catch (err) {
           json(400, { error: 'bad_request', message: scrub((err as Error).message) });
         }
