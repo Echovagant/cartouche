@@ -11,7 +11,7 @@ import { MagneticLink } from './motion/MagneticLink';
 import { Deliverables } from './motion/Deliverables';
 import { GateStack } from './motion/GateStack';
 import { ScrollChoreography } from './motion/ScrollChoreography';
-import { formatPixelGate } from './motion/ConfirmCardBody';
+import { ConfirmCardBody, formatPixelGate } from './motion/ConfirmCardBody';
 import { SiteHeader } from './motion/SiteHeader';
 
 /**
@@ -73,15 +73,46 @@ const NAV = [
   { href: RELEASES_URL, label: '下载' },
 ] as const;
 
-/* ── 两次真实运行留下的像元口径 ──────────────────────────────────────
-   涂色那次的执行前确认卡（截图见 web/public/site/confirm-card.jpg）：
-     全图 1,200 个像元，这次会改 165 个（13.8%）。
-   调色那次的预演结果：全图 1,200 个像元，会改 1,170 个（97.5%）。
-   两个数字都来自真实运行，不是估的；口径脚注在页脚。 */
+/* ── 真实运行留下的像元口径 ──────────────────────────────────────────
+   2026-11-16 一次真实运行（引擎 /api/op/preview 实算，不是估的）：
+     涂色：全图 3,600 个像元，这次会改 400 个（11.1%）；
+     调色：全图 3,600 个像元，会改 3,600 个（100% —— 调色本就是整幅操作）。
+   素材是 Natural Earth 公开底图裁出的一小块（60×60 像元），
+   口径脚注在页脚。 */
 
-const PAINT_AFFECTED = 165;
-const PAINT_TOTAL = 1200;
-const RECOLOR_AFFECTED = 1170;
+const PAINT_AFFECTED = 400;
+const PAINT_TOTAL = 3600;
+const RECOLOR_AFFECTED = 3600;
+
+/**
+ * 涂色那次确认卡的四行闸门（**引擎预演出来的原值**）。
+ *
+ * 官网渲染这张卡用的是组件（不是位图截图）：位图再大也会糊，
+ * 数字还会与页面其它地方走散。组件与画布共用 ConfirmCardBody，改版自动同步。
+ */
+const PAINT_GATES = [
+  {
+    label: '将影响的像元',
+    value: formatPixelGate(PAINT_AFFECTED, PAINT_TOTAL, PAINT_AFFECTED / PAINT_TOTAL),
+  },
+  { label: '目标文件', value: '区域底图.tif' },
+  { label: '将生成的备份', value: '区域底图.tif.bak.<yyyyMMdd-HHmmss>（与原文件同目录）' },
+  { label: '操作类型', value: '涂色' },
+];
+
+/**
+ * 首屏浮层那张用**精简版**：浮层只有图面宽度的三分之一，完整的备份名一放进去
+ * 就折三行、卡片长得撑出图面。完整口径留给 S2 段那张大卡。
+ */
+const PAINT_GATES_HERO = [
+  {
+    label: '将影响的像元',
+    value: formatPixelGate(PAINT_AFFECTED, PAINT_TOTAL, PAINT_AFFECTED / PAINT_TOTAL),
+  },
+  { label: '目标文件', value: '区域底图.tif' },
+  { label: '将生成的备份', value: '区域底图.tif.bak.<时间戳>' },
+  { label: '操作类型', value: '涂色' },
+];
 
 /**
  * 像元影响面的两段数字（不带百分比）。
@@ -152,8 +183,8 @@ const AI_ROLES = [
  *
  * 数字只有一条规矩：必须能说清是哪次运行、什么参数下的。
  * 这四条的出处（不许改口径时不说出处）：
- *   - 像元影响面：2026-10-22 一次真实涂色操作的执行前确认卡
- *     （web/public/site/confirm-card.jpg），数字与画布的 formatPixelGate 同源；
+ *   - 像元影响面：2026-11-16 一次真实涂色运行的引擎预演结果
+ *     （/api/op/preview 实算），数字与画布的 formatPixelGate 同源；
  *   - 目标文件：同一次运行里写回的那个文件；
  *   - 导出规格：引擎封单页 PDF 的默认页面参数（A4 横版 841.89×595.28 pt、
  *     图纸 DPI 150，见 src/engine/export/pdf.ts），前端不传这两个值；
@@ -165,7 +196,7 @@ const HERO_FACTS = [
   {
     label: '将影响的像元',
     value: pixelPair(PAINT_AFFECTED, PAINT_TOTAL),
-    note: '2026-10-22 一次真实涂色操作，占全图 13.8%',
+    note: '2026-11-16 一次真实涂色运行，占全图 11.1%',
   },
   {
     label: '目标文件',
@@ -436,19 +467,20 @@ export default function Home() {
                   {/* 工具 → 成品 的因果：确认卡浮在图面上。
                       位置避开图面自己画的四个要素
                       （指北针右上、图例与比例尺左下、标题栏右下），
-                      压住的只是底图本身。 */}
+                      压住的只是底图本身。
+
+                      这里渲染的是**组件**而不是位图截图：位图再大也会糊，
+                      而且数字会与页面上的口径走散。组件与画布共用同一份
+                      渲染逻辑（ConfirmCardBody），改版自动同步。 */}
                   <figure
                     data-hero="card"
-                    className="reveal absolute left-[54%] top-[24%] z-10 w-[34%] rotate-[-1.2deg] overflow-hidden rounded-panel border border-line bg-surface shadow-product"
+                    className="reveal absolute left-[54%] top-[24%] z-10 w-[34%] rotate-[-1.2deg]"
                   >
-                    <img
-                      src="./site/confirm-card.jpg"
-                      alt="确认卡：执行前写明将影响的像元数、目标文件、将生成的备份名与操作类型"
-                      width={556}
-                      height={398}
-                      loading="eager"
-                      decoding="async"
-                      className="w-full"
+                    <ConfirmCardBody
+                      variant="paper"
+                      title="确认这次改动"
+                      opLabel="raster.paint"
+                      gates={PAINT_GATES_HERO}
                     />
                   </figure>
                 </div>
@@ -527,20 +559,19 @@ export default function Home() {
               </a>
             </div>
 
-            {/* 真实确认卡截图（暗底原图）：**不复刻**。
-                复刻成纸色卡 = 「官网说的和真东西不一样」。 */}
+            {/* 真实确认卡：**组件渲染**，不是位图截图 ——
+                位图再大也会糊，数字还会与页面口径走散。
+                下面的四个值就是引擎预演算出来的（一次真实涂色运行）。 */}
             <figure data-s2="figure" className="reveal">
-              <img
-                src="./site/confirm-card.jpg"
-                alt="工具里的执行前确认卡（真实截图）：四行闸门与「取消 / 确认执行」"
-                width={556}
-                height={398}
-                loading="lazy"
-                decoding="async"
-                className="w-full rounded-panel border border-ink-line"
+              <ConfirmCardBody
+                variant="ink"
+                title="确认这次改动"
+                opLabel="raster.paint"
+                gates={PAINT_GATES}
+                className="rounded-panel border border-ink-line bg-ink-surface"
               />
               <figcaption className="mt-4 font-mono text-body-sm leading-relaxed text-paper/85">
-                示例：2026-10-22 的一次真实涂色操作 —— 这就是工具里的那张卡
+                示例：2026-11-16 的一次真实涂色操作 —— 这就是工具里的那张卡
               </figcaption>
             </figure>
           </div>
@@ -1047,8 +1078,8 @@ export default function Home() {
           {/* 口径脚注：数据从哪来、到什么时候、什么会变 */}
           <div className="mt-8 border-t border-line pt-6 text-body-sm leading-relaxed text-ink-3">
             <p>
-              口径说明：页面上的像元数与百分比来自 2026-10-22
-              的<strong className="font-semibold text-ink-2">两次</strong>真实运行记录——一次涂色（165 / 1 200）与一次调色（1 170 / 1 200），原始留痕在项目的
+              口径说明：页面上的像元数与百分比来自 2026-11-16
+              的<strong className="font-semibold text-ink-2">两次</strong>真实运行记录——一次涂色（400 / 3 600）与一次调色（3 600 / 3 600），由引擎预演实算得出，原始留痕在项目的
               <span className="font-mono">.cartouche/history.jsonl</span> 里。不同数据源的像元大小与精度不同，像元数、影响面与比例尺会随之变化。
               功能仍在开发中，页面所述能力以仓库当前实现为准。
             </p>

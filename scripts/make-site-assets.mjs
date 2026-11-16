@@ -76,13 +76,9 @@ Write-Output ("{0} {1}x{2} {3}KB" -f $dst, (Get-Item $dst).Length, 0, 0)
 
 await mkdir(outDir, { recursive: true });
 
-// 1. 确认卡：从整屏截图里裁出卡片本体（周围是压暗的地图，留一点边当阴影底）
-const cardSrc = join(root, 'shots', 'edit-confirm-card.png');
-if (existsSync(cardSrc)) {
-  await cropToJpeg(cardSrc, join(outDir, 'confirm-card.jpg'), { x: 496, y: 196, w: 556, h: 398 }, 900);
-} else {
-  console.warn('[site-assets] 没有 shots/edit-confirm-card.png，确认卡素材需先跑一次浏览器实测');
-}
+// 1. 确认卡：**不再出位图** —— 官网改成用组件渲染（ConfirmCardBody），
+//    矢量永远清晰，数字与页面口径同源，也不会再出现"图上是旧数字"。
+//    （旧的 confirm-card.jpg 是从整屏截图里裁的 556px 位图，放大就糊。）
 
 // 2. 出图工作台与自检报告：README 那两张已经是压好的 jpg，直接复制
 for (const [src, dst] of [
