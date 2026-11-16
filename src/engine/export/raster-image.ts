@@ -331,11 +331,16 @@ function renderArgs(
 ): string[] {
   let args: string[];
   if (needReproject) {
-    // warp：-te 用目标 CRS 的 minx miny maxx maxy，-ts 给输出像素尺寸
+    // warp：-te 用**目标 CRS** 的 minx miny maxx maxy，-ts 给输出像素尺寸
     args = ['-t_srs', options.targetCrs!, '-ts', String(width), String(height)];
     if (options.bbox) {
       const [minX, minY, maxX, maxY] = options.bbox;
+      // ⚠️ bbox 的约定是 **EPSG:4326 的经纬度**（见 BBox4326），而 -te 的坐标
+      //    属于**目标 CRS**（EPSG:3857 是米）。不告诉 GDAL 这批坐标是什么，
+      //    它会把经纬度当米用 → 取景完全错位。
+      //    -te_srs 就是这句说明：告诉 GDAL「-te 这四个数是 4326 的」。
       args.push('-te', String(minX), String(minY), String(maxX), String(maxY));
+      args.push('-te_srs', 'EPSG:4326');
     }
     if (options.resample) args.push('-r', options.resample);
     for (const b of options.bands ?? []) args.push('-b', String(b));

@@ -908,9 +908,14 @@ function foldCasePath(p: string): string {
           const bbox = bboxParam
             ? (bboxParam.split(',').map(Number) as [number, number, number, number])
             : undefined;
-          // 默认出 EPSG:4326 的图：前端 MapLibre 的 image source 是**按经纬度角点**贴图的，
-          // 所以 PNG 必须是 4326 的，否则投影坐标系的栅格会与 bbox 对不上位（错开一块）。
-          const targetCrs = url.searchParams.get('targetCrs') ?? 'EPSG:4326';
+          // 默认出 **EPSG:3857（Web Mercator）**的图。
+          //
+          // 为什么不是 4326（2026-11-16 实测修正）：前端 MapLibre 用的是**墨卡托**，
+          // 它的 image source 把图片按经纬度四角贴成一个矩形 —— 那张图片的内容
+          // **也必须是墨卡托的视图**，否则内容会被二次形变（4326 的线性经纬内容
+          // 塞进墨卡托四角），栅格与矢量图层就对不上位（实测：明显错开一块）。
+          // bbox 仍按 4326 的经纬度传，引擎用 -te_srs 告诉 gdalwarp 这一点。
+          const targetCrs = url.searchParams.get('targetCrs') ?? 'EPSG:3857';
           // 拉伸档位只认 auto / none。非法值必须 400，不能默默忽略 ——
           // 默默忽略等于用户以为切了档、其实没切，是最难查的那种"静默失败"。
           const stretchParam = url.searchParams.get('stretch');
