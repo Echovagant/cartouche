@@ -29,6 +29,11 @@ const LS_KEY = 'cartouche.boot.v1';
 const MIN_DISPLAY = 1600;
 const FAST_MIN_DISPLAY = 1000;
 const MAX_DURATION = 12000;
+/**
+ * rAF 保险线：引擎还没就绪且进度引擎失速（后台标签节流）时，
+ * 到这个时间点就强制收场。正常路径 ~2.4s 就走完了，这里只是"别卡死"的兜底。
+ */
+const FORCE_EXIT_AT = 4500;
 const REVISIT_WINDOW = 12 * 3600 * 1000;
 
 export function BootCinematic({
@@ -57,7 +62,12 @@ export function BootCinematic({
     const screen = screenRef.current;
     const bar = barRef.current;
     const statusText = statusTextRef.current;
-    const statusRv = statusRvRef.current;
+    // 状态行的 mask 容器：优先用 ref，缺了就从文字元素的父级推 ——
+    // ⚠️ 2026-11-16 实测事故：这里曾用 `statusRvRef.current` 直接判空早退，
+    //    而那个 ref 忘了在 JSX 里挂 → 整个 effect 第一行就返回，
+    //    启动屏**从未运行**，用户看到的是静态导出留下的浮空元素。
+    //    现在任何单个 ref 缺失都不再让整段动画静默失效。
+    const statusRv = statusRvRef.current ?? statusText?.parentElement ?? null;
     if (!screen || !bar || !statusText || !statusRv) return;
     // 提升函数声明（done/exit）不继承 null 收窄：收窄后的引用固定下来再用
     const root = screen;
@@ -226,7 +236,15 @@ export function BootCinematic({
       return () => window.clearTimeout(stTimer);
     }
     const readyTimer = window.setInterval(() => {
-      if (engineReadyRef.current && !finished) done();
+      if (finished) return;
+      if (engineReadyRef.current) {
+        done();
+        return;
+      }
+      // ⚠️ rAF 保险：后台标签会把 rAF 节流到 ~1fps 甚至停摆，进度引擎随之失速。
+      //    引擎没就绪时，超过 FORCE_EXIT_AT 就**按时间**强制收场 ——
+      //    宁可动画短一点，也不能让人对着一屏残骸等 12 秒。
+      if (performance.now() - startedAt > FORCE_EXIT_AT) done();
     }, 300);
     window.setTimeout(done, MAX_DURATION); // 兜底：引擎离线也不把人卡在加载屏
 
@@ -239,7 +257,13 @@ export function BootCinematic({
 
   return (
     <>
-      <div ref={screenRef} role="status" aria-live="polite" aria-label="图签 Cartouche 正在启动">
+      <div
+        ref={screenRef}
+        className="boot-screen"
+        role="status"
+        aria-live="polite"
+        aria-label="图签 Cartouche 正在启动"
+      >
         <div className="boot-vignette" aria-hidden="true" />
         <div className="boot-logo" aria-hidden="true">
           <svg viewBox="0 0 120 72" width="120" height="72" fill="none" strokeWidth="2.5" strokeLinecap="round">
@@ -269,7 +293,7 @@ export function BootCinematic({
         </div>
 
         <div className="boot-status">
-          <div className="boot-rv boot-in">
+          <div className="boot-rv boot-in" ref={statusRvRef}>
             <b ref={statusTextRef}>{STATUSES[0]}</b>
           </div>
         </div>
