@@ -70,6 +70,12 @@ export interface AiSidePanelProps {
   readonly onExecuted: () => void;
 }
 
+/**
+ * 画布右侧的 AI 面板：接入配置 + 一句话提议 + 确认后执行。
+ *
+ * 为什么它长在画布里而不是单独一个页面：AI 的价值在**结果落到图上** ——
+ * 计划 → 确认 → 地图当场刷新这条链一断，用户就不信这东西有用。
+ */
 export function AiSidePanel({
   projectRoot,
   activeLayerName,

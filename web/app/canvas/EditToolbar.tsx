@@ -24,8 +24,16 @@ import type { EditTool, LevelsParams } from './types';
 import { isToolDisabled, type ToolBlockedReasons } from './editAvailability';
 import { ActionButton } from './ui';
 
+/**
+ * 工具条的输入。
+ *
+ * 状态一律由上层持有：工具条只负责显示与发意图，不自己存一份，
+ * 这样工具条、画布手势、确认卡看到的永远是同一份。
+ */
 export interface EditToolbarProps {
+  /** 当前选中的工具（查看 / 画笔 / 框选 / 调色） */
   readonly tool: EditTool;
+  /** 换工具 */
   readonly onToolChange: (tool: EditTool) => void;
   /**
    * 每个工具各自的不可用原因（null = 可用）。
@@ -46,6 +54,7 @@ export interface EditToolbarProps {
   readonly hasBox: boolean;
   /** 框选之后选「涂色」还是「擦除」 */
   readonly onBoxAction: (kind: 'paint' | 'erase') => void;
+  /** 调色参数（方法 / 亮度 / 对比度） */
   readonly levels: LevelsParams;
   readonly onLevelsChange: (levels: LevelsParams) => void;
   /** 调色：按当前参数预演一次 */

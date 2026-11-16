@@ -1117,15 +1117,29 @@ export interface ContextPreview {
   readonly effort: string | null;
 }
 
+/**
+ * 提议接口的返回体。
+ *
+ * 一次请求带回来的东西比"成功/失败"多得多：失败要带**原因**，
+ * 成功要带**逐条校验结论**（哪条没过、为什么），
+ * 外加"本次将发送什么"的预览 —— 前端只靠这一份就能决定怎么提示用户。
+ */
 export interface PlanResponseBody {
+  /** 整体是否可用（没过任何一道闸门） */
   readonly ok: boolean;
+  /** 机器可读的失败类别（llm_not_configured / plan_schema_invalid / …）；成功为 null */
   readonly error: string | null;
   /** 官方错误码（如 1004） */
   readonly code: number | null;
+  /** 人话说明；成功为 null */
   readonly message: string | null;
+  /** 实际使用的模型；模型没应答到就为 null */
   readonly model: string | null;
+  /** 实际使用的思考深度 */
   readonly effort: string | null;
+  /** 请求耗时（毫秒）；失败前就断了则为 null */
   readonly elapsedMs: number | null;
+  /** 解析出来的计划；没过校验时可能为 null */
   readonly plan: PlanDocument | null;
   /** 闸门①：Schema 校验的问题 */
   readonly schemaIssues: readonly PlanSchemaIssue[];

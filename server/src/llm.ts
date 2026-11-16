@@ -44,6 +44,13 @@ import {
   type LlmProviderEntry,
 } from '@cartouche/engine';
 
+/**
+ * 密钥来自哪条路径（**只暴露来源，绝不暴露内容**）。
+ *
+ * - `none`    还没配任何密钥
+ * - `env`     启动脚本注入的环境变量，或 DPAPI 记住的那份
+ * - `session` 用户这次会话里粘贴的（只在内存里，关掉页面即失）
+ */
 export type KeySource = 'none' | 'env' | 'session';
 
 /** 每条接入线各自的状态：内存态密钥、上次拉到的清单、用户选的模型 */
@@ -253,16 +260,26 @@ export function scrub(text: string): string {
   return redactSecrets(text, secrets);
 }
 
+/**
+ * 一条接入线（厂商 × 端点）在界面上的状态。
+ *
+ * 这份描述里**没有密钥**，只有 configured 之类的布尔量 ——
+ * 前端拿到的就是它，不存在回显的风险。
+ */
 export interface LlmProviderStatus {
+  /** 接入线 id（如 minimax-cn） */
   readonly id: string;
+  /** 界面上的名字 */
   readonly displayName: string;
   /** 有没有「记住这台电脑」的 DPAPI 密文（重启后不用重填） */
   readonly persisted: boolean;
+  /** 请求实际打到的地址（自定义端点填用户自己填的那个） */
   readonly baseUrl: string;
   /** 这个端点提供不提供模型清单接口 */
   readonly modelsSupported: boolean;
   /** 认不认思考深度参数 */
   readonly effortSupported: boolean;
+  /** 厂商特有的说明（计费方式、限制之类）；没有则为 undefined */
   readonly note?: string;
   /** 这条线当前有没有可用密钥 */
   readonly configured: boolean;
@@ -432,9 +449,17 @@ export async function llmModels(providerId?: string): Promise<LlmModelsResult> {
   }
 }
 
+/**
+ * 连通性测试的结果。
+ *
+ * 只回一句回话与耗时，不回密钥、不回请求头 —— 这些内容会被显示在界面上。
+ */
 export interface LlmTestResult {
+  /** 模型回的原文 */
   readonly reply: string;
+  /** 实际使用的模型 */
   readonly model: string;
+  /** 往返耗时（毫秒） */
   readonly elapsedMs: number;
 }
 

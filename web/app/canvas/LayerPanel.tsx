@@ -20,6 +20,12 @@ import {
 import { guessEntryKind, type EntryKind, type LayerKind, type MapLayer } from './types';
 import { ActionButton, EmptyHint, SectionLabel } from './ui';
 
+/**
+ * 图层面板的输入：上半是工作区文件，下半是已加载图层。
+ *
+ * 状态全在上层（工作台），面板只发意图 —— 导出的 PDF 与界面上看到的
+ * 因此永远是同一套图层状态。
+ */
 export interface LayerPanelProps {
   /** 已加载图层（数组末尾在最上） */
   layers: readonly MapLayer[];
@@ -27,13 +33,21 @@ export interface LayerPanelProps {
   files: readonly string[];
   /** 当前目录（工作区内的相对路径，空串表示根） */
   dir: string;
+  /** 文件列表是否还在拉（拉的时候不出"进入目录"的按钮） */
   filesLoading: boolean;
+  /** 当前选中的图层 id；没有选中时为 null */
   activeLayerId: string | null;
+  /** 把一个文件加进地图 */
   onAddLayer: (name: string, kind: LayerKind) => void;
+  /** 从地图里移除图层（不动磁盘上的源文件） */
   onRemoveLayer: (id: string) => void;
+  /** 显隐切换 */
   onToggleVisibility: (id: string) => void;
+  /** 改不透明度（0~1） */
   onOpacityChange: (id: string, opacity: number) => void;
+  /** 调叠放次序：-1 = 下移一层，1 = 上移一层 */
   onMoveLayer: (id: string, direction: -1 | 1) => void;
+  /** 选中图层（属性表跟着切） */
   onSelectLayer: (id: string) => void;
   /** 打开图层选择器（矢量层专用：勾选多图层容器里的图层重新加载） */
   onPickLayers: (id: string) => void;

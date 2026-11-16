@@ -28,8 +28,16 @@ export type PlanFailureKind =
   | 'clarification'
   | 'unknown';
 
+/**
+ * 分类之后的失败。
+ *
+ * 界面拿到它就知道该给哪一类提示：换密钥 / 查网络 / 改话术 / 换操作，
+ * 而不是把所有失败都渲染成同一句"出错了"。
+ */
 export interface PlanFailure {
+  /** 失败类别（决定界面给哪种下一步） */
   readonly kind: PlanFailureKind;
+  /** 人话说明（已过密钥抹除） */
   readonly message: string;
   /** 官方错误码（如 1004） */
   readonly code: number | null;
