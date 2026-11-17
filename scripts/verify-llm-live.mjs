@@ -67,7 +67,11 @@ const { listImplementedOps } = await import(
 const BROKEN_OP = 'vector.thisOpDoesNotExist';
 
 const PROMPTS = [
-  { text: '给要素加一列叫「面积」的字段', want: 'vector.addField' },
+  // 表达式只能用真实存在的列：这个请求才是 addField 真能跑的形状。
+  // （曾经的「给要素加一列面积」会诱使模型写 AREA —— 引擎没有几何面积列，
+  //   现在契约描述里已写明，模型应明确回「尚未支持」。）
+  { text: '给要素加一列叫「人口千数」的字段，值等于 POP 除以 1000', want: 'vector.addField' },
+  { text: '给要素加一列叫「面积」的字段', want: 'unsupported' },
   { text: '按类型汇总面积和人口', want: 'feature.summarize' },
   { text: '把图层重投影到 EPSG:32650', want: 'vector.reproject' },
   { text: '把 NAME 字段改名叫「名称」', want: 'vector.renameFields' },
@@ -161,8 +165,11 @@ for (const p of PROMPTS) {
       times.push(Date.now() - started);
       if (!res.ok) {
         // 闸门拒了：这也算"有结论"，但要记下原因
-        if (res.error === 'op_not_supported') rejected += 1;
-        else if (res.error === 'plan_needs_clarification') clarifyCount += 1;
+        if (res.error === 'op_not_supported') {
+          rejected += 1;
+          // 引擎确实做不到的事，模型明确说「尚未支持」就是正确回答
+          if (p.want === 'unsupported') wantCount += 1;
+        } else if (res.error === 'plan_needs_clarification') clarifyCount += 1;
         else if (res.error === 'plan_not_json' || res.error === 'plan_schema_invalid') emptyCount += 1;
         if (!firstError) firstError = `${res.error ?? '?'}: ${res.message ?? ''}`;
         continue;
@@ -188,7 +195,9 @@ for (const p of PROMPTS) {
   const expectLabel =
     p.want === 'clarify'
       ? `　其中模型拒绝乱猜并说清缺什么 ${clarifyCount}/${RUNS}`
-      : `　其中命中期望 op「${p.want}」 ${wantCount}/${RUNS}`;
+      : p.want === 'unsupported'
+        ? `　其中模型明确说「尚未支持」 ${wantCount}/${RUNS}`
+        : `　其中命中期望 op「${p.want}」 ${wantCount}/${RUNS}`;
   const line =
     `  ${p.text}\n` +
     `    提议成功 ${okCount}/${RUNS}${expectLabel}` +

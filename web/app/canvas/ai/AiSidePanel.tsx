@@ -275,7 +275,9 @@ export function AiSidePanel({
     if (!stepPlan) return;
     const goal = stepPlan.goals[index];
     if (!goal) return;
-    const text = `第 ${index + 1} 步（共 ${stepPlan.goals.length} 步）：${goal}。总目标：${stepPlan.intent}`;
+    // 模型给的步骤常自带句号，拼接时去掉一个，别出现「。。」
+    const goalText = goal.replace(/[。；;，,\s]+$/, '');
+    const text = `第 ${index + 1} 步（共 ${stepPlan.goals.length} 步）：${goalText}。总目标：${stepPlan.intent}`;
     setInstruction(text);
     await sendPlan(true, text);
   };

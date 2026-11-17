@@ -518,7 +518,7 @@
       "properties": {
         "target": { "$ref": "#/$defs/pathRef" },
         "name": { "type": "string", "maxLength": 63, "description": "新字段名（Shapefile 的字段名限 10 字符，超了会明确报错）" },
-        "expression": { "type": "string", "maxLength": 500, "description": "取值表达式。SQL 子集或中文人话，如 \"POP2020 / AREA\"。" },
+        "expression": { "type": "string", "maxLength": 500, "description": "取值表达式：只能用图层里真实存在的列 + 这些函数 UPPER/LOWER/TRIM/LENGTH/ROUND/ABS/COALESCE/CONCAT。没有 AREA 这种几何列；要算面积请用 feature.summarize 的 area 汇总，不要凭空写 AREA。" },
         "where": { "type": "string", "maxLength": 500, "description": "只对符合条件的要素赋值，其余留空" }
       }
     },

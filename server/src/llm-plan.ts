@@ -1396,11 +1396,24 @@ export function readStepOutline(value: unknown): string[] | null {
         ? (item['goal'] ?? item['step'] ?? item['title'])
         : null;
     if (typeof rawGoal !== 'string') return null;
-    const goal = rawGoal.trim();
-    if (goal === '') return null;
+    const trimmed = rawGoal.trim();
+    if (trimmed === '') return null;
+    // 模型常自己带「第 1 步：」/「1.」前缀；界面会统一编号，这里去掉避免重复。
+    // 去掉后什么都不剩就保留原文，宁可重复也不能把步骤弄丢。
+    const goal = stripStepNumbering(trimmed) || trimmed;
     goals.push(clipText(goal, 200));
   }
   return goals;
+}
+
+/** 去掉步骤自带的编号前缀（中文「第 N 步：」或阿拉伯数字「1.」） */
+function stripStepNumbering(text: string): string {
+  const cleaned = text
+    .replace(/^第\s*[0-9一二三四五六七八九十百]+\s*步\s*[：:、,.\-]?\s*/, '')
+    .replace(/^步骤\s*[0-9一二三四五六七八九十百]+\s*[：:、,.\-]?\s*/, '')
+    .replace(/^\s*\d+\s*[.、)）:：]\s*/, '')
+    .trim();
+  return cleaned;
 }
 
 /* ────────────────────────────────────────────────────────────
