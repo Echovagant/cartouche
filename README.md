@@ -102,7 +102,7 @@
 包里带齐了 Node 与 GDAL，**解压双击就能用**，什么都不用装：
 
 ```bash
-npm run pack:release        # 产出 release/cartouche-portable-<版本>.zip（约 99 MB）
+node scripts/pack-portable.mjs  # 产出 release/portable/cartouche-portable-<版本>.zip（约 99 MB）
 # 解压 → 双击 START.cmd
 # 浏览器自动打开画布；首次启动会播一份示例数据（40 个文件，
 # Natural Earth 公共领域数据，中文文件夹名）
