@@ -77,7 +77,7 @@ const R2 = [
 ];
 // R5：盘符 + 反斜杠 + 紧跟非 ASCII 字符 = 疑似作者本机的真实目录。
 // 只匹配反斜杠形态（Windows 展示形态）；测试夹具里的 `E:/别的盘/…` 正斜杠写法
-// 与 `C:\Users\someone` 假路径不受影响。
+// 与「C 盘 Users 下的假路径」写法不受影响。
 const R5 = [/[A-Za-z]:\\[^\x00-\x7F]/g];
 
 for (const f of files) {
