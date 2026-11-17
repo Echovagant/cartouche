@@ -101,20 +101,6 @@ const PAINT_GATES = [
 ];
 
 /**
- * 首屏浮层那张用**精简版**：浮层只有图面宽度的三分之一，完整的备份名一放进去
- * 就折三行、卡片长得撑出图面。完整口径留给 S2 段那张大卡。
- */
-const PAINT_GATES_HERO = [
-  {
-    label: '将影响的像元',
-    value: formatPixelGate(PAINT_AFFECTED, PAINT_TOTAL, PAINT_AFFECTED / PAINT_TOTAL),
-  },
-  { label: '目标文件', value: '区域底图.tif' },
-  { label: '将生成的备份', value: '区域底图.tif.bak.<时间戳>' },
-  { label: '操作类型', value: '涂色' },
-];
-
-/**
  * 像元影响面的两段数字（不带百分比）。
  *
  * 数字与画布的 formatPixelGate 同源（同一个 toLocaleString 口径），
