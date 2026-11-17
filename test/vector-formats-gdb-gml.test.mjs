@@ -98,6 +98,7 @@ test('GML：写回后主文件与 .xsd 成套，图层名/字段/坐标系都在
     assert.ok(existsSync(join(dir, 'cities.xsd')), '夹具应产出 .xsd');
     // 模拟读图时留下的 schema 缓存：写回后它必须消失（否则还按旧结构解析）
     writeFileSync(join(dir, 'cities.gfs'), '<gfs/>', 'utf8');
+    const xsdBefore = readFileSync(join(dir, 'cities.xsd'));
     const before = await probeLayer(loc, gml);
     assert.equal(before.layerName, 'cities');
     assert.equal(before.featureCount, 2);
@@ -125,11 +126,41 @@ test('GML：写回后主文件与 .xsd 成套，图层名/字段/坐标系都在
       '字段类型不能漂（Real 不能被重猜成 Integer）',
     );
     assert.ok(existsSync(join(dir, 'cities.xsd')), '新的 .xsd 必须在');
+    assert.deepEqual(
+      readFileSync(join(dir, 'cities.xsd')),
+      xsdBefore,
+      '只改属性时 .xsd 必须一个字节都不动（说明书不该跟着重写）',
+    );
     assert.ok(!existsSync(join(dir, 'cities.gfs')), '旧的 .gfs 缓存必须被清掉，否则还按旧结构解析');
     assert.ok(res.backupPath, '必须留下备份');
     assert.ok(existsSync(join(dir, res.backupPath, 'cities.gml')), '备份里要有原 GML');
     assert.ok(existsSync(join(dir, res.backupPath, 'cities.xsd')), '备份里要有原 .xsd');
     assert.ok(readFileSync(gml, 'utf8').includes('1111'), '新属性要真的写进 GML');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('GML：加字段会重写 .xsd（结构变了，说明书要跟着变）', async () => {
+  const { dir, store, geojson } = setup();
+  try {
+    const gml = join(dir, 'cities.gml');
+    await ogr(['-f', 'GML', '-nln', 'cities', gml, geojson]);
+    const xsdBefore = readFileSync(join(dir, 'cities.xsd'));
+
+    const read = (await readFeatures(loc, { path: gml })).features;
+    await writeFeatures(loc, store, {
+      target: 'cities.gml',
+      features: read.map((f) => ({ ...f, properties: { ...f.properties, NOTE: '新列' } })),
+    });
+
+    const info = await probeLayer(loc, gml);
+    assert.ok(info.fields.some((f) => f.name === 'NOTE'), '新列要写进去');
+    assert.notDeepEqual(
+      readFileSync(join(dir, 'cities.xsd')),
+      xsdBefore,
+      '加了列，.xsd 必须重写以描述新结构',
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

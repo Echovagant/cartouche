@@ -1107,10 +1107,13 @@ function readGmlNamespace(absPath: string): { prefix: string; uri: string } | nu
 }
 
 /**
- * 写回一个 GML：**重新生成主文件与 .xsd**，整组替换。
+ * 写回一个 GML：重新生成主文件；`.xsd` 只在字段结构变化时才重写，整组替换。
  *
  * 为什么不能原地更新：GML 驱动不支持 `-update`（实测：Unable to open existing
  * output datasource），只能重新 CreateCopy 一份。
+ *
+ * **字段结构没变时，原 `.xsd` 保持字节不变**：改属性、改节点、增删要素、换坐标系
+ * 都不该让"数据说明书"跟着变。只有加列/改列名/删列才重新生成 XSD。
  *
  * 多图层 GML 直接拒绝：GML 驱动写不出"一个文件里多个图层"，
  * 强行写只会留下第一层，其余层静默消失。
@@ -1167,6 +1170,16 @@ async function writeGmlFeatures(
       sourceFields: presentFieldNames(options.features),
     });
 
+    // 字段结构没变（只改属性/几何/增删要素/换坐标系）：原 .xsd 一个字节不动。
+    // 用户真实会抱怨的是"改个名字，说明书也被重写"；说明书只在列变了的时候才该变。
+    const sourceNames = new Set((sourceInfo?.fields ?? []).map((f) => f.name));
+    const hasNewFields = [...presentFieldNames(options.features)].some((n) => !sourceNames.has(n));
+    const schemaUnchanged =
+      sourceInfo !== null &&
+      options.features.length > 0 &&
+      (options.dropFieldNames?.length ?? 0) === 0 &&
+      !hasNewFields;
+
     // 与目标同名：.xsd 与 XML 里的 schemaLocation 都按主名派生
     const outMain = join(tempDir, basename(targetAbs));
     const args = ['-f', 'GML', '-nln', layerName];
@@ -1198,6 +1211,13 @@ async function writeGmlFeatures(
           '没有它，有些软件会按"无字段"打开。',
         res.stderr,
       );
+    }
+    if (schemaUnchanged) {
+      const sourceXsdAbs = targetAbs.replace(/\.gml$/i, '.xsd');
+      if (existsSync(sourceXsdAbs)) {
+        // 用原文件覆盖刚生成的 XSD：字节级不变，下游按原说明书校验时不会因为"换了说明书"失败
+        copyFileSync(sourceXsdAbs, xsdAbs);
+      }
     }
 
     // 换盘之前先核对：要素数、字段定义、坐标系、图层名
