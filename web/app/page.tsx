@@ -209,7 +209,7 @@ const STEPS = [
     title: '解压',
     body: '下载绿色压缩包，解压，双击里面的 START.cmd。不用装 Node，不用装 GDAL，不用改设置——包里已经带全了。',
     code: [
-      'cartouche-portable-0.1.0.zip',
+      `cartouche-portable-${process.env.NEXT_PUBLIC_CARTOUCHE_VERSION}.zip`,
       '  └─ 解压到任意一个文件夹（路径里有中文、有空格都行）',
       '  └─ 双击 START.cmd',
       '',

@@ -1,3 +1,12 @@
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+// 版本号只在根 package.json 维护一份：官网里展示的下载包文件名也来自它。
+const { version } = JSON.parse(
+  readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'package.json'), 'utf8'),
+);
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   // 纯静态导出：产物可直接被 Tauri 等桌面壳加载，不需要 Node 运行时。
@@ -20,6 +29,7 @@ const nextConfig = {
   typescript: { ignoreBuildErrors: false },
   env: {
     NEXT_PUBLIC_ENGINE_BASE_URL: process.env.NEXT_PUBLIC_ENGINE_BASE_URL ?? 'http://127.0.0.1:8787',
+    NEXT_PUBLIC_CARTOUCHE_VERSION: version,
   },
 };
 
