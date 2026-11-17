@@ -271,6 +271,8 @@ const WRITABLE = [
   { ext: '.shp', note: 'Shapefile（一整套文件一起写回）' },
   { ext: '.geojson', note: 'GeoJSON' },
   { ext: '.gpkg', note: 'GeoPackage（只动你指定的那一层，别的层原样留着）' },
+  { ext: '.gdb', note: 'File Geodatabase（整库重建，层序与其它图层不变）' },
+  { ext: '.gml', note: 'GML（主文件 + .xsd 一起换）' },
 ];
 
 const READONLY_RASTER = [
@@ -278,9 +280,7 @@ const READONLY_RASTER = [
 ];
 
 const READONLY_VECTOR = [
-  { ext: '.gdb', note: 'File Geodatabase' },
   { ext: '.kml', note: 'KML' },
-  { ext: '.gml', note: 'GML' },
 ];
 
 /* ── 关于 ── */

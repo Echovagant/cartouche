@@ -110,13 +110,15 @@ export interface ReadFeaturesResult {
 }
 
 /**
- * 写回支持的三种格式。
+ * 写回支持的格式。
  *
  * - shapefile：一套文件（.shp/.shx/.dbf/.prj/.cpg）
  * - geojson：单个文件
  * - gpkg：GeoPackage —— **一个文件里的多个图层**（底层是 SQLite）
+ * - gdb：ESRI File Geodatabase —— **一个目录里的多个图层**（OpenFileGDB 驱动）
+ * - gml：GML —— 主文件 + .xsd 结构文件（单图层）
  */
-export type VectorWriteFormat = 'shapefile' | 'geojson' | 'gpkg';
+export type VectorWriteFormat = 'shapefile' | 'geojson' | 'gpkg' | 'gdb' | 'gml';
 
 /**
  * 写要素的选项。
@@ -128,15 +130,15 @@ export interface WriteFeaturesOptions {
   /** 目标文件（工作区相对路径）；绝对路径与 .. 会被路径闸门挡掉 */
   readonly target: string;
   readonly features: readonly FeatureRecord[];
-  /** 不给就按扩展名判断（.shp / .geojson / .gpkg） */
+  /** 不给就按扩展名判断（.shp / .geojson / .gpkg / .gdb / .gml） */
   readonly format?: VectorWriteFormat;
   /**
-   * 写回 GeoPackage 的**哪一层**。
+   * 写回多图层容器的**哪一层**（GeoPackage / FileGDB）。
    *
    * 不给就写文件里的第一个图层 —— 与读路径（read.ts 的 `readFeatures`）默认读的是同一层，
    * 这样"读出来改一改再写回去"才落回原处。
    *
-   * 只对 GeoPackage 有意义：Shapefile/GeoJSON 只有一个图层。
+   * 只对多图层容器有意义：Shapefile/GeoJSON/GML 只有一个图层。
    */
   readonly layerName?: string;
   /** 备份目录名里的标签，默认取时间戳 */

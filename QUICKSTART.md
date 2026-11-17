@@ -96,9 +96,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-engine.ps1
 - **能改 · 原样写回**：
   - 栅格：`.tff` `.tif`（GeoTIFF）、`.img`（Erdas Imagine）、`.asc`（ESRI ASCII Grid）、
     `.bil`（ENVI）、`.png`（8/16 位无符号）。格式、位深、坐标系、伴随文件都跟着走，ArcGIS 照常打开。
-  - 矢量：`.shp`、`.geojson`、`.gpkg`。
+  - 矢量：`.shp`、`.geojson`、`.gpkg`、`.gdb`（整库重建，层序与其它图层不变）、`.gml`（主文件 + `.xsd`）。
 - **能看能导出 · 不改**：`.vrt`（虚拟栅格：本身不含像素，改它引用的源文件），
-  `.gdb` `.kml` `.gml`（矢量）。
+  `.kml`（矢量）。
 - **会明确拒绝的**：带调色板的索引色栅格（重写会丢调色板）、扩展名与真实格式不一致的文件。
   工具会说明原因，而不是把文件改坏。
 

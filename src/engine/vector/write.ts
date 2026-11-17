@@ -50,7 +50,7 @@ import { copyFileSync, existsSync, readdirSync, rmSync, writeFileSync } from 'no
 import { randomBytes } from 'node:crypto';
 import { basename, dirname, join, sep } from 'node:path';
 import { tools } from '../gdal/runner.ts';
-import { replaceFileAtomically } from '../gdal/writeback.ts';
+import { replaceFileAtomically, replaceFileGroupAtomically } from '../gdal/writeback.ts';
 import type { GdalLocation } from '../gdal/env.ts';
 import type { WorkspaceAdapter } from '../workspace/index.ts';
 import { makeTempDir, timestamp, toRelPathChecked, GPKG_SIDECAR_SUFFIXES } from './paths.ts';
@@ -58,6 +58,7 @@ import { probeLayer, sameSrs, srsMatchesWkt, epsgOf, parseLayerInfo } from './re
 import {
   VectorError,
   type FeatureRecord,
+  type LayerField,
   type LayerInfo,
   type VectorWriteFormat,
   type WriteFeaturesOptions,
@@ -93,8 +94,10 @@ export function formatForPath(path: string): VectorWriteFormat {
   if (lower.endsWith('.shp')) return 'shapefile';
   if (lower.endsWith('.geojson') || lower.endsWith('.json')) return 'geojson';
   if (lower.endsWith('.gpkg')) return 'gpkg';
+  if (lower.endsWith('.gdb')) return 'gdb';
+  if (lower.endsWith('.gml')) return 'gml';
   throw new VectorError(
-    `写回只支持 .shp、.geojson 与 .gpkg，这个文件是 ${basename(path)}（换个格式再试）`,
+    `写回只支持 .shp、.geojson、.gpkg、.gdb 与 .gml，这个文件是 ${basename(path)}（换个格式再试）`,
   );
 }
 
@@ -141,7 +144,13 @@ async function existingDataFiles(
       : format === 'gpkg'
         // GPKG 的伴随文件是紧跟完整文件名的：'a.gpkg-wal'，不是 'a-wal'
         ? [ownSuffix, ...GPKG_SIDECAR_SUFFIXES.map((s) => `${ownSuffix}${s}`)]
-        : [ownSuffix, '.geojson', '.json'].filter((s) => s !== '');
+        : format === 'gml'
+          // GML 的 .xsd 与 .gfs 都按主名派生：a.gml → a.xsd / a.gfs
+          ? [ownSuffix, '.xsd', '.gfs']
+          : format === 'gdb'
+            // FileGDB 是目录，不按文件粒度处理
+            ? []
+            : [ownSuffix, '.geojson', '.json'].filter((s) => s !== '');
   let names: string[];
   try {
     names = await store.list(dirRel);
@@ -218,7 +227,7 @@ interface GpkgLayerSummary {
  * 为什么不用 read.ts 的 `parseLayerInfo`：它只留第一个图层的细节
  * （后面的图层只记名字），而写回要逐层核对"别的图层有没有被动过"。
  */
-function parseGpkgLayerSummaries(stdout: string): GpkgLayerSummary[] {
+function parseLayerSummaries(stdout: string): GpkgLayerSummary[] {
   const out: GpkgLayerSummary[] = [];
   let cur: { name: string; featureCount: number; fields: string[] } | null = null;
   for (const line of stdout.split(/\r?\n/)) {
@@ -275,7 +284,7 @@ async function probeGpkgLayers(
   if (!res.ok) {
     throw new VectorError(`读不了这个 GeoPackage：${basename(path)}`, res.stderr);
   }
-  return parseGpkgLayerSummaries(res.stdout);
+  return parseLayerSummaries(res.stdout);
 }
 
 /**
@@ -547,6 +556,644 @@ async function writeGpkgFeatures(
   }
 }
 
+/* ────────────────────────── FileGDB（.gdb） ────────────────────────── */
+
+/**
+ * FileGDB 里一个图层的完整信息。
+ *
+ * 比通用的 LayerInfo 多三项：FID 列名、几何列名、几何类型。
+ * 重建目录时必须原样带上 FID / 几何列名 —— 换名会让外部按列名写的 SQL 失效。
+ *
+ * 字段故意做成 LayerInfo 的超集：`sameSrs` / `srsMatchesWkt` 可以直接吃。
+ */
+interface GdbLayerDetail extends LayerInfo {
+  /** 图层名（与 layerName 同值，读起来短一些） */
+  readonly name: string;
+  /** 字段定义（带宽度），重建层结构时用它保住原类型 */
+  readonly fieldDefs: readonly VrtField[];
+  readonly fidColumn: string | null;
+  readonly geometryColumn: string | null;
+  readonly geometryType: string | null;
+}
+
+/** 往 OGR VRT 里写的一个字段定义。 */
+interface VrtField {
+  readonly name: string;
+  /** OGR 字段类型名：String / Integer / Integer64 / Real / Date … */
+  readonly type: string;
+  /** 字符串宽度；0 / 缺省表示不限 */
+  readonly width?: number;
+}
+
+/** 从 `ogrinfo -so` 输出里拆字段定义（带宽度，OGR 字段类型名照抄）。 */
+function parseFieldDefs(stdout: string): VrtField[] {
+  const out: VrtField[] = [];
+  for (const line of stdout.split(/\r?\n/)) {
+    if (/^(Geometry|Extent|Data axis)/.test(line)) continue;
+    const m = /^(.+?):\s+([A-Za-z0-9]+)\s*\(([\d.]+)\)/.exec(line);
+    if (!m) continue;
+    const name = m[1]!.trim();
+    const width = Number(m[3]);
+    out.push({
+      name,
+      type: m[2]!,
+      ...(Number.isFinite(width) && width > 0 ? { width } : {}),
+    });
+  }
+  return out;
+}
+
+/** 按要素值推断一个新列的类型（只对新加的列用；原有列用原定义）。 */
+function inferFieldType(features: readonly FeatureRecord[], name: string): string {
+  let sawNumber = false;
+  let sawReal = false;
+  let sawText = false;
+  for (const f of features) {
+    const v = f.properties[name];
+    if (v === null || v === undefined) continue;
+    if (typeof v === 'number') {
+      sawNumber = true;
+      if (!Number.isInteger(v)) sawReal = true;
+    } else if (typeof v === 'boolean') {
+      sawNumber = true;
+    } else {
+      sawText = true;
+    }
+  }
+  if (sawText) return 'String';
+  if (sawReal) return 'Real';
+  if (sawNumber) return 'Integer';
+  return 'String';
+}
+
+/**
+ * 这次写回要用哪些列：**原有列用原定义**（类型与宽度都不漂），新列按值推断。
+ *
+ * 加列 / 改列名时如果直接把 GeoJSON 丢给 ogr2ogr，GDAL 会按值重新猜类型 ——
+ * 一整列都是整数的 Real 列会被写成 Integer（实测）。用 VRT 把类型钉死就没有这个漂移。
+ */
+function fieldTypesForWrite(
+  sourceFields: readonly VrtField[],
+  features: readonly FeatureRecord[],
+): VrtField[] {
+  const present = presentFieldNames(features);
+  // 0 要素：没有值可参照，按原结构整份保留（否则空图层会变成"没有列"）
+  const keepAll = features.length === 0;
+  const seen = new Set<string>();
+  const out: VrtField[] = [];
+  for (const f of sourceFields) {
+    if (seen.has(f.name)) continue;
+    // 有要素但原列不在要素里 → 这一列被改名 / 删掉了，不能再凭空造一个空列
+    if (!keepAll && !present.has(f.name)) continue;
+    seen.add(f.name);
+    out.push(f);
+  }
+  for (const f of features) {
+    for (const key of Object.keys(f.properties)) {
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ name: key, type: inferFieldType(features, key) });
+    }
+  }
+  return out;
+}
+
+/** XML 文本转义（字段名 / 路径里可能有 & < > "）。 */
+function xmlEscape(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+/** ogrinfo 的几何类型名 → OGR VRT 的 wkb 名；认不出来就不钉（交给 GDAL 推断）。 */
+function geometryTypeToWkb(name: string | null): string | null {
+  if (!name) return null;
+  const map: Readonly<Record<string, string>> = {
+    'Point': 'wkbPoint',
+    'Line String': 'wkbLineString',
+    'Polygon': 'wkbPolygon',
+    'Multi Point': 'wkbMultiPoint',
+    'Multi Line String': 'wkbMultiLineString',
+    'Multi Polygon': 'wkbMultiPolygon',
+    'Geometry Collection': 'wkbGeometryCollection',
+  };
+  return map[name] ?? null;
+}
+
+/**
+ * 写一份 OGR VRT，把字段类型（与宽度）钉死，再让 ogr2ogr 从它建目标层。
+ *
+ * `src` 只给**要素里确实有**的字段：像 GML 的 `gml_id` 这种特殊列在源里没有同名属性，
+ * 写 `<Field src="gml_id">` 会让 GDAL 直接报 "Unable to find source field"。
+ */
+function buildSchemaVrt(opts: {
+  readonly vrtPath: string;
+  readonly sourceAbs: string;
+  readonly sourceLayer: string;
+  readonly layerName: string;
+  readonly fields: readonly VrtField[];
+  readonly geometryType: string | null;
+  /** 源要素里实际存在的字段名（0 要素时为空集） */
+  readonly sourceFields: ReadonlySet<string>;
+}): void {
+  const lines = [
+    '<OGRVRTDataSource>',
+    `  <OGRVRTLayer name="${xmlEscape(opts.layerName)}">`,
+    `    <SrcDataSource relativeToVRT="0">${xmlEscape(opts.sourceAbs)}</SrcDataSource>`,
+    `    <SrcLayer>${xmlEscape(opts.sourceLayer)}</SrcLayer>`,
+  ];
+  const wkb = geometryTypeToWkb(opts.geometryType);
+  if (wkb) lines.push(`    <GeometryType>${wkb}</GeometryType>`);
+  for (const f of opts.fields) {
+    const width = f.width ? ` width="${f.width}"` : '';
+    const src = opts.sourceFields.has(f.name) ? ` src="${xmlEscape(f.name)}"` : '';
+    lines.push(
+      `    <Field name="${xmlEscape(f.name)}" type="${xmlEscape(f.type)}"${width}${src}/>`,
+    );
+  }
+  lines.push('  </OGRVRTLayer>', '</OGRVRTDataSource>', '');
+  writeFileSync(opts.vrtPath, lines.join('\n'), 'utf8');
+}
+
+/** 这一批要素里实际出现过哪些字段名。 */
+function presentFieldNames(features: readonly FeatureRecord[]): Set<string> {
+  const names = new Set<string>();
+  for (const f of features) for (const key of Object.keys(f.properties)) names.add(key);
+  return names;
+}
+
+/** 一个图层的几何类型（ogrinfo 的说法，如 “Multi Polygon”）；读不到就是 null。 */
+async function layerGeometryType(
+  loc: GdalLocation,
+  path: string,
+  layerName: string,
+): Promise<string | null> {
+  const res = await tools(loc).ogrInfo(['-ro', '-so', path, layerName]);
+  if (!res.ok) return null;
+  return /^Geometry: (.+)$/m.exec(res.stdout)?.[1]?.trim() ?? null;
+}
+
+/** 探一个 FileGDB 图层的细节（FID/几何列名、字段、坐标系、要素数）。 */
+async function probeGdbLayer(
+  loc: GdalLocation,
+  path: string,
+  layerName: string,
+): Promise<GdbLayerDetail> {
+  const res = await tools(loc).ogrInfo(['-ro', '-so', path, layerName]);
+  if (!res.ok) {
+    throw new VectorError(
+      `读不了这个 FileGDB 的图层「${layerName}」（${basename(path)}）`,
+      res.stderr,
+    );
+  }
+  const info = parseLayerInfo(res.stdout);
+  const srsWkt = info.srsWkt ?? null;
+  return {
+    ...info,
+    name: layerName,
+    layerName,
+    layerNames: [layerName],
+    srsWkt,
+    epsg: srsWkt ? epsgOf(srsWkt) : null,
+    fieldDefs: parseFieldDefs(res.stdout),
+    fidColumn: /^FID Column = (.+)$/m.exec(res.stdout)?.[1]?.trim() ?? null,
+    geometryColumn: /^Geometry Column = (.+)$/m.exec(res.stdout)?.[1]?.trim() ?? null,
+    geometryType: /^Geometry: (.+)$/m.exec(res.stdout)?.[1]?.trim() ?? null,
+  };
+}
+
+/**
+ * 按文件里的存放顺序列出 FileGDB 的所有图层（逐层带上细节）。
+ *
+ * 顺序必须保住：引擎读多图层容器读的是**第一个**图层，
+ * 顺序一变，下次打开读到的就是别的层了。OpenFileGDB 的 `-overwrite`
+ * 会把被替换的层挪到最后（实测），所以这里根本不用它，改成整库重建。
+ */
+async function probeGdbLayers(loc: GdalLocation, path: string): Promise<GdbLayerDetail[]> {
+  const res = await tools(loc).ogrInfo(['-ro', '-so', '-al', path]);
+  if (!res.ok) {
+    throw new VectorError(`读不了这个 FileGDB：${basename(path)}`, res.stderr);
+  }
+  const names = parseLayerSummaries(res.stdout).map((l) => l.name);
+  const out: GdbLayerDetail[] = [];
+  for (const name of names) out.push(await probeGdbLayer(loc, path, name));
+  return out;
+}
+
+/** 字段签名（名字 + 类型），用于核对"别的图层一个字段都没变"。 */
+function fieldSignature(fields: readonly LayerField[]): string {
+  return fields.map((f) => `${f.name}:${f.type}`).join('|');
+}
+
+/**
+ * FileGDB 的占用检测。
+ *
+ * ArcGIS 打开 FileGDB 时会在目录里留 `.lock` 文件；文件在别处被打开时，
+ * Windows 上整目录 rename 也会失败（那时由调用方翻译成"被占用"）。
+ */
+async function assertGdbWritable(store: WorkspaceAdapter, targetRel: string): Promise<void> {
+  let names: string[] = [];
+  try {
+    names = await store.list(targetRel);
+  } catch {
+    names = [];
+  }
+  const locks = names.filter((n) => /\.lock$/i.test(n));
+  if (locks.length > 0) {
+    throw new VectorError(
+      `这个 FileGDB 正在被占用（检测到锁文件：${locks.join('、')}）。` +
+        '可能是 ArcGIS 打开着它，先关掉再改。',
+    );
+  }
+}
+
+/** 把目录 rename 转成读得懂的"被占用"错误。 */
+function gdbRenameError(err: unknown, targetRel: string, what: string): VectorError {
+  const code = (err as NodeJS.ErrnoException | undefined)?.code;
+  if (code === 'EPERM' || code === 'EBUSY' || code === 'EACCES') {
+    return new VectorError(
+      `写回中止：${what}时目录被占用（${targetRel}）。` +
+        '可能是 ArcGIS 或资源管理器正打开着这个 FileGDB，关掉再试。',
+      '',
+      err,
+    );
+  }
+  return new VectorError(
+    `写回中止：${what}失败（${targetRel}）：${(err as Error).message}`,
+    '',
+    err,
+  );
+}
+
+/** 备份目录名：与其它格式同一口径，撞名时补随机后缀。 */
+async function uniqueBackupRel(
+  store: WorkspaceAdapter,
+  targetRel: string,
+  label?: string,
+): Promise<string> {
+  const base = `${targetRel}.bak.${label ?? timestamp()}`;
+  if (!(await store.exists(base))) return base;
+  return `${base}.${randomBytes(3).toString('hex')}`;
+}
+
+/**
+ * 核对重建出来的 FileGDB 与预期一致。
+ *
+ * 三条都是硬要求：
+ *   - 图层顺序原样（顺序变了，引擎下次读到的就是别的层）；
+ *   - 目标层要素数与写进去的一致；
+ *   - 其它图层的要素数、字段名与类型一个不差。
+ */
+function assertGdbRewrite(
+  beforeLayers: readonly GdbLayerDetail[],
+  afterLayers: readonly GdbLayerDetail[],
+  layerName: string,
+  expectedCount: number,
+  srsWkt: string | undefined,
+): void {
+  if (afterLayers.length !== beforeLayers.length) {
+    throw new VectorError(
+      `写回中止：重建出来的 FileGDB 有 ${afterLayers.length} 个图层，原来有 ${beforeLayers.length} 个。`,
+    );
+  }
+  for (let i = 0; i < beforeLayers.length; i += 1) {
+    if (afterLayers[i]!.name !== beforeLayers[i]!.name) {
+      throw new VectorError(
+        `写回中止：图层顺序变了（第 ${i + 1} 层原来是「${beforeLayers[i]!.name}」，` +
+          `现在是「${afterLayers[i]!.name}」）。`,
+      );
+    }
+  }
+  const before = beforeLayers.find((l) => l.name === layerName);
+  const after = afterLayers.find((l) => l.name === layerName);
+  if (!before || !after) {
+    throw new VectorError(`写回中止：重建之后找不到「${layerName}」这一层。`);
+  }
+  if (after.featureCount !== expectedCount) {
+    throw new VectorError(
+      `写回中止：写出来的「${layerName}」有 ${after.featureCount} 个要素，写进去的是 ${expectedCount} 个。`,
+    );
+  }
+  if (before.fields.length > 0 && after.fields.length < before.fields.length) {
+    throw new VectorError(
+      `写回中止：写出来的「${layerName}」只有 ${after.fields.length} 列，原来有 ${before.fields.length} 列 —— 字段定义丢了。`,
+    );
+  }
+  for (const other of beforeLayers) {
+    if (other.name === layerName) continue;
+    const now = afterLayers.find((l) => l.name === other.name);
+    if (!now) {
+      throw new VectorError(`写回中止：「${other.name}」这一层不见了。`);
+    }
+    if (now.featureCount !== other.featureCount) {
+      throw new VectorError(
+        `写回中止：「${other.name}」这一层的要素数从 ${other.featureCount} 变成了 ${now.featureCount}。`,
+      );
+    }
+    if (fieldSignature(now.fields) !== fieldSignature(other.fields)) {
+      throw new VectorError(
+        `写回中止：「${other.name}」这一层的字段变了（名字或类型不一致）。`,
+      );
+    }
+  }
+  const crsOk = srsWkt ? srsMatchesWkt(after, srsWkt) : sameSrs(before, after);
+  if (!crsOk) {
+    throw new VectorError('写回中止：坐标系变了（投影丢了）。');
+  }
+}
+
+/**
+ * 写回一个 FileGDB：**整库重建 + 整目录替换**。
+ *
+ * 为什么不是像 GeoPackage 那样"只动那一层"：OpenFileGDB 的 `-overwrite`
+ * 会把被替换的图层挪到目录末尾（实测），而引擎读的是第一个图层 ——
+ * 顺序一变，下次打开读到的就是别的层。与其写坏，不如重建成一个新目录：
+ *
+ *   1. 按原顺序逐层建进临时目录里的新 .gdb；
+ *      - 目标层：先把"字段定义 + 类型"写成一份 OGR VRT（原有列照原定义、新列按值推断），
+ *        再从 VRT 建层 —— 字段类型与宽度不会因为 GeoJSON 重猜而漂移；
+ *      - 其它层：原样复制（字段、坐标系、FID/几何列名都跟着走）。
+ *   2. 核对层序、要素数、字段；不过就中止，原目录一个字节不动；
+ *   3. 原目录 rename 成备份 → 新目录 rename 到位 → 再核对一次；失败就退回。
+ *
+ * 代价：整库要重写一遍（多图层库比"只改一层"慢）。换来的是层序与类型不漂。
+ */
+async function writeGdbFeatures(
+  loc: GdalLocation,
+  store: WorkspaceAdapter,
+  options: WriteFeaturesOptions,
+  targetRel: string,
+  targetAbs: string,
+): Promise<WriteFeaturesResult> {
+  const gdal = tools(loc);
+  if (!existsSync(targetAbs)) {
+    throw new VectorError(`写回中止：这个 FileGDB 不存在（${targetRel}）`);
+  }
+
+  const beforeLayers = await probeGdbLayers(loc, targetAbs);
+  if (beforeLayers.length === 0) {
+    throw new VectorError(`写回中止：这个 FileGDB 里没有图层可写（${targetRel}）`);
+  }
+  const layerName = options.layerName ?? beforeLayers[0]!.name;
+  if (!beforeLayers.some((l) => l.name === layerName)) {
+    throw new VectorError(
+      `写回中止：这个 FileGDB 里没有「${layerName}」这一层` +
+        `（有：${beforeLayers.map((l) => l.name).join('、')}）`,
+    );
+  }
+  const beforeLayer = beforeLayers.find((l) => l.name === layerName)!;
+
+  await assertGdbWritable(store, targetRel);
+
+  const tempDir = makeTempDir(targetAbs);
+  const buildAbs = join(tempDir, basename(targetAbs));
+  const tempGeoJson = join(tempDir, `input-${randomBytes(6).toString('hex')}.geojson`);
+  const schemaVrt = join(tempDir, 'schema.vrt');
+  try {
+    writeFileSync(tempGeoJson, featuresToGeoJson(options.features), 'utf8');
+    // 用 VRT 把字段类型钉死：原有列照原定义，新列按值推断。
+    // 直接把 GeoJSON 丢给 ogr2ogr 的话，一整列都是整数的 Real 列会被重猜成 Integer。
+    buildSchemaVrt({
+      vrtPath: schemaVrt,
+      sourceAbs: tempGeoJson,
+      sourceLayer: basename(tempGeoJson).replace(/\.[^.]+$/, ''),
+      layerName,
+      fields: fieldTypesForWrite(beforeLayer.fieldDefs, options.features),
+      geometryType: beforeLayer.geometryType,
+      sourceFields: presentFieldNames(options.features),
+    });
+
+    // ── 1) 按原顺序逐层重建 ────────────────────────────────────
+    for (let i = 0; i < beforeLayers.length; i += 1) {
+      const layer = beforeLayers[i]!;
+      const isTarget = layer.name === layerName;
+      // 第一层用 -f 建库，后续层用 -update 追加（不带 -update 会把整库重建成空的）
+      const base = i === 0
+        ? ['-f', 'OpenFileGDB', '-nln', layer.name]
+        : ['-update', '-nln', layer.name];
+      // FID / 几何列名跟原库一致：换名会让外部按列名写的 SQL 失效
+      if (layer.fidColumn) base.push('-lco', `FID=${layer.fidColumn}`);
+      if (layer.geometryColumn) base.push('-lco', `GEOMETRY_NAME=${layer.geometryColumn}`);
+
+      if (isTarget) {
+        // GeoJSON 总是声明成 4326，必须用 -a_srs 把真正的坐标系贴回去
+        const crs = options.srsWkt ?? beforeLayer.srsWkt;
+        const created = await gdal.ogr2ogr([
+          ...base,
+          ...(crs ? ['-a_srs', crs] : []),
+          buildAbs, schemaVrt,
+        ]);
+        if (!created.ok) {
+          throw new VectorError(
+            `写回中止：重建「${layer.name}」失败（${targetRel}）`,
+            created.stderr,
+          );
+        }
+      } else {
+        const res = await gdal.ogr2ogr([...base, buildAbs, targetAbs, layer.name]);
+        if (!res.ok) {
+          throw new VectorError(
+            `写回中止：复制「${layer.name}」这一层失败（${targetRel}）`,
+            res.stderr,
+          );
+        }
+      }
+    }
+
+    // ── 2) 换目录之前先核对新库 ────────────────────────────────
+    const built = await probeGdbLayers(loc, buildAbs);
+    assertGdbRewrite(beforeLayers, built, layerName, options.features.length, options.srsWkt);
+
+    // ── 3) 整目录替换（原目录改名当备份）──────────────────────
+    const backupRel = await uniqueBackupRel(store, targetRel, options.label);
+    try {
+      await store.rename(targetRel, backupRel);
+    } catch (err) {
+      throw gdbRenameError(err, targetRel, '备份原目录');
+    }
+    try {
+      await store.rename(buildAbs, targetRel);
+    } catch (err) {
+      // 新目录进不去：把原目录挪回来，数据回到原样
+      await store.rename(backupRel, targetRel).catch(() => {});
+      throw gdbRenameError(err, targetRel, '把新目录放到目标位置');
+    }
+
+    // ── 4) 落地后再核对一次；不过就从备份退回 ─────────────────
+    try {
+      const finalLayers = await probeGdbLayers(loc, targetAbs);
+      assertGdbRewrite(beforeLayers, finalLayers, layerName, options.features.length, options.srsWkt);
+      const finalTarget = finalLayers.find((l) => l.name === layerName)!;
+      return {
+        backupPath: backupRel,
+        files: [targetRel],
+        removed: [],
+        fieldNames: finalTarget.fields.map((f) => f.name),
+        featureCount: finalTarget.featureCount,
+        layerName,
+      };
+    } catch (err) {
+      try {
+        await store.remove(targetRel);
+        await store.rename(backupRel, targetRel);
+      } catch (rollbackErr) {
+        throw new VectorError(
+          `写回后校验没通过，回滚也失败了：备份在 ${backupRel}，请从备份里手工恢复` +
+            `（${(rollbackErr as Error).message}）`,
+          '',
+          err,
+        );
+      }
+      throw new VectorError(
+        `写回后校验没通过，已经回滚到原样（${targetRel}）：${(err as Error).message}`,
+        '',
+        err,
+      );
+    }
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+/* ────────────────────────────── GML ────────────────────────────── */
+
+/**
+ * 写回一个 GML：**重新生成主文件与 .xsd**，整组替换。
+ *
+ * 为什么不能原地更新：GML 驱动不支持 `-update`（实测：Unable to open existing
+ * output datasource），只能重新 CreateCopy 一份。
+ *
+ * 多图层 GML 直接拒绝：GML 驱动写不出"一个文件里多个图层"，
+ * 强行写只会留下第一层，其余层静默消失。
+ */
+async function writeGmlFeatures(
+  loc: GdalLocation,
+  store: WorkspaceAdapter,
+  options: WriteFeaturesOptions,
+  targetRel: string,
+  targetAbs: string,
+): Promise<WriteFeaturesResult> {
+  const gdal = tools(loc);
+  const existed = existsSync(targetAbs);
+  const sourceInfo = existed ? await probeLayer(loc, targetAbs) : null;
+
+  if (sourceInfo && sourceInfo.layerNames.length > 1) {
+    throw new VectorError(
+      `写回中止：这个 GML 里有 ${sourceInfo.layerNames.length} 个图层` +
+        `（${sourceInfo.layerNames.join('、')}），GML 驱动不能把多个图层写回同一个文件。` +
+        '请先在 GIS 软件里拆成单图层再改。',
+    );
+  }
+  const layerName =
+    options.layerName ?? sourceInfo?.layerName ?? basename(targetAbs).replace(/\.[^.]+$/, '');
+  if (options.layerName && sourceInfo && !sourceInfo.layerNames.includes(options.layerName)) {
+    throw new VectorError(
+      `写回中止：这个 GML 里没有「${options.layerName}」这一层` +
+        `（有：${sourceInfo.layerNames.join('、')}）`,
+    );
+  }
+
+  const tempDir = makeTempDir(targetAbs);
+  try {
+    const geoJson = join(tempDir, `input-${randomBytes(6).toString('hex')}.geojson`);
+    writeFileSync(geoJson, featuresToGeoJson(options.features), 'utf8');
+
+    // 与 GDB 同一条思路：先用 VRT 把字段类型钉死，再让 ogr2ogr 建 GML。
+    // 直接吃 GeoJSON 会把 Integer64 猜成 Integer（实测），XSD 里的类型也跟着变。
+    const schemaVrt = join(tempDir, 'schema.vrt');
+    const geometryType = sourceInfo
+      ? await layerGeometryType(loc, targetAbs, sourceInfo.layerName)
+      : null;
+    buildSchemaVrt({
+      vrtPath: schemaVrt,
+      sourceAbs: geoJson,
+      sourceLayer: basename(geoJson).replace(/\.[^.]+$/, ''),
+      layerName,
+      fields: fieldTypesForWrite(
+        (sourceInfo?.fields ?? []).map((f) => ({ name: f.name, type: f.type })),
+        options.features,
+      ),
+      geometryType,
+      sourceFields: presentFieldNames(options.features),
+    });
+
+    // 与目标同名：.xsd 与 XML 里的 schemaLocation 都按主名派生
+    const outMain = join(tempDir, basename(targetAbs));
+    const args = ['-f', 'GML', '-nln', layerName];
+    if (options.srsWkt) {
+      // 重投影：坐标已经是新坐标系的值，标签也得跟着换
+      args.push('-a_srs', options.srsWkt);
+    } else if (sourceInfo?.srsWkt) {
+      // 只贴标签不重投影：坐标原样搬过去，坐标系标签原样带过去
+      args.push('-a_srs', sourceInfo.srsWkt);
+    }
+    args.push(outMain, schemaVrt);
+
+    const res = await gdal.ogr2ogr(args);
+    if (!res.ok) {
+      throw new VectorError(`写不进去：${targetRel}（GML 生成失败）`, res.stderr);
+    }
+    if (!existsSync(outMain)) {
+      throw new VectorError(`写回失败：转换命令跑完了但没产出文件（${targetRel}）`, res.stderr);
+    }
+    const xsdAbs = outMain.replace(/\.gml$/i, '.xsd');
+    if (!existsSync(xsdAbs)) {
+      throw new VectorError(
+        `写回失败：GML 没有同时产出结构文件 .xsd（${targetRel}）；` +
+          '没有它，有些软件会按"无字段"打开。',
+        res.stderr,
+      );
+    }
+
+    // 换盘之前先核对：要素数、字段定义、坐标系、图层名
+    const after = await probeLayer(loc, outMain);
+    if (after.featureCount !== options.features.length) {
+      throw new VectorError(
+        `写回中止：写出来的 GML 有 ${after.featureCount} 个要素，写进去的是 ${options.features.length} 个。`,
+      );
+    }
+    if (sourceInfo && sourceInfo.fields.length > 0 && after.fields.length < sourceInfo.fields.length) {
+      throw new VectorError(
+        `写回中止：写出来的 GML 只有 ${after.fields.length} 列，原文件有 ${sourceInfo.fields.length} 列 —— 字段定义丢了。`,
+      );
+    }
+    if (after.layerName !== layerName) {
+      throw new VectorError(
+        `写回中止：写出来的图层名是「${after.layerName}」，不是原来的「${layerName}」。`,
+      );
+    }
+    const crsOk = options.srsWkt
+      ? srsMatchesWkt(after, options.srsWkt)
+      : (!sourceInfo || sameSrs(sourceInfo, after));
+    if (!crsOk) {
+      throw new VectorError('写回中止：坐标系变了（投影丢了）。');
+    }
+
+    const produced = [basename(outMain), basename(xsdAbs)];
+    const managed = await existingDataFiles(store, targetRel, 'gml');
+    const { backupPath, files, removed } = await replaceFileGroupAtomically(store, {
+      target: targetRel,
+      tempDir,
+      produced,
+      managed,
+      ...(options.label ? { label: options.label } : {}),
+    });
+
+    return {
+      backupPath,
+      files,
+      removed,
+      fieldNames: after.fields.map((f) => f.name),
+      featureCount: after.featureCount,
+      layerName: after.layerName,
+    };
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
 /**
  * 把一套文件写回目标。
  *
@@ -562,6 +1209,12 @@ export async function writeFeatures(
   const format = options.format ?? formatForPath(targetAbs);
   if (format === 'gpkg') {
     return writeGpkgFeatures(loc, store, options, targetRel, targetAbs);
+  }
+  if (format === 'gdb') {
+    return writeGdbFeatures(loc, store, options, targetRel, targetAbs);
+  }
+  if (format === 'gml') {
+    return writeGmlFeatures(loc, store, options, targetRel, targetAbs);
   }
   const gdal = tools(loc);
 

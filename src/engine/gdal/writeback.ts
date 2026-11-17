@@ -468,7 +468,7 @@ function normRel(path: string): string {
 export async function replaceFileGroupAtomically(
   store: WorkspaceAdapter,
   req: FileGroupReplaceRequest,
-): Promise<{ backupPath: string | null; files: string[] }> {
+): Promise<{ backupPath: string | null; files: string[]; removed: string[] }> {
   if ((req.mode ?? 'replace') === 'copy') {
     return replaceFileGroupCopy(store, req);
   }
@@ -527,6 +527,7 @@ export async function replaceFileGroupAtomically(
   }
 
   // 3) 清掉这一轮没再产生的旧文件：旧 .hdr/.prj/.ovr 留着会指向旧内容
+  const removed: string[] = [];
   for (const rel of req.managed) {
     if (rel === targetRel || producedRel.includes(rel)) continue;
     // .aux.xml 可能是用户或别的软件写进去的元数据（AREA_OR_POINT、统计、来源信息）：
@@ -534,12 +535,13 @@ export async function replaceFileGroupAtomically(
     if (rel.toLowerCase().endsWith('.aux.xml')) continue;
     try {
       await store.remove(rel);
+      removed.push(rel);
     } catch {
       // 清不掉不算写回失败：它是旧的派生文件，不影响新数据能不能打开
     }
   }
 
-  return { backupPath: backupRel, files: producedRel };
+  return { backupPath: backupRel, files: producedRel, removed };
 }
 
 /**
@@ -551,7 +553,7 @@ export async function replaceFileGroupAtomically(
 async function replaceFileGroupCopy(
   store: WorkspaceAdapter,
   req: FileGroupReplaceRequest,
-): Promise<{ backupPath: null; files: string[] }> {
+): Promise<{ backupPath: null; files: string[]; removed: string[] }> {
   const { outputRel } = assertCopyTarget(store, req.target, req.outputPath);
   const outNorm = normRel(outputRel);
   const outName = outNorm.slice(outNorm.lastIndexOf('/') + 1);
@@ -570,7 +572,7 @@ async function replaceFileGroupCopy(
     await store.rename(join(req.tempDir, name), rel);
     files.push(rel);
   }
-  return { backupPath: null, files };
+  return { backupPath: null, files, removed: [] };
 }
 
 /**
