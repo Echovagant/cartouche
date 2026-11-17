@@ -310,6 +310,43 @@ test('GML：沿用源文件的命名空间与前缀', async () => {
   }
 });
 
+test('KML：改属性/删要素后，幸存要素的样式按 id 保留', async () => {
+  const { dir, store } = setup();
+  try {
+    // 造一个带样式的 KML 夹具：OGR_STYLE 会被 LIBKML 写成每条要素的样式
+    const styled = join(dir, 'styled.geojson');
+    writeFileSync(styled, JSON.stringify({
+      type: 'FeatureCollection',
+      features: [
+        { type: 'Feature', properties: { NAME: 'A', OGR_STYLE: 'PEN(c:#FF0000FF)' }, geometry: { type: 'Point', coordinates: [116.4, 39.9] } },
+        { type: 'Feature', properties: { NAME: 'B', OGR_STYLE: 'PEN(c:#00FF00FF)' }, geometry: { type: 'Point', coordinates: [121.5, 31.2] } },
+      ],
+    }), 'utf8');
+    const kml = join(dir, 'styled.kml');
+    await ogr(['-f', 'LIBKML', '-nln', 'cities', kml, styled]);
+    assert.equal((readFileSync(kml, 'utf8').match(/<Style>/g) ?? []).length, 2);
+
+    // 改属性：两条要素的样式都还在
+    const read = (await readFeatures(loc, { path: kml })).features;
+    await writeFeatures(loc, store, {
+      target: 'styled.kml',
+      features: read.map((f) => ({ ...f, properties: { ...f.properties, NAME: `${f.properties.NAME}-改` } })),
+    });
+    let xml = readFileSync(kml, 'utf8');
+    assert.equal((xml.match(/<Style>/g) ?? []).length, 2, '改属性后样式不能丢');
+    assert.ok(xml.includes('ff0000ff') && xml.includes('ff00ff00'), '两条要素的颜色都要保留');
+    assert.ok(xml.includes('-改'), '属性要真的写进去');
+
+    // 删一条：幸存那一条的样式保留
+    const again = (await readFeatures(loc, { path: kml })).features;
+    await writeFeatures(loc, store, { target: 'styled.kml', features: again.slice(0, 1) });
+    xml = readFileSync(kml, 'utf8');
+    assert.equal((xml.match(/<Style>/g) ?? []).length, 1, '删要素后幸存要素的样式要保留');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('KML：0 要素写回明确拒绝（KML 没有表结构可保）', async () => {
   const { dir, store, geojson } = setup();
   try {

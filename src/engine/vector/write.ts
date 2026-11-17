@@ -684,6 +684,11 @@ function xmlEscape(text: string): string {
     .replace(/"/g, '&quot;');
 }
 
+/** SQL 标识符加引号（图层名 / 列名里可能有空格或引号）。 */
+function sqlIdent(name: string): string {
+  return `"${name.replace(/"/g, '""')}"`;
+}
+
 /** ogrinfo 的几何类型名 → OGR VRT 的 wkb 名；认不出来就不钉（交给 GDAL 推断）。 */
 function geometryTypeToWkb(name: string | null): string | null {
   if (!name) return null;
@@ -1245,6 +1250,42 @@ async function writeGmlFeatures(
 /* ────────────────────────────── KML ────────────────────────────── */
 
 /**
+ * 读源 KML 每个要素的样式：id → OGR_STYLE。
+ *
+ * 用 `-nlt NONE` 只导出属性、不带几何：1420 个面的 KML，带几何要 2.4MB，
+ * 不带几何只要 150KB（实测）。读不到就返回空表，样式退回默认，不影响数据写回。
+ */
+async function readKmlStyles(
+  loc: GdalLocation,
+  path: string,
+  layerName: string,
+  tempDir: string,
+): Promise<Map<string, string>> {
+  const out = join(tempDir, `styles-${randomBytes(4).toString('hex')}.geojson`);
+  const res = await tools(loc).ogr2ogr([
+    '-f', 'GeoJSON', '-nlt', 'NONE', out, path,
+    '-sql', `SELECT "id", OGR_STYLE FROM ${sqlIdent(layerName)}`,
+  ]);
+  const styles = new Map<string, string>();
+  if (!res.ok || !existsSync(out)) return styles;
+  try {
+    const json = JSON.parse(readFileSync(out, 'utf8')) as {
+      features?: { properties?: Record<string, unknown> }[];
+    };
+    for (const feature of json.features ?? []) {
+      const id = feature.properties?.id;
+      const style = feature.properties?.OGR_STYLE;
+      if (typeof id === 'string' && typeof style === 'string' && style !== '') {
+        styles.set(id, style);
+      }
+    }
+  } catch {
+    // 样式是锦上添花：解析失败就按默认样式写
+  }
+  return styles;
+}
+
+/**
  * 写回一个 KML：重新生成单文件，**多图层按原顺序重建**。
  *
  * 约束来自 KML 规范与 LIBKML 驱动的行为，不是我们的取舍：
@@ -1253,7 +1294,8 @@ async function writeGmlFeatures(
  *  - **0 要素**：KML 没有独立表结构，写空会丢全部字段定义，直接拒绝。
  *  - 属性列与 KML 内置字段（Name / description …）重名时，驱动会自动加后缀
  *    （实测 NAME → NAME2）—— 值不丢，但列名会变，这是 KML 的结构决定的。
- *  - 被改的那一层样式按默认重写；**没改的层原样从源 KML 复制**（样式跟着走）。
+ *  - 被改的那一层样式**按要素 id 从源 KML 带回**（改属性/改节点后颜色线宽不变）；
+ *    新增要素没有原样式，按默认样式写。没改的层原样从源 KML 复制（样式跟着走）。
  */
 async function writeKmlFeatures(
   loc: GdalLocation,
@@ -1294,8 +1336,21 @@ async function writeKmlFeatures(
 
   const tempDir = makeTempDir(targetAbs);
   try {
+    // 按要素 id 把源 KML 的样式带回来：改属性/改节点后颜色线宽不变；新要素用默认
+    let featuresForWrite = options.features;
+    if (targetBefore && targetBefore.fieldDefs.some((f) => f.name.toLowerCase() === 'id')) {
+      const styles = await readKmlStyles(loc, targetAbs, layerName, tempDir);
+      if (styles.size > 0) {
+        featuresForWrite = options.features.map((f) => {
+          const id = f.properties.id;
+          const style = typeof id === 'string' ? styles.get(id) : undefined;
+          return style ? { ...f, properties: { ...f.properties, OGR_STYLE: style } } : f;
+        });
+      }
+    }
+
     const geoJson = join(tempDir, `input-${randomBytes(6).toString('hex')}.geojson`);
-    writeFileSync(geoJson, featuresToGeoJson(options.features), 'utf8');
+    writeFileSync(geoJson, featuresToGeoJson(featuresForWrite), 'utf8');
 
     // 与 GML/GDB 同一条思路：VRT 钉住字段类型，再由 LIBKML 建 KML
     const schemaVrt = join(tempDir, 'schema.vrt');
@@ -1306,12 +1361,12 @@ async function writeKmlFeatures(
       layerName,
       fields: fieldTypesForWrite(
         targetBefore?.fieldDefs ?? [],
-        options.features,
+        featuresForWrite,
         options.dropFieldNames,
       ),
       // KML 读出来是 "Unknown (any)"，钉不住；交给要素自己推断
       geometryType: null,
-      sourceFields: presentFieldNames(options.features),
+      sourceFields: presentFieldNames(featuresForWrite),
     });
 
     const outMain = join(tempDir, basename(targetAbs));
