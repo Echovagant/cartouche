@@ -35,6 +35,7 @@ import { runVectorSpatialJoin } from '../vector/spatial-join.ts';
 import { runVectorReproject } from '../vector/reproject.ts';
 import { runVectorRenameFields } from '../vector/rename-fields.ts';
 import { runVectorRecode } from '../vector/recode.ts';
+import { runVectorReclassify } from '../vector/reclassify.ts';
 import {
   runFeatureSetAttributes,
   runFeatureDelete,
@@ -318,7 +319,7 @@ const DATA_SIDECAR_SUFFIXES: readonly string[] = [
 /**
  * 已实现的 op。
  *
- * 这里只登记**引擎里真的能跑**的。schema 里的 26 个 op 里，
+ * 这里只登记**引擎里真的能跑**的。schema 里的 27 个 op 里，
  * 几何写回类（feature.create / feature.editGeometry / vector.repairGeometry
  * 与 vector.overlay）尚未实现；export.* 的两个（出图 / 出报告）
  * 在这里落地 —— 它们**不改像元**，产出的是文件，走的是非栅格型结果那条路。
@@ -674,6 +675,13 @@ const IMPLEMENTED: Readonly<Record<string, OpHandler>> = {
     countsChangedPixels: false,
     run: async (_editor, params, dryRun, deps) =>
       runVectorRecode(params, { loc: deps.loc, store: deps.store }, dryRun),
+  },
+  'vector.reclassify': {
+    label: '值重编码',
+    previewable: true,
+    countsChangedPixels: false,
+    run: async (_editor, params, dryRun, deps) =>
+      runVectorReclassify(params, { loc: deps.loc, store: deps.store }, dryRun),
   },
   'feature.setAttributes': {
     label: '按条件改属性',

@@ -738,6 +738,7 @@ const OP_LABELS: Readonly<Record<string, string>> = {
   'vector.reproject': '重投影',
   'vector.renameFields': '重命名字段',
   'vector.recode': '重编码',
+  'vector.reclassify': '值重编码',
 };
 
 /**

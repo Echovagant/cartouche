@@ -110,6 +110,7 @@
             "vector.repairGeometry",
             "vector.renameFields",
             "vector.recode",
+            "vector.reclassify",
             "vector.reproject",
             "vector.overlay",
             "vector.query",
@@ -167,6 +168,7 @@
         { "if": { "properties": { "op": { "const": "vector.repairGeometry" } }, "required": ["op"] }, "then": { "properties": { "params": { "$ref": "#/$defs/params.vector.repairGeometry" } } } },
         { "if": { "properties": { "op": { "const": "vector.renameFields" } }, "required": ["op"] }, "then": { "properties": { "params": { "$ref": "#/$defs/params.vector.renameFields" } } } },
         { "if": { "properties": { "op": { "const": "vector.recode" } }, "required": ["op"] }, "then": { "properties": { "params": { "$ref": "#/$defs/params.vector.recode" } } } },
+        { "if": { "properties": { "op": { "const": "vector.reclassify" } }, "required": ["op"] }, "then": { "properties": { "params": { "$ref": "#/$defs/params.vector.reclassify" } } } },
         { "if": { "properties": { "op": { "const": "vector.reproject" } }, "required": ["op"] }, "then": { "properties": { "params": { "$ref": "#/$defs/params.vector.reproject" } } } },
         { "if": { "properties": { "op": { "const": "vector.overlay" } }, "required": ["op"] }, "then": { "properties": { "params": { "$ref": "#/$defs/params.vector.overlay" } } } },
         { "if": { "properties": { "op": { "const": "vector.query" } }, "required": ["op"] }, "then": { "properties": { "params": { "$ref": "#/$defs/params.vector.query" } } } },
@@ -446,6 +448,32 @@
         "from": { "type": "string", "enum": ["GBK", "UTF-8", "LATIN1", "auto"], "default": "auto" },
         "to": { "type": "string", "enum": ["GBK", "UTF-8", "LATIN1"] },
         "writeEncodingMarker": { "type": "boolean", "default": true, "description": "写 .cpg 文件，Shapefile 必须有它否则下次打开又乱码" }
+      }
+    },
+    "params.vector.reclassify": {
+      "type": "object",
+      "required": ["target", "field", "mapping"],
+      "additionalProperties": false,
+      "properties": {
+        "target": { "$ref": "#/$defs/layerRef" },
+        "field": { "type": "string", "description": "要按对照表改值的字段名" },
+        "mapping": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["from", "to"],
+            "additionalProperties": false,
+            "properties": {
+              "from": { "type": ["string", "number", "boolean", "null"], "description": "原值；类型严格匹配（数字 1 与文字 \"1\" 不是一回事）" },
+              "to": { "type": ["string", "number", "boolean", "null"], "description": "新值" }
+            }
+          },
+          "description": "对照表：[{ from: \"A\", to: 1 }, …]"
+        },
+        "outputField": { "type": "string", "description": "写进新列；不给就就地改（就地改要求新值能写进原列类型）" },
+        "outputType": { "type": "string", "enum": ["auto", "string", "number"], "default": "auto", "description": "新列类型；auto 按所有非空新值推断" },
+        "unmatched": { "type": "string", "enum": ["keep", "null", "error"], "default": "keep", "description": "不在对照表里的值：保留原值 / 置空 / 整单拒绝" }
       }
     },
     "params.vector.reproject": {

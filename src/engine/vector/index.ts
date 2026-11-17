@@ -28,6 +28,7 @@ export { runVectorSpatialJoin } from './spatial-join.ts';
 export { runVectorReproject } from './reproject.ts';
 export { runVectorRenameFields } from './rename-fields.ts';
 export { runVectorRecode } from './recode.ts';
+export { runVectorReclassify } from './reclassify.ts';
 export type { VectorOpDeps } from './query.ts';
 
 export {
