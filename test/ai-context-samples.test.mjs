@@ -65,6 +65,11 @@ test('样本值：矢量层的字段会带上真实出现过的值（去重、�
       '整列为空时不能给一个空样本数组',
     );
     assert.equal(layer?.featureCount, 2);
+    assert.deepEqual(
+      layer?.extent,
+      [120.3, 30.5, 120.31, 30.51],
+      '图层范围要由 GDAL 探出来，模型才能换算「右上角/对应范围」',
+    );
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

@@ -54,6 +54,8 @@ export interface RasterInfo {
   readonly geotransform: number[] | null;
   readonly origin: [number, number] | null;
   readonly pixelSize: [number, number] | null;
+  /** 地理范围 [minX,minY,maxX,maxY]（图层坐标系）；仿射参数缺失或非法时为 null */
+  readonly extent: [number, number, number, number] | null;
   readonly nodata: number | null;
   /** 存在但 GDAL 未必会读的世界文件 */
   readonly sidecars: {
@@ -84,6 +86,8 @@ export interface VectorInfo {
   readonly crs: CrsInfo;
   readonly fields: VectorFieldInfo[];
   readonly geometryType: string | null;
+  /** 地理范围 [minX,minY,maxX,maxY]（图层坐标系）；GDAL 不给时为 null */
+  readonly extent: [number, number, number, number] | null;
   readonly encoding: string | null;
   readonly sidecars: {
     readonly prj: string | null;
@@ -222,6 +226,40 @@ function parseCrs(raw: unknown, source: CrsInfo['source']): CrsInfo {
   };
 }
 
+/**
+ * 从仿射参数推栅格范围。
+ *
+ * 用四角求包围盒，而不是只乘宽高：带旋转项的栅格（rasterXSize × geotransform）
+ * 只按像素宽/高推会得到错的包围盒。参数不全或不是有限数就返回 null ——
+ * 宁可说"不知道范围"，也不给一个会让人框错区域的数字。
+ */
+function affineExtent(
+  gt: readonly number[] | null,
+  width: number,
+  height: number,
+): [number, number, number, number] | null {
+  if (!gt || gt.length < 6) return null;
+  const ox = gt[0];
+  const pw = gt[1];
+  const rx = gt[2];
+  const oy = gt[3];
+  const ry = gt[4];
+  const sh = gt[5];
+  const nums = [ox, pw, rx, oy, ry, sh, width, height];
+  if (!nums.every((n) => typeof n === 'number' && Number.isFinite(n))) return null;
+  const xs = [ox!, ox! + pw! * width, ox! + rx! * height, ox! + pw! * width + rx! * height];
+  const ys = [oy!, oy! + ry! * width, oy! + sh! * height, oy! + ry! * width + sh! * height];
+  return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
+}
+
+/** 把 GDAL 给的 extent（4 个数字）收窄成可用的范围；不合法返回 null。 */
+function numericExtent(raw: unknown): [number, number, number, number] | null {
+  if (!Array.isArray(raw) || raw.length < 4) return null;
+  const nums = raw.slice(0, 4).map((v) => Number(v));
+  if (!nums.every((n) => Number.isFinite(n))) return null;
+  return [nums[0]!, nums[1]!, nums[2]!, nums[3]!];
+}
+
 /** 探查一个数据集，先按栅格试，失败再按矢量试。 */
 export async function probeDataset(
   loc: GdalLocation,
@@ -259,6 +297,7 @@ export async function probeDataset(
           geotransform: gt,
           origin: gt && gt.length >= 6 ? [gt[0] ?? 0, gt[3] ?? 0] : null,
           pixelSize: gt && gt.length >= 6 ? [gt[1] ?? 0, gt[5] ?? 0] : null,
+          extent: affineExtent(gt, size[0], size[1]),
           nodata,
           sidecars: {
             worldFile: sidecars.worldFile,
@@ -303,6 +342,7 @@ export async function probeDataset(
             crs,
             fields,
             geometryType: geomFields[0] ? String(geomFields[0].type ?? '') : null,
+            extent: numericExtent(geomFields[0]?.extent),
             encoding: sidecars.cpg ? await readCpg(sidecars.cpg) : null,
             sidecars: { prj: sidecars.prj, cpg: sidecars.cpg },
           },

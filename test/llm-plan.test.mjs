@@ -121,9 +121,10 @@ test('上下文裁剪：只保留白名单字段，多余的一个都不许留�
   assert.equal(ctx.activeLayerId, null, '没有选中图层时必须是 null，不能编一个');
   assert.deepEqual(
     Object.keys(ctx.layers[0] ?? {}).sort(),
-    ['crs', 'featureCount', 'fields', 'id', 'kind', 'opacity', 'path', 'visible'],
+    ['crs', 'extent', 'featureCount', 'fields', 'id', 'kind', 'opacity', 'path', 'visible'],
     '图层只应有白名单里的字段',
   );
+  assert.equal(ctx.layers[0]?.extent, null, '没给范围时必须是 null，不能编一个');
   assert.deepEqual(
     Object.keys(ctx.layers[0]?.fields?.[0] ?? {}).sort(),
     ['name', 'type'],
@@ -192,6 +193,21 @@ test('指代：选中图层在上下文里标成 active，不存在的 id 当没
   assert.ok(bogus.layers.every((l) => l.active === undefined), '不能凭一个不存在的 id 标记 active');
 });
 
+test('图层范围：只收 4 个有限数字，非法一律当不知道', () => {
+  const ctx = buildPlanContext({
+    layers: [
+      { id: 'a', kind: 'raster', path: 'a.tif', visible: true, extent: [1, 2, 3, 4] },
+      { id: 'b', kind: 'raster', path: 'b.tif', visible: true, extent: [1, 2, 'x', 4] },
+      { id: 'c', kind: 'raster', path: 'c.tif', visible: true, extent: [1, 2, 3] },
+      { id: 'd', kind: 'raster', path: 'd.tif', visible: true },
+    ],
+  });
+  assert.deepEqual(ctx.layers[0]?.extent, [1, 2, 3, 4]);
+  assert.equal(ctx.layers[1]?.extent, null, '非数字不能当范围');
+  assert.equal(ctx.layers[2]?.extent, null, '不足 4 个不能当范围');
+  assert.equal(ctx.layers[3]?.extent, null, '没给就是 null');
+});
+
 test('字段样本：去重、截断、丢掉空值和非标量', () => {
   const ctx = buildPlanContext({
     layers: [
@@ -227,6 +243,11 @@ test('提示词：要把「这一层」的指代与字段样本讲给模型', ()
   });
   assert.match(prompt, /activeLayerId/, '要告诉模型用 activeLayerId 解指代');
   assert.match(prompt, /samples/, '要告诉模型字段样本是真实出现过的值');
+  assert.match(prompt, /extent/, '要告诉模型用 extent 换算「右上角/对应范围」');
+  assert.match(prompt, /重叠/, '两个图层的对应范围要按交集算');
+  assert.match(prompt, /10 字节/, 'Shapefile 的字段名上限要讲给模型');
+  assert.match(prompt, /样本里没有这个值/, '值对不上样本时要请用户确认，不许交空跑计划');
+  assert.match(prompt, /只能填上下文 layers 里出现过的 path/, '输入路径必须来自图层清单，不能编');
 });
 
 test('提示词：发出去的内容里没有白名单之外的字段', () => {
@@ -525,6 +546,22 @@ test('模型回话：能抠出 JSON，抠不出就明说', () => {
   assert.match(garbage.ok ? '' : garbage.message, /不是可解析的 JSON/);
 });
 
+test('模型回话：先剥掉 <think>，推理里的 JSON 不能当成答案', () => {
+  // MiniMax-M3 会把推理写在 content 里，推理中还会先写一遍 JSON ——
+  // 不剥掉就会把整段思考当成回答（实测 10/27 条因此失败）。
+  const withThink = parsePlanReply(
+    '<think>先写一遍 {"version":"0.9","ops":["错的"]} 再说</think>\n{"version":"1.0","ops":[]}',
+  );
+  assert.equal(withThink.ok, true);
+  assert.equal(withThink.ok ? withThink.value.version : '', '1.0', '要取 think 之后的那份');
+
+  const thinkingTag = parsePlanReply('<thinking>想一想</thinking>{"version":"1.0","ops":[]}');
+  assert.equal(thinkingTag.ok, true, '<thinking> 变体也要剥');
+
+  const unclosed = parsePlanReply('<think>只有思考，没有答案');
+  assert.equal(unclosed.ok, false, '没闭合的思考不能当 JSON');
+});
+
 test('端到端（假模型）：合法计划 → 闸门①②的结论 + 上下文预览一起回来', async () => {
   const res = await createPlan({
     prompt: '把底图提亮一点',
@@ -699,6 +736,26 @@ test('端到端（假模型）：空计划但明说「尚未支持」→ 判成�
   assert.equal(res.ok, false);
   assert.equal(res.error, 'op_not_supported');
   assert.match(res.message ?? '', /尚未支持/);
+});
+
+test('端到端（假模型）：既说「样本里没有」又说「尚未支持」→ 按澄清处理', async () => {
+  // 老一些的模型会把「样本里没有这个值」写成「该操作尚未支持直接匹配……」。
+  // 用户该补的是信息，不是换功能 —— 不能误报成 op_not_supported。
+  const res = await createPlan({
+    prompt: '把地类里的园地改成 03',
+    context: RAW_CONTEXT,
+    fetchImpl: fakeChat(
+      JSON.stringify({
+        version: '1.0',
+        intent:
+          '“地类”字段的样本值中没有“园地”，请确认是否写错了；该操作尚未支持直接匹配未出现在样本中的旧值。',
+        ops: [],
+      }),
+    ),
+  });
+  assert.equal(res.ok, false);
+  assert.equal(res.error, 'plan_needs_clarification');
+  assert.match(res.message ?? '', /园地/);
 });
 
 test('端到端（假模型）：请求了还没做的 op → 明确说「该操作尚未支持」', async () => {

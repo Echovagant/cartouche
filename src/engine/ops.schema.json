@@ -282,7 +282,7 @@
         "bbox": { "$ref": "#/$defs/bbox", "description": "地理范围裁切（目标图层坐标系）" }
       },
       "anyOf": [{ "required": ["clip"] }, { "required": ["bbox"] }],
-      "description": "target 必填；clip 与 bbox 至少给一个——都不给引擎会明确报错，不会空跑一遍"
+      "description": "target 必填；clip 与 bbox 至少给一个——都不给引擎会明确报错，不会空跑一遍。注意：**就地裁小 target 本身**，没有另存参数；要保留原图请先复制一份"
     },
     "params.raster.mosaic": {
       "type": "object",
@@ -436,7 +436,7 @@
       "additionalProperties": false,
       "properties": {
         "target": { "$ref": "#/$defs/layerRef" },
-        "mapping": { "type": "object", "description": "旧字段名 → 新字段名" }
+        "mapping": { "type": "object", "description": "旧字段名 → 新字段名（Shapefile 的新名有 10 字节上限，UTF-8 下最多 3 个汉字）" }
       }
     },
     "params.vector.recode": {
@@ -471,7 +471,7 @@
           },
           "description": "对照表：[{ from: \"A\", to: 1 }, …]"
         },
-        "outputField": { "type": "string", "description": "写进新列；不给就就地改（就地改要求新值能写进原列类型）" },
+        "outputField": { "type": "string", "description": "写进新列；不给就就地改（就地改要求新值能写进原列类型）。新列名在 Shapefile 下同样受 10 字节限制" },
         "outputType": { "type": "string", "enum": ["auto", "string", "number"], "default": "auto", "description": "新列类型；auto 按所有非空新值推断" },
         "unmatched": { "type": "string", "enum": ["keep", "null", "error"], "default": "keep", "description": "不在对照表里的值：保留原值 / 置空 / 整单拒绝" }
       }
@@ -517,7 +517,7 @@
       "additionalProperties": false,
       "properties": {
         "target": { "$ref": "#/$defs/pathRef" },
-        "name": { "type": "string", "maxLength": 63, "description": "新字段名（Shapefile 的字段名限 10 字符，超了会明确报错）" },
+        "name": { "type": "string", "maxLength": 63, "description": "新字段名（Shapefile 的字段名限 10 字节，UTF-8 编码下最多 3 个汉字，超了会明确报错）" },
         "expression": { "type": "string", "maxLength": 500, "description": "取值表达式：只能用图层里真实存在的列、面积伪列 AREA（要素面积，按平方米；图层须为投影坐标系；点/线要素没有面积）以及函数 UPPER/LOWER/TRIM/LENGTH/ROUND/ABS/COALESCE/CONCAT。经纬度图层要先用 vector.reproject 投影再算 AREA；只要汇总面积可用 feature.summarize。" },
         "where": { "type": "string", "maxLength": 500, "description": "只对符合条件的要素赋值，其余留空" }
       }
@@ -532,7 +532,7 @@
         "relation": { "enum": ["within", "intersects", "contains"], "description": "within = 目标完全落在源内部；intersects = 有交集即可；contains = 源完全落在目标内部（与 within 反向）" },
         "aggregate": { "enum": ["first", "count", "sum", "mean"], "default": "first", "description": "汇总方式。count 给匹配到的源要素条数；sum/mean 只对数值字段生效" },
         "fields": { "type": "array", "items": { "type": "string" }, "description": "参与汇总的源字段；不给就全部数值字段" },
-        "fieldPrefix": { "type": "string", "maxLength": 32, "description": "汇总字段名前缀。不给就用源字段名 —— 此时写回目标图层若已存在同名字段会明确报错，不会静默覆盖" }
+        "fieldPrefix": { "type": "string", "maxLength": 32, "description": "汇总字段名前缀。Shapefile 下「前缀 + 字段名」合计限 10 字节（UTF-8 下最多 3 个汉字），超了会明确报错；不给就用源字段名 —— 此时写回目标图层若已存在同名字段会明确报错，不会静默覆盖" }
       }
     },
     "params.export.image": {

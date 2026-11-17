@@ -42,8 +42,9 @@ import { currentProviderId, resolveCredentials, scrub } from './llm.ts';
  *
  * 依据 docs/01 §4.4「最小必要披露」：
  *   允许发送 —— 图层名 / 字段名 / 字段类型 / 要素数量 / 当前选中图层 /
- *                每列最多 4 个去重后的取值样本（只从前 50 条要素里取）/
- *                视窗内要素（几何简化 + 关键属性）/ 坐标系标识 / 用户提示词；
+ *                图层范围（4 个数字）/ 每列最多 4 个去重后的取值样本
+ *                （只从前 50 条要素里取）/ 视窗内要素（几何简化 + 关键属性）/
+ *                坐标系标识 / 用户提示词；
  *   禁止发送 —— 整个数据文件 / 全量要素 / 与任务无关的图层与字段 /
  *                文件系统路径 / 用户名 / 机器信息。
  *
@@ -104,6 +105,13 @@ export interface PlanLayerContext {
   readonly kind: 'raster' | 'vector';
   /** 项目内相对路径（不含盘符、不含 `..`） */
   readonly path: string;
+  /**
+   * 图层地理范围 [minX, minY, maxX, maxY]（与图层同一坐标系）。
+   *
+   * 为什么要给：用户说「右上角那块」「对应范围」时，模型得有一个可换算的框；
+   * 没有它就只能反问，或者瞎写一个 bbox。探测不到时为 null（不猜）。
+   */
+  readonly extent: readonly number[] | null;
   /** 该层当前是否可见（不可见的层不带要素） */
   readonly visible: boolean;
   /** 是否是用户当前选中的那一层（「这一层」指的就是它） */
@@ -179,6 +187,7 @@ function buildLayers(raw: unknown): PlanLayerContext[] {
       id,
       kind: item['kind'] === 'vector' ? 'vector' : 'raster',
       path,
+      extent: buildExtent(item['extent']),
       visible: item['visible'] === false ? false : true,
       opacity: clamp01(number(item['opacity'], 1)),
       fields: buildFields(item['fields']),
@@ -284,6 +293,14 @@ function buildProperties(raw: unknown): Record<string, string | number | boolean
 }
 
 function buildViewport(raw: unknown): readonly number[] | null {
+  if (!Array.isArray(raw) || raw.length !== 4) return null;
+  const nums = raw.map((v) => Number(v));
+  if (!nums.every((n) => Number.isFinite(n))) return null;
+  return nums;
+}
+
+/** 图层范围：只收 4 个有限数字，其余一律当"不知道" */
+function buildExtent(raw: unknown): readonly number[] | null {
   if (!Array.isArray(raw) || raw.length !== 4) return null;
   const nums = raw.map((v) => Number(v));
   if (!nums.every((n) => Number.isFinite(n))) return null;
@@ -823,8 +840,8 @@ const OP_USAGE: Readonly<Record<string, string>> = {
   'raster.erase': '把一块区域擦掉；有干净底图时用底图填，没有就边界内插',
   'raster.replaceRegion': '把一张图的一块区域换成另一张图同一区域的内容',
   'raster.inpaint': '抹掉小块内容后自动补边界，让它看不出被改过',
-  'raster.adjustLevels': '整体提亮/压暗、加对比或做伽马校正（改整张图的色调）',
-  'raster.clip': '按矢量范围或地理范围把影像裁小',
+  'raster.adjustLevels': '整体提亮/压暗、加对比或做伽马校正（只改整张图，没有区域参数；局部提亮目前做不到）',
+  'raster.clip': '按矢量范围或地理范围把目标影像就地裁小（没有另存参数；要保留原图先复制）',
   'raster.resample': '改像元大小（重采样到指定分辨率）',
   'raster.mosaic': '把多张影像按地理位置拼成一张',
   'vector.query': '按条件查要素，只出结果表，不改文件',
@@ -1125,7 +1142,7 @@ export function buildPlanPrompt(input: {
     '   用户的要求里缺少必要信息时也一样（没说清是哪一列、哪个图层、哪个文件）：',
     '   把 ops 写成空数组，并在 intent 里写明缺什么 —— 不要猜。',
     '3. 计划格式固定为：{"version":"1.0","intent":"一句话说明要做什么","ops":[{"op":"...","params":{...}}]}',
-    '   （例外：一句话里有好几件事时，先按第 11 条只输出步骤清单，不要输出 ops。）',
+    '   （例外：一句话里有好几件事时，先按第 13 条只输出步骤清单，不要输出 ops。）',
     '4. params 必须严格符合该 op 的参数契约：字段名照抄契约，多余字段一律不给，',
     '   必填字段不能少。',
     '5. 路径类参数（target / source / clip / output / mosaic 的 inputs）只能写成',
@@ -1133,6 +1150,9 @@ export function buildPlanPrompt(input: {
     '   引擎只认这一种：图层标识 "layer://<图层 id>" 不是文件路径，引擎会直接拒掉，',
     '   写它等于把一条跑不动的计划交上来。',
     '   裸路径（"底图/current.tff"）不符合契约，会被第一道闸门直接拒掉。',
+    '   输入类参数（target / source / clip）只能填上下文 layers 里出现过的 path；',
+    '   用户点名一个不在清单里的文件时，不要出计划——请用户先确认文件名或把它加载进项目。',
+    '   只有 output（另存为新文件）可以写一个当前不存在的新路径。',
     '   不要写盘符路径、绝对路径或任何本机信息。',
     '6. region（要改动的区域）**不是**引用，只能是下面两种形状之一：',
     '   ① 像元坐标对象 {"minX":4,"minY":3,"maxX":10,"maxY":8}：左上角为原点，maxX/maxY 不含；',
@@ -1145,9 +1165,19 @@ export function buildPlanPrompt(input: {
     '   它同时也会在 layers 里标注 active=true。用户没点名图层时优先用它。',
     '   activeLayerId 为 null 且有多个可见层时，不要猜，把 ops 写成空数组并请用户指明是哪一层。',
     '10. fields[].samples 是这一列**真实出现过的值**（只取了前几十条的样本，不是全部）。',
-    '   用户提到的旧值要先在 samples 里对上（如「耕地」）；对不上就照用户原话写，但不要编',
-    '   一个样本里没出现过的编码/类别。',
-    '11. 先判断这件事一步能不能做完：',
+    '   用户提到的旧值（要匹配、替换、筛选的值）要先在 samples 里对上（如「耕地」）。',
+    '   对不上就不要出计划：把 ops 写成空数组，在 intent 里写明「样本里没有这个值，',
+    '   请确认是不是写错了」——不要交一份一条都匹配不上的计划。',
+    '   注意：这是「请用户补充/确认」，不是「该操作尚未支持」，别用后者来描述值写错。',
+    '11. 目标是 .shp 时字段名有 10 字节上限（UTF-8 编码下最多 3 个汉字）：',
+    '   addField 的 name、renameFields 的新名、spatialJoin 的 fieldPrefix + 汇总字段名',
+    '   都要守这个限制。拿不准就把前缀缩到 1 个汉字，或省略前缀。',
+    '   spatialJoin 往目标写回时，如果目标图层已经有同名的列（如两边都有「名称」），',
+    '   必须给一个 1 个汉字的 fieldPrefix，否则一定会报重名错。',
+    '12. layers[].extent 是该层的地理范围 [minX,minY,maxX,maxY]（与图层同一坐标系）。',
+    '   用户说「右上角」「左上角」「中间」「对应范围」时按 extent 换算成 bbox / region；',
+    '   两个图层的「对应范围」= 两者 extent 的重叠区（取交集）。extent 为 null 时不要猜。',
+    '13. 先判断这件事一步能不能做完：',
     '    一个 op 能表达 → 直接输出计划；',
     '    要改两件以上不同的事（不同操作、不同文件、有先后顺序）→ 不要硬塞进一份计划，',
     '    先只输出步骤清单（**不要**输出 ops）：',
@@ -1156,7 +1186,7 @@ export function buildPlanPrompt(input: {
     '    用户会逐步确认；每一步再单独出计划。',
     ...(input.stepOnly
       ? [
-          '12. 本次只处理**其中一步**：直接输出计划，不要再拆 steps。',
+          '14. 本次只处理**其中一步**：直接输出计划，不要再拆 steps。',
         ]
       : []),
     '',
@@ -1324,9 +1354,17 @@ function extractErrorMessageSafe(raw: string): string | null {
   return null;
 }
 
-/** 从模型的回话里抠出 JSON */
+/**
+ * 从模型的回话里抠出 JSON。
+ *
+ * ⚠️ 必须先剥掉 `<think>…</think>`：MiniMax-M3 会把推理过程写在 content 里，
+ * 而推理里**也会出现 `{…}`**（它在心里先把 JSON 写一遍）。
+ * 直接「从第一个 { 截到最后一个 }」会把整段思考当成 JSON —— 实测 10/27 条
+ * 因此被判成「不是可解析的 JSON」，换个模型就全好了。这是模型形态差异，不是用户的问题。
+ */
 export function parsePlanReply(reply: string): { ok: true; value: unknown } | { ok: false; message: string } {
-  const cleaned = reply
+  const withoutThinking = reply.replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, '').trim();
+  const cleaned = withoutThinking
     .trim()
     .replace(/^```(?:json)?\s*/i, '')
     .replace(/```\s*$/i, '')
@@ -1357,6 +1395,14 @@ export function parsePlanReply(reply: string): { ok: true; value: unknown } | { 
  * 不会把它误报成「引擎做不了」。
  */
 const UNSUPPORTED_HINT = /尚未支持|不支持|没有实现|无法支持/;
+
+/**
+ * 模型在说「值/信息不对，请你确认」。
+ *
+ * 有些模型会把「样本里没有这个值，请确认」写成「……该操作尚未支持直接匹配」——
+ * 里面同时带「尚未支持」。这时按澄清处理才对：用户该补的是信息，不是换功能。
+ */
+const CLARIFY_HINT = /样本(?:里|值中|中)没有|请确认|是否写错/;
 
 /**
  * 计划里 ops 为空、intent 有话 —— 模型在**回话**，不是在给计划。
@@ -1681,8 +1727,12 @@ export async function createPlan(input: PlanRequestInput): Promise<PlanResponseB
   if (emptyIntent !== null) {
     return {
       ...base,
-      // 「做不了」与「你没说清」给不同的下场：前者换个操作，后者补一句信息
-      error: UNSUPPORTED_HINT.test(emptyIntent) ? 'op_not_supported' : 'plan_needs_clarification',
+      // 「做不了」与「你没说清」给不同的下场：前者换个操作，后者补一句信息。
+      // 同时带两种措辞时，以「请你确认」为准（见 CLARIFY_HINT 的说明）。
+      error:
+        !CLARIFY_HINT.test(emptyIntent) && UNSUPPORTED_HINT.test(emptyIntent)
+          ? 'op_not_supported'
+          : 'plan_needs_clarification',
       model: reply.model,
       elapsedMs: reply.elapsedMs,
       message: emptyIntent,
@@ -1819,12 +1869,17 @@ export async function enrichContext(context: PlanContext, root: string | null): 
         if (samples) sampled++;
         layers.push({
           ...layer,
+          extent: layer.extent ?? ds.extent,
           fields: samples ? fields.map((f) => withSamples(f, samples)) : fields,
           featureCount: ds.featureCount,
           crs: layer.crs ?? crsLabel(ds.crs),
         });
       } else {
-        layers.push({ ...layer, crs: layer.crs ?? crsLabel(ds.crs) });
+        layers.push({
+          ...layer,
+          extent: layer.extent ?? ds.extent,
+          crs: layer.crs ?? crsLabel(ds.crs),
+        });
       }
     } catch {
       layers.push(layer);
