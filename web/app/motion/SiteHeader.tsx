@@ -105,12 +105,6 @@ export function SiteHeader({ items }: { items: readonly NavItem[] }) {
               </a>
             );
           })}
-          <a
-            href="canvas.html"
-            className="nav-fg-muted inline-flex min-h-11 min-w-11 items-center justify-center rounded-full px-3 text-[13px] whitespace-nowrap transition-colors"
-          >
-            AI 接入
-          </a>
           <ThemeToggle variant="nav" />
         </div>
 
@@ -161,13 +155,6 @@ export function SiteHeader({ items }: { items: readonly NavItem[] }) {
               </a>
             );
           })}
-          <a
-            href="canvas.html"
-            onClick={() => setOpen(false)}
-            className="nav-item flex min-h-11 items-center rounded-lg px-4 text-[14px] transition-colors"
-          >
-            AI 接入
-          </a>
           <div className="flex items-center justify-between px-4 py-1">
             <span className="text-[13px] text-[var(--nav-fg-muted)]">主题</span>
             <ThemeToggle variant="nav" />
