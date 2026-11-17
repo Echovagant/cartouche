@@ -337,6 +337,54 @@ test('整条链：矢量 op 的计划不会被说成「尚未支持」（2026-10
   }
 });
 
+test('分步链：第一次回步骤清单，第二步（stepOnly）再回计划', async () => {
+  // 真实链路里，"复杂任务先拆步骤"是两次独立的模型请求：
+  // 第一次只回 steps；用户确认后，前端把其中一步作为 stepOnly 请求再发一次。
+  let calls = 0;
+  const stepMock = await startMockModelServer({
+    planBuilder: () => {
+      calls++;
+      if (calls === 1) {
+        return {
+          version: '1.0',
+          intent: '先涂色再调亮',
+          steps: ['把底图涂红', '把底图整体提亮'],
+        };
+      }
+      return buildMockPlan('第 1 步：把底图涂红');
+    },
+  });
+  const fetchImpl = async (_url, init) => {
+    const res = await fetch(`${stepMock.base}/v1/chat/completions`, init);
+    return { ok: res.ok, status: res.status, text: () => res.text() };
+  };
+  try {
+    const first = await createPlan({
+      prompt: '把底图涂红，再整体提亮一点',
+      model: MOCK_MODELS[0],
+      context: CONTEXT,
+      fetchImpl,
+    });
+    assert.equal(first.ok, true, `第一步提议失败：${first.error ?? ''} ${first.message ?? ''}`);
+    assert.equal(first.plan, null, '步骤清单阶段不该有计划');
+    assert.deepEqual(first.steps, ['把底图涂红', '把底图整体提亮']);
+
+    const second = await createPlan({
+      prompt: '第 1 步（共 2 步）：把底图涂红。总目标：先涂色再调亮',
+      model: MOCK_MODELS[0],
+      context: CONTEXT,
+      stepOnly: true,
+      fetchImpl,
+    });
+    assert.equal(second.ok, true, `第二步提议失败：${second.error ?? ''} ${second.message ?? ''}`);
+    assert.equal(second.steps.length, 0, 'stepOnly 不该再回步骤清单');
+    assert.equal(second.plan?.ops?.[0]?.op, 'raster.paint');
+    assert.equal(calls, 2, '应当是两次独立的模型请求');
+  } finally {
+    await stepMock.close();
+  }
+});
+
 test('引擎拒绝不合约的计划时，错误说清是哪一条不合规', async () => {
   const broken = await startMockModelServer({
     planBuilder: () => ({

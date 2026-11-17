@@ -177,6 +177,8 @@ export interface PlanPayload {
   readonly effort: string | null;
   readonly elapsedMs: number | null;
   readonly plan: PlanDocument | null;
+  /** 复杂任务的步骤清单；非空时 plan 为 null，需要逐步提议 */
+  readonly steps: readonly string[];
   readonly schemaIssues: readonly PlanSchemaIssue[];
   readonly unsupported: readonly UnsupportedOp[];
   readonly precheck: readonly PrecheckEntry[];
@@ -428,6 +430,10 @@ export function useLlm(): LlmApi {
       readonly model: string;
       readonly effort: string;
       readonly root?: string | null;
+      /** 画布上明确选中的图层：让「这一层」有确定指向 */
+      readonly activeLayerId?: string | null;
+      /** 本次只处理其中一步：直接出计划，不要再拆步骤 */
+      readonly stepOnly?: boolean;
     }): Promise<PlanPayload | null> => {
       setPlanBusy(true);
       setPlanFailure(null);
@@ -437,6 +443,8 @@ export function useLlm(): LlmApi {
           model: options.model,
           effort: options.effort,
           ...(options.root ? { root: options.root } : {}),
+          ...(options.activeLayerId ? { activeLayerId: options.activeLayerId } : {}),
+          ...(options.stepOnly ? { stepOnly: true } : {}),
         });
         if (!body) {
           setPlanFailure({

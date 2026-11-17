@@ -27,8 +27,10 @@ import {
   MINIMAX_MAX_TOKENS,
   parseChatReply,
   probeDataset,
+  readFeatures,
   redactSecrets,
   resolveGdal,
+  type GdalLocation,
   type MinimaxFetch,
   type OperationSpec,
   type PlanDocument,
@@ -39,8 +41,9 @@ import { currentProviderId, resolveCredentials, scrub } from './llm.ts';
  * §1 上下文裁剪：白名单
  *
  * 依据 docs/01 §4.4「最小必要披露」：
- *   允许发送 —— 图层名 / 字段名 / 字段类型 / 要素数量 / 视窗内要素（几何简化 +
- *                关键属性）/ 坐标系标识 / 用户提示词；
+ *   允许发送 —— 图层名 / 字段名 / 字段类型 / 要素数量 / 当前选中图层 /
+ *                每列最多 4 个去重后的取值样本（只从前 50 条要素里取）/
+ *                视窗内要素（几何简化 + 关键属性）/ 坐标系标识 / 用户提示词；
  *   禁止发送 —— 整个数据文件 / 全量要素 / 与任务无关的图层与字段 /
  *                文件系统路径 / 用户名 / 机器信息。
  *
@@ -64,10 +67,27 @@ const MAX_FEATURE_COUNT = 200;
 const MAX_COORDINATE_COUNT = 512;
 /** 坐标系标识（WKT）的长度上限 */
 const MAX_CRS_TEXT = 120;
+/** 每列最多带几个真实取值（让模型知道「耕地」「01」这种值确实存在） */
+const MAX_FIELD_SAMPLES = 4;
+/** 单个取值样本的长度上限 */
+const MAX_SAMPLE_TEXT = 24;
+/** 最多给几个图层取样本（读文件有成本，不铺开） */
+const MAX_SAMPLE_LAYERS = 3;
+/** 取样本时读多少条要素（不是全量，只是给模型看个大概） */
+const SAMPLE_FEATURE_ROWS = 50;
 
 export interface PlanFieldContext {
   readonly name: string;
   readonly type: string;
+  /**
+   * 这一列**真实出现过的值**（去重、截断）。
+   *
+   * 为什么要带：用户说「把地类里的耕地改成 01」时，模型只有列名和类型，
+   * 不知道「耕地」到底存不存在、是原文还是编码；带上样本它才能判断
+   * 该用 vector.reclassify 还是 vector.recode，而不是猜一个不存在的值。
+   * 只取前几十条要素去重，不读全量，也不发原始几何。
+   */
+  readonly samples?: readonly string[];
 }
 
 /**
@@ -86,6 +106,8 @@ export interface PlanLayerContext {
   readonly path: string;
   /** 该层当前是否可见（不可见的层不带要素） */
   readonly visible: boolean;
+  /** 是否是用户当前选中的那一层（「这一层」指的就是它） */
+  readonly active?: boolean;
   /** 不透明度 0~1 */
   readonly opacity: number;
   /** 字段清单（名字 + 类型）；没有字段的层给空数组 */
@@ -106,6 +128,14 @@ export interface PlanFeatureContext {
 
 export interface PlanContext {
   readonly projectName: string;
+  /**
+   * 用户当前选中的图层 id（画布上的「这一层」）。
+   *
+   * 为什么要单独给：用户说「把这一层重投影」时，模型只能看到一堆可见图层，
+   * 挑错层的代价是改错文件。这个字段把指代**在引擎侧就定死**，
+   * 不让模型猜"这一层"是哪一层。没有明确选中时为 null。
+   */
+  readonly activeLayerId: string | null;
   readonly layers: readonly PlanLayerContext[];
   readonly features: readonly PlanFeatureContext[];
   /** 视窗范围 [minX, minY, maxX, maxY]；没有就为 null */
@@ -120,9 +150,15 @@ export interface PlanContext {
  */
 export function buildPlanContext(raw: unknown): PlanContext {
   const o = isPlainObject(raw) ? raw : {};
+  const layers = buildLayers(o['layers']);
+  // 指代只认「清单里真的存在的那一层」：前端传来一个不存在的 id 就当没选中，
+  // 免得模型拿着一个空引用去编目标路径。
+  const rawActive = clipText(text(o['activeLayerId']), MAX_NAME);
+  const activeLayerId = layers.some((l) => l.id === rawActive) ? rawActive : null;
   return {
     projectName: clipText(text(o['projectName']), MAX_NAME),
-    layers: buildLayers(o['layers']),
+    activeLayerId,
+    layers: activeLayerId ? layers.map((l) => (l.id === activeLayerId ? { ...l, active: true } : l)) : layers,
     features: buildFeatures(o['features']),
     viewport: buildViewport(o['viewport']),
   };
@@ -160,8 +196,34 @@ function buildFields(raw: unknown): PlanFieldContext[] {
     if (!isPlainObject(item)) continue;
     const name = clipText(text(item['name']), MAX_FIELD_NAME);
     if (!name) continue;
-    out.push({ name, type: clipText(text(item['type']), MAX_FIELD_TYPE) });
+    const samples = clipSamples(item['samples']);
+    out.push({
+      name,
+      type: clipText(text(item['type']), MAX_FIELD_TYPE),
+      ...(samples.length > 0 ? { samples } : {}),
+    });
     if (out.length >= 64) break;
+  }
+  return out;
+}
+
+/**
+ * 把样本值裁成"能发出去"的形状：去重、去空、截断。
+ *
+ * 空串不发（会占位置又不带信息）；数字/布尔转成文字（模型看的是概念，
+ * 不需要保留原始类型）；超过上限就截。
+ */
+function clipSamples(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const v of raw) {
+    if (typeof v !== 'string' && typeof v !== 'number' && typeof v !== 'boolean') continue;
+    const s = clipText(String(v).trim(), MAX_SAMPLE_TEXT);
+    if (s === '' || seen.has(s)) continue;
+    seen.add(s);
+    out.push(s);
+    if (out.length >= MAX_FIELD_SAMPLES) break;
   }
   return out;
 }
@@ -715,9 +777,16 @@ export function checkPlanAgainstContract(plan: PlanDocument): PlanGateResult {
  * §4 可提议的 op 目录与提示词
  * ──────────────────────────────────────────────────────────── */
 
+/** 一次最多接受几步（模型拆得太碎反而更难确认） */
+const MAX_PLAN_STEPS = 8;
+
 export interface OpCatalogEntry {
   readonly op: string;
   readonly label: string;
+  /** 一句话说清「什么事该用它」——模型据此选能力，而不是猜 op 名 */
+  readonly use: string;
+  /** 一份**合法**的参数示例（测试会真的送进闸门①） */
+  readonly example: Readonly<Record<string, unknown>>;
   /** 该 op 的参数契约（直接取自 ops.schema.json） */
   readonly params: SchemaNode;
 }
@@ -739,6 +808,96 @@ const OP_LABELS: Readonly<Record<string, string>> = {
   'vector.renameFields': '重命名字段',
   'vector.recode': '重编码',
   'vector.reclassify': '值重编码',
+  'feature.summarize': '分组汇总',
+};
+
+/**
+ * 每个 op 的一句话用途。
+ *
+ * 为什么不再把 params 的原始 JSON 丢给模型：那份 schema 是给**校验器**看的
+ * （$ref / allOf / pattern），弱模型读不懂，经常抓错字段、把 $ref 当成值。
+ * 这里先解决「这件事该用哪个 op」，参数形状交给紧凑的槽位说明。
+ */
+const OP_USAGE: Readonly<Record<string, string>> = {
+  'raster.paint': '用纯色盖住一块区域（抹掉标注、画色块）',
+  'raster.erase': '把一块区域擦掉；有干净底图时用底图填，没有就边界内插',
+  'raster.replaceRegion': '把一张图的一块区域换成另一张图同一区域的内容',
+  'raster.inpaint': '抹掉小块内容后自动补边界，让它看不出被改过',
+  'raster.adjustLevels': '整体提亮/压暗、加对比或做伽马校正（改整张图的色调）',
+  'raster.clip': '按矢量范围或地理范围把影像裁小',
+  'raster.resample': '改像元大小（重采样到指定分辨率）',
+  'raster.mosaic': '把多张影像按地理位置拼成一张',
+  'vector.query': '按条件查要素，只出结果表，不改文件',
+  'vector.addField': '加一列，并按表达式/条件算值',
+  'vector.spatialJoin': '把源图层的属性按空间关系汇总到目标图层',
+  'vector.reproject': '换坐标系（重投影），可顺带对齐到另一层',
+  'vector.renameFields': '给已有字段改名，不改值',
+  'vector.recode': '字段内容乱码时换字符编码（GBK/UTF-8），不改字段名',
+  'vector.reclassify': '按对照表把一列里的旧值换成新值（如 耕地→01）',
+  'feature.summarize': '按字段分组汇总（计数、面积、求和等），只出结果表',
+};
+
+/**
+ * 每个 op 的合法示例。
+ *
+ * 示例比文字描述更能约束模型：弱模型会照着形状抄。
+ * 测试把每份示例都送进闸门①（validatePlanSchema），写错会当场红。
+ */
+const OP_EXAMPLES: Readonly<Record<string, Readonly<Record<string, unknown>>>> = {
+  'raster.paint': {
+    target: 'dataset://影像.tif',
+    region: { minX: 10, minY: 10, maxX: 40, maxY: 30 },
+    color: '#d9480f',
+  },
+  'raster.erase': {
+    target: 'dataset://影像.tif',
+    region: { minX: 10, minY: 10, maxX: 40, maxY: 30 },
+  },
+  'raster.replaceRegion': {
+    source: 'dataset://干净底图.tif',
+    target: 'dataset://影像.tif',
+    region: { minX: 10, minY: 10, maxX: 40, maxY: 30 },
+  },
+  'raster.inpaint': {
+    target: 'dataset://影像.tif',
+    region: { minX: 10, minY: 10, maxX: 40, maxY: 30 },
+  },
+  'raster.adjustLevels': { target: 'dataset://影像.tif', brightness: 0.1, contrast: 1.2 },
+  'raster.clip': { target: 'dataset://影像.tif', bbox: [120.3, 30.5, 120.31, 30.51] },
+  'raster.resample': {
+    target: 'dataset://影像.tif',
+    targetResolution: 0.5,
+    resampleMethod: 'bilinear',
+  },
+  'raster.mosaic': {
+    inputs: ['dataset://a.tif', 'dataset://b.tif'],
+    output: 'dataset://拼接.tif',
+  },
+  'vector.query': { target: 'dataset://图层.shp', where: 'POP > 1000', limit: 50 },
+  'vector.addField': { target: 'dataset://图层.shp', name: '面积', expression: 'AREA / 10000' },
+  'vector.spatialJoin': {
+    target: 'dataset://地块.shp',
+    source: 'dataset://行政区.shp',
+    relation: 'within',
+    aggregate: 'count',
+  },
+  'vector.reproject': { target: 'dataset://图层.shp', to: 'EPSG:4547' },
+  'vector.renameFields': { target: 'dataset://图层.shp', mapping: { OLD_NAME: '新名字' } },
+  'vector.recode': { target: 'dataset://图层.shp', from: 'auto', to: 'UTF-8' },
+  'vector.reclassify': {
+    target: 'dataset://图层.shp',
+    field: 'DLMC',
+    mapping: [
+      { from: '耕地', to: '01' },
+      { from: '林地', to: '02' },
+    ],
+  },
+  'feature.summarize': {
+    target: 'dataset://图层.shp',
+    groupBy: ['DLMC'],
+    aggregates: ['count', 'area'],
+    areaUnit: 'ha',
+  },
 };
 
 /**
@@ -809,9 +968,137 @@ export function opCatalog(schema: SchemaNode, implemented: readonly string[]): O
     if (!allowed.includes(op)) continue;
     const params = schema.$defs?.[`params.${op}`];
     if (!params) continue;
-    out.push({ op, label: OP_LABELS[op] ?? op, params });
+    out.push({
+      op,
+      label: OP_LABELS[op] ?? op,
+      use: OP_USAGE[op] ?? '',
+      example: OP_EXAMPLES[op] ?? {},
+      params,
+    });
   }
   return out.sort((a, b) => a.op.localeCompare(b.op));
+}
+
+/**
+ * 把 op 目录渲染成**给模型读的槽位清单**，而不是原始 JSON Schema。
+ *
+ * 每一条都回答三个问题：这件事该用哪个 op、参数要填什么、填出来长什么样。
+ * 契约本身没有被改写 —— 校验仍然用 ops.schema.json，这里只是换了一种说法。
+ */
+function renderOpCatalog(catalog: readonly OpCatalogEntry[]): string {
+  const root = readOpsSchema();
+  const lines: string[] = [];
+  for (const entry of catalog) {
+    lines.push(`### ${entry.op} · ${entry.label}`);
+    if (entry.use) lines.push(`用途：${entry.use}`);
+    const desc = entry.params.description?.trim();
+    if (desc) lines.push(`说明：${desc}`);
+    const props = entry.params.properties ?? {};
+    const required = entry.params.required ?? [];
+    const names = Object.keys(props);
+    if (names.length > 0) {
+      lines.push('参数（带 * 为必填）：');
+      for (const name of names) {
+        const node = props[name];
+        if (!node) continue;
+        lines.push(`  - ${name}${required.includes(name) ? '*' : ''}：${describeSlot(node, root)}`);
+      }
+    }
+    lines.push(`示例：${JSON.stringify(entry.example)}`);
+    lines.push('');
+  }
+  return lines.join('\n').trimEnd();
+}
+
+/** 一个参数的「槽位说明」：类型 + 描述 + 取值范围/默认值 */
+function describeSlot(node: SchemaNode, root: SchemaNode): string {
+  const bits: string[] = [];
+  const type = slotType(node, root);
+  if (type) bits.push(type);
+  if (node.description?.trim()) bits.push(node.description.trim());
+  const bounds = slotBounds(node);
+  if (bounds) bits.push(bounds);
+  if (node.default !== undefined) bits.push(`默认 ${JSON.stringify(node.default)}`);
+  return bits.join('；');
+}
+
+function slotBounds(node: SchemaNode): string {
+  if (node.minimum !== undefined && node.maximum !== undefined) {
+    return `范围 ${node.minimum}~${node.maximum}`;
+  }
+  if (node.minimum !== undefined) return `不小于 ${node.minimum}`;
+  if (node.exclusiveMinimum !== undefined) return `大于 ${node.exclusiveMinimum}`;
+  if (node.maxLength !== undefined) return `最长 ${node.maxLength} 字`;
+  return '';
+}
+
+const REF_HINTS: Readonly<Record<string, string>> = {
+  pathRef: 'dataset://<工作区相对路径>',
+  layerRef: 'dataset://<工作区相对路径>',
+  bbox: '[minX,minY,maxX,maxY]',
+  hexColor: '"#RRGGBB"',
+  rgb: '[r,g,b]',
+  pixelMask: '掩膜对象（由画布生成，不要手写）',
+};
+
+/** 把一个 schema 节点压缩成一句话（不展开整个契约） */
+function slotType(node: SchemaNode, root: SchemaNode, depth = 0): string {
+  if (depth > 4) return '';
+  if (node.$ref) {
+    const name = node.$ref.split('/').pop() ?? '';
+    const hint = REF_HINTS[name];
+    if (hint) return hint;
+    const def = resolveRef(node.$ref, root);
+    return def ? slotType(def, root, depth + 1) : '';
+  }
+  if (node.enum) return node.enum.map((v) => JSON.stringify(v)).join(' | ');
+  if (node.allOf && node.allOf.length > 0) {
+    const parts: string[] = [];
+    for (const sub of node.allOf) {
+      if (sub.if) {
+        // 条件分支：把 then / else 两种形状都列出来（如 region 的两种写法）
+        if (sub.then) parts.push(slotType(sub.then, root, depth + 1));
+        if (sub.else) parts.push(slotType(sub.else, root, depth + 1));
+      } else {
+        parts.push(slotType(sub, root, depth + 1));
+      }
+    }
+    const unique = [...new Set(parts.filter((p) => p !== ''))];
+    if (unique.length > 0) return unique.join(' 或 ');
+  }
+  const type = node.type;
+  if (Array.isArray(type)) {
+    return [...new Set((type as readonly string[]).map(typeName))].join(' / ');
+  }
+  if (typeof type !== 'string') return '';
+  if (type === 'array') {
+    const item = node.items ? slotType(node.items, root, depth + 1) : '';
+    return item ? `${item} 的数组` : '数组';
+  }
+  if (type === 'object') {
+    const props = node.properties ? Object.keys(node.properties) : [];
+    return props.length > 0 ? `对象 {${props.join(', ')}}` : '对象';
+  }
+  return typeName(type);
+}
+
+function typeName(raw: string): string {
+  switch (raw) {
+    case 'string':
+      return '文字';
+    case 'number':
+      return '数字';
+    case 'integer':
+      return '整数';
+    case 'boolean':
+      return '布尔';
+    case 'array':
+      return '数组';
+    case 'object':
+      return '对象';
+    default:
+      return raw;
+  }
 }
 
 /**
@@ -824,12 +1111,10 @@ export function buildPlanPrompt(input: {
   readonly context: PlanContext;
   readonly instruction: string;
   readonly catalog: readonly OpCatalogEntry[];
+  /** 本次只处理其中一步：直接出计划，不要再拆步骤 */
+  readonly stepOnly?: boolean;
 }): string {
-  const catalog = input.catalog.map((entry) => ({
-    op: entry.op,
-    label: entry.label,
-    params: entry.params,
-  }));
+  const catalogText = renderOpCatalog(input.catalog);
   return [
     '你是一个制图操作提议器：把用户的要求翻译成一份**操作计划**（JSON）。',
     '',
@@ -840,6 +1125,7 @@ export function buildPlanPrompt(input: {
     '   用户的要求里缺少必要信息时也一样（没说清是哪一列、哪个图层、哪个文件）：',
     '   把 ops 写成空数组，并在 intent 里写明缺什么 —— 不要猜。',
     '3. 计划格式固定为：{"version":"1.0","intent":"一句话说明要做什么","ops":[{"op":"...","params":{...}}]}',
+    '   （例外：一句话里有好几件事时，先按第 11 条只输出步骤清单，不要输出 ops。）',
     '4. params 必须严格符合该 op 的参数契约：字段名照抄契约，多余字段一律不给，',
     '   必填字段不能少。',
     '5. 路径类参数（target / source / clip / output / mosaic 的 inputs）只能写成',
@@ -855,9 +1141,27 @@ export function buildPlanPrompt(input: {
     '   绝对不要写 "layer://…" 或 "dataset://…"：引擎无法把图层引用解析成区域。',
     '7. 没有把握的参数宁可不给，也不要编：引擎会逐条校验，编错的值比缺的值更糟。',
     '8. ops 最多 50 条，通常 1~3 条就够。',
+    '9. 指代消解：「这一层」「当前图层」「这个文件」= 上下文里的 activeLayerId 那一层；',
+    '   它同时也会在 layers 里标注 active=true。用户没点名图层时优先用它。',
+    '   activeLayerId 为 null 且有多个可见层时，不要猜，把 ops 写成空数组并请用户指明是哪一层。',
+    '10. fields[].samples 是这一列**真实出现过的值**（只取了前几十条的样本，不是全部）。',
+    '   用户提到的旧值要先在 samples 里对上（如「耕地」）；对不上就照用户原话写，但不要编',
+    '   一个样本里没出现过的编码/类别。',
+    '11. 先判断这件事一步能不能做完：',
+    '    一个 op 能表达 → 直接输出计划；',
+    '    要改两件以上不同的事（不同操作、不同文件、有先后顺序）→ 不要硬塞进一份计划，',
+    '    先只输出步骤清单（**不要**输出 ops）：',
+    '    {"version":"1.0","intent":"一句话总目标","steps":["第 1 步…","第 2 步…"]}',
+    '    steps 2~5 条，按执行顺序，每条只做一件事，写清对象（哪一层、哪一列/哪个范围）。',
+    '    用户会逐步确认；每一步再单独出计划。',
+    ...(input.stepOnly
+      ? [
+          '12. 本次只处理**其中一步**：直接输出计划，不要再拆 steps。',
+        ]
+      : []),
     '',
     '【可用操作清单】',
-    JSON.stringify(catalog, null, 2),
+    catalogText,
     '',
     '【本次可见的项目上下文】（已裁剪到最小必要范围）',
     JSON.stringify(input.context, null, 2),
@@ -1069,6 +1373,36 @@ export function readEmptyPlanIntent(value: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+/**
+ * 模型先给步骤清单（复杂任务），而不是一份硬塞的计划。
+ *
+ * 形状：{"version":"1.0","intent":"总目标","steps":["第 1 步…","第 2 步…"]}
+ * 只认**没有 ops** 的那种；带 ops 的按计划走，避免同一份回话里既给计划又给步骤。
+ * 不是这种形状就返回 null。
+ */
+export function readStepOutline(value: unknown): string[] | null {
+  if (!isPlainObject(value)) return null;
+  if (value['version'] !== '1.0') return null;
+  const raw = value['steps'];
+  if (!Array.isArray(raw) || raw.length === 0) return null;
+  const ops = value['ops'];
+  if (Array.isArray(ops) && ops.length > 0) return null;
+  const goals: string[] = [];
+  for (const item of raw) {
+    // 弱模型常把步骤写成 {"goal": "…"} —— 认这一种，不让整份回话作废
+    const rawGoal = typeof item === 'string'
+      ? item
+      : isPlainObject(item)
+        ? (item['goal'] ?? item['step'] ?? item['title'])
+        : null;
+    if (typeof rawGoal !== 'string') return null;
+    const goal = rawGoal.trim();
+    if (goal === '') return null;
+    goals.push(clipText(goal, 200));
+  }
+  return goals;
+}
+
 /* ────────────────────────────────────────────────────────────
  * §6 编排
  * ──────────────────────────────────────────────────────────── */
@@ -1142,6 +1476,13 @@ export interface PlanResponseBody {
   readonly elapsedMs: number | null;
   /** 解析出来的计划；没过校验时可能为 null */
   readonly plan: PlanDocument | null;
+  /**
+   * 复杂任务的步骤清单（模型先拆步骤，还没出计划）。
+   *
+   * 非空时 `ok=true`、`plan=null`：这不是失败，是"先对齐步骤"。
+   * 前端拿它逐步发回 `stepOnly` 的提议请求，每一步单独确认、单独执行。
+   */
+  readonly steps: readonly string[];
   /** 闸门①：Schema 校验的问题 */
   readonly schemaIssues: readonly PlanSchemaIssue[];
   /** 闸门②：引擎尚未实现的 op */
@@ -1158,6 +1499,8 @@ export interface PlanRequestInput {
   readonly effort?: string | undefined;
   /** 用哪条接入线（厂商 × 端点）；不给就用当前选中的那条 */
   readonly providerId?: string | undefined;
+  /** 本次只处理其中一步：告诉模型直接出计划，不要再拆步骤 */
+  readonly stepOnly?: boolean | undefined;
   /** 前端交来的原始上下文（会被裁剪到白名单） */
   readonly context?: unknown;
   /** 项目根（绝对路径）；给了才能补齐字段名、要素数量、坐标系 */
@@ -1195,6 +1538,7 @@ export async function createPlan(input: PlanRequestInput): Promise<PlanResponseB
     context,
     instruction: input.prompt,
     catalog,
+    ...(input.stepOnly ? { stepOnly: true } : {}),
   });
   const preview: ContextPreview = {
     context,
@@ -1213,6 +1557,7 @@ export async function createPlan(input: PlanRequestInput): Promise<PlanResponseB
     effort: input.effort ?? null,
     elapsedMs: null,
     plan: null,
+    steps: [],
     schemaIssues: [],
     unsupported: [],
     precheck: [],
@@ -1270,6 +1615,45 @@ export async function createPlan(input: PlanRequestInput): Promise<PlanResponseB
       model: reply.model,
       elapsedMs: reply.elapsedMs,
       message: parsed.message,
+    };
+  }
+
+  // 复杂任务：模型先给步骤清单，还没出计划。
+  //
+  // 这不是失败：用户要先看到"这件事分几步、每步做什么"，再一步一步确认。
+  // 每一步会被前端作为一次新的提议请求发回来（stepOnly=true），
+  // 那一次只带一个目标，模型不用同时想三件事。
+  const stepGoals = readStepOutline(parsed.value);
+  if (stepGoals !== null) {
+    if (input.stepOnly) {
+      return {
+        ...base,
+        error: 'plan_needs_clarification',
+        model: reply.model,
+        elapsedMs: reply.elapsedMs,
+        message:
+          `模型把这一步又拆成了 ${stepGoals.length} 小步（${stepGoals.join('；')}）。` +
+          '请把这一步写得更具体：哪一层、哪一列 / 哪个范围。',
+      };
+    }
+    if (stepGoals.length > MAX_PLAN_STEPS) {
+      return {
+        ...base,
+        error: 'plan_needs_clarification',
+        model: reply.model,
+        elapsedMs: reply.elapsedMs,
+        message:
+          `这件事被拆成了 ${stepGoals.length} 步（一次最多 ${MAX_PLAN_STEPS} 步）。` +
+          '先把范围收窄到最关键的一两步，再让 AI 出计划。',
+      };
+    }
+    return {
+      ...base,
+      ok: true,
+      model: reply.model,
+      elapsedMs: reply.elapsedMs,
+      steps: stepGoals,
+      message: null,
     };
   }
 
@@ -1399,6 +1783,9 @@ export async function enrichContext(context: PlanContext, root: string | null): 
   const loc = resolveGdal();
   if (!loc) return context;
   const layers: PlanLayerContext[] = [];
+  // 只有前几个「看得见的矢量层」取样本：每层一次小读取，不能让一次提议
+  // 变成把整个项目翻一遍。其余层照旧只有字段名与类型。
+  let sampled = 0;
   for (const layer of context.layers) {
     const abs = resolve(root, layer.path);
     if (!isInside(root, abs)) {
@@ -1413,9 +1800,13 @@ export async function enrichContext(context: PlanContext, root: string | null): 
         continue;
       }
       if (ds.kind === 'vector') {
+        const fields = ds.fields.map((f) => ({ name: f.name, type: f.type }));
+        const canSample = layer.visible && sampled < MAX_SAMPLE_LAYERS;
+        const samples = canSample ? await sampleFieldValues(loc, abs, fields) : null;
+        if (samples) sampled++;
         layers.push({
           ...layer,
-          fields: ds.fields.map((f) => ({ name: f.name, type: f.type })),
+          fields: samples ? fields.map((f) => withSamples(f, samples)) : fields,
           featureCount: ds.featureCount,
           crs: layer.crs ?? crsLabel(ds.crs),
         });
@@ -1427,6 +1818,59 @@ export async function enrichContext(context: PlanContext, root: string | null): 
     }
   }
   return { ...context, layers };
+}
+
+/**
+ * 读几十条要素，按列收集真实出现过的值。
+ *
+ * 只做**去重后的前几个值**：给模型的是「这一列长什么样」，
+ * 不是把属性表发出去。读不出来就返回 null —— 样本是锦上添花，
+ * 不能因为某个格式读不动就让整次提议失败。
+ */
+async function sampleFieldValues(
+  loc: GdalLocation,
+  abs: string,
+  fields: readonly { name: string; type: string }[],
+): Promise<Map<string, string[]> | null> {
+  try {
+    const read = await readFeatures(loc, { path: abs, limit: SAMPLE_FEATURE_ROWS });
+    const collected = new Map<string, { values: string[]; seen: Set<string> }>();
+    for (const field of fields.slice(0, 32)) {
+      collected.set(field.name, { values: [], seen: new Set() });
+    }
+    for (const feature of read.features) {
+      for (const [name, value] of Object.entries(feature.properties)) {
+        const bucket = collected.get(name);
+        if (!bucket || bucket.values.length >= MAX_FIELD_SAMPLES) continue;
+        if (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'boolean') {
+          continue;
+        }
+        const text = String(value).trim();
+        if (!text) continue;
+        const clipped = clipText(text, MAX_SAMPLE_TEXT);
+        if (bucket.seen.has(clipped)) continue;
+        bucket.seen.add(clipped);
+        bucket.values.push(clipped);
+      }
+      // 所有列都凑够样本就不用再翻后面的要素了
+      if ([...collected.values()].every((b) => b.values.length >= MAX_FIELD_SAMPLES)) break;
+    }
+    const out = new Map<string, string[]>();
+    for (const [name, bucket] of collected) {
+      if (bucket.values.length > 0) out.set(name, bucket.values);
+    }
+    return out;
+  } catch {
+    return null;
+  }
+}
+
+function withSamples(
+  field: { name: string; type: string },
+  samples: ReadonlyMap<string, string[]>,
+): PlanFieldContext {
+  const values = samples.get(field.name);
+  return values ? { ...field, samples: values } : field;
 }
 
 /* ────────────────────────────────────────────────────────────

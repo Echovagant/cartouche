@@ -66,6 +66,8 @@ function targetText(params: Record<string, unknown>): string {
 export interface AiSidePanelProps {
   readonly projectRoot: string | null;
   readonly activeLayerName: string | null;
+  /** 用户明确选中的图层 id；「这一层」靠它落到具体文件 */
+  readonly activeLayerId?: string | null;
   readonly onClose: () => void;
   readonly onExecuted: () => void;
 }
@@ -79,6 +81,7 @@ export interface AiSidePanelProps {
 export function AiSidePanel({
   projectRoot,
   activeLayerName,
+  activeLayerId,
   onClose,
   onExecuted,
 }: AiSidePanelProps) {
@@ -102,6 +105,17 @@ export function AiSidePanel({
   const [execResult, setExecResult] = useState<ExecResultPayload | null>(null);
   const [gateOpen, setGateOpen] = useState(false);
   const [panelError, setPanelError] = useState<string | null>(null);
+  /**
+   * 复杂任务的分步队列。
+   *
+   * 模型先只给步骤清单（不改文件），用户按顺序一步一确认；
+   * 每一步都当作一次新的提议请求发回去，模型一次只想一件事。
+   */
+  const [stepPlan, setStepPlan] = useState<{
+    readonly intent: string;
+    readonly goals: readonly string[];
+    readonly index: number;
+  } | null>(null);
 
   useEffect(() => {
     const models = llm.models?.models ?? llm.status?.models ?? [];
@@ -209,9 +223,11 @@ export function AiSidePanel({
     return list;
   };
 
-  const sendPlan = async (): Promise<void> => {
-    const text = instruction.trim();
+  const sendPlan = async (stepOnly = false, textOverride?: string): Promise<void> => {
+    const text = (textOverride ?? instruction).trim();
     if (!text || !configured) return;
+    // 用户重新写一句话就是要换任务：旧的分步队列不再沿用
+    if (!stepOnly) setStepPlan(null);
     setProposal(null);
     setPreviews([]);
     setPreviewFailure(null);
@@ -225,10 +241,17 @@ export function AiSidePanel({
       model,
       effort,
       root: projectRoot,
+      ...(activeLayerId ? { activeLayerId } : {}),
+      ...(stepOnly ? { stepOnly: true } : {}),
     });
     if (!res) return;
     setProposal(res);
     if (!res.ok) return;
+    // 复杂任务：先把步骤摆给用户看，不急着出计划
+    if (res.steps.length > 0) {
+      setStepPlan({ intent: text, goals: res.steps, index: 0 });
+      return;
+    }
     const ops = res.plan?.ops ?? [];
     const previewed = await runPreviews(ops);
     if (previewed.length !== ops.length) return;
@@ -245,6 +268,16 @@ export function AiSidePanel({
       return;
     }
     setGateOpen(true);
+  };
+
+  /** 把分步队列里的一步当成一次独立的提议请求 */
+  const runStep = async (index: number): Promise<void> => {
+    if (!stepPlan) return;
+    const goal = stepPlan.goals[index];
+    if (!goal) return;
+    const text = `第 ${index + 1} 步（共 ${stepPlan.goals.length} 步）：${goal}。总目标：${stepPlan.intent}`;
+    setInstruction(text);
+    await sendPlan(true, text);
   };
 
   const confirmExecute = async (): Promise<void> => {
@@ -282,7 +315,22 @@ export function AiSidePanel({
       setExecFailure(null);
       setExecResult(body);
       setGateOpen(false);
-      if (body.completed > 0) onExecuted();
+      if (body.completed > 0) {
+        onExecuted();
+        // 已经有操作落盘：旧计划的「文件还没动」不再成立，撤掉它，
+        // 只留执行结果（哪条成功、哪条失败）。分步队列是独立状态，不受影响。
+        setProposal(null);
+        setPreviews([]);
+      }
+      // 分步任务：这一步全部成功才推进队列；部分失败时停在原地，
+      // 让用户看清哪条没成，而不是悄悄跳到下一步。
+      if (body.ok && stepPlan) {
+        setStepPlan(
+          stepPlan.index + 1 >= stepPlan.goals.length
+            ? null
+            : { ...stepPlan, index: stepPlan.index + 1 },
+        );
+      }
     } catch (err) {
       setExecFailure(
         describeExecuteFailure({
@@ -505,6 +553,52 @@ export function AiSidePanel({
           <p className="mt-2 text-[12px] leading-relaxed text-warn">{panelError}</p>
         ) : null}
 
+        {stepPlan ? (
+          <div className="mt-3 rounded-lg border border-studio-line bg-studio-3/50 p-3">
+            <div className="text-[12px] font-medium text-studio-ink">
+              这件事分 {stepPlan.goals.length} 步做
+            </div>
+            <p className="mt-0.5 text-[11.5px] leading-relaxed text-studio-ink-3">
+              一步一确认：上一步落盘、地图刷新之后，再做下一步。
+            </p>
+            <ol className="mt-2 flex flex-col gap-1">
+              {stepPlan.goals.map((goal, index) => {
+                const done = index < stepPlan.index;
+                const current = index === stepPlan.index;
+                return (
+                  <li
+                    key={`${index}-${goal}`}
+                    className={`flex items-start gap-2 rounded px-1.5 py-1 text-[12px] leading-relaxed ${
+                      current ? 'bg-accent/12 text-studio-ink' : 'text-studio-ink-2'
+                    }`}
+                  >
+                    <span className="mt-0.5 shrink-0 font-mono text-[11px] text-studio-ink-3">
+                      {done ? '✓' : `${index + 1}.`}
+                    </span>
+                    <span className={done ? 'text-studio-ink-3 line-through' : ''}>{goal}</span>
+                  </li>
+                );
+              })}
+            </ol>
+            <div className="mt-2 flex items-center gap-2">
+              <ActionButton
+                variant="primary"
+                onClick={() => void runStep(stepPlan.index)}
+                disabled={llm.planBusy || executing || gateOpen}
+              >
+                {llm.planBusy
+                  ? '正在出计划…'
+                  : stepPlan.index === 0
+                    ? '开始第 1 步'
+                    : `继续第 ${stepPlan.index + 1} 步`}
+              </ActionButton>
+              <ActionButton variant="quiet" onClick={() => setStepPlan(null)}>
+                不按步骤
+              </ActionButton>
+            </div>
+          </div>
+        ) : null}
+
         {proposal && proposal.schemaIssues.length > 0 ? (
           <div className="mt-3 rounded-lg border border-warn/45 bg-warn/12 px-3 py-2.5 text-[12.5px] leading-relaxed text-warn">
             <strong>计划不合法：</strong>
@@ -523,6 +617,21 @@ export function AiSidePanel({
                 <li key={`${item.opIndex}-${item.op}`}>· {item.message}</li>
               ))}
             </ul>
+          </div>
+        ) : null}
+
+        {/* 模型自己说的话：请你补充信息 / 这件事做不了 / 回话不是 JSON。
+            没有这一块，用户只会看到"什么都没发生"，不知道下一步该补什么。 */}
+        {proposal &&
+        !proposal.ok &&
+        proposal.message &&
+        proposal.schemaIssues.length === 0 &&
+        proposal.unsupported.length === 0 ? (
+          <div className="mt-3 rounded-lg border border-warn/45 bg-warn/12 px-3 py-2.5 text-[12.5px] leading-relaxed">
+            <strong className="text-warn">
+              {proposal.error === 'plan_needs_clarification' ? '需要你说清楚一点：' : '这次没出计划：'}
+            </strong>
+            <span className="mt-0.5 block text-studio-ink-2">{proposal.message}</span>
           </div>
         ) : null}
 

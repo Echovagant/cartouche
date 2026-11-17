@@ -22,6 +22,7 @@ const {
   implementedOps,
   AI_OP_DENY,
   parsePlanReply,
+  readStepOutline,
   classifyPrecheck,
   createPlan,
   buildContextPreview,
@@ -114,9 +115,10 @@ test('上下文裁剪：只保留白名单字段，多余的一个都不许留�
 
   assert.deepEqual(
     Object.keys(ctx).sort(),
-    ['features', 'layers', 'projectName', 'viewport'],
-    '顶层只应有 projectName / layers / features / viewport',
+    ['activeLayerId', 'features', 'layers', 'projectName', 'viewport'],
+    '顶层只应有 projectName / activeLayerId / layers / features / viewport',
   );
+  assert.equal(ctx.activeLayerId, null, '没有选中图层时必须是 null，不能编一个');
   assert.deepEqual(
     Object.keys(ctx.layers[0] ?? {}).sort(),
     ['crs', 'featureCount', 'fields', 'id', 'kind', 'opacity', 'path', 'visible'],
@@ -170,6 +172,63 @@ test('上下文裁剪：路径不安全的图层直接不进上下文', () => {
   );
 });
 
+test('指代：选中图层在上下文里标成 active，不存在的 id 当没选', () => {
+  const ctx = buildPlanContext({
+    activeLayerId: 'layer-b',
+    layers: [
+      { id: 'layer-a', kind: 'raster', path: 'a.tff', visible: true },
+      { id: 'layer-b', kind: 'vector', path: 'b.shp', visible: true },
+    ],
+  });
+  assert.equal(ctx.activeLayerId, 'layer-b', '选中的 id 要原样带出去');
+  assert.equal(ctx.layers.find((l) => l.id === 'layer-b')?.active, true, '选中层要标 active');
+  assert.equal(ctx.layers.find((l) => l.id === 'layer-a')?.active, undefined, '其它层不能标 active');
+
+  const bogus = buildPlanContext({
+    activeLayerId: 'layer-不存在',
+    layers: [{ id: 'layer-a', kind: 'raster', path: 'a.tff', visible: true }],
+  });
+  assert.equal(bogus.activeLayerId, null, '清单里没有的 id 不能当真');
+  assert.ok(bogus.layers.every((l) => l.active === undefined), '不能凭一个不存在的 id 标记 active');
+});
+
+test('字段样本：去重、截断、丢掉空值和非标量', () => {
+  const ctx = buildPlanContext({
+    layers: [
+      {
+        id: 'l1',
+        kind: 'vector',
+        path: 'a.shp',
+        visible: true,
+        fields: [
+          {
+            name: 'DLMC',
+            type: 'String',
+            samples: ['耕地', '耕地', '', '林地', '草地', '水域', '未利用', { a: 1 }, 12, null],
+          },
+          { name: 'EMPTY', type: 'String', samples: [] },
+        ],
+      },
+    ],
+  });
+  const fields = ctx.layers[0]?.fields ?? [];
+  assert.deepEqual(fields[0]?.samples, ['耕地', '林地', '草地', '水域'], '去重后最多 4 个');
+  assert.ok(!('samples' in (fields[1] ?? {})), '没有样本时不能凭空加一个空数组');
+});
+
+test('提示词：要把「这一层」的指代与字段样本讲给模型', () => {
+  const prompt = buildPlanPrompt({
+    context: buildPlanContext({
+      activeLayerId: 'l1',
+      layers: [{ id: 'l1', kind: 'vector', path: 'a.shp', visible: true }],
+    }),
+    instruction: '把这一层的耕地改成 01',
+    catalog: opCatalog(readOpsSchema(), RASTER_OPS),
+  });
+  assert.match(prompt, /activeLayerId/, '要告诉模型用 activeLayerId 解指代');
+  assert.match(prompt, /samples/, '要告诉模型字段样本是真实出现过的值');
+});
+
 test('提示词：发出去的内容里没有白名单之外的字段', () => {
   const ctx = buildPlanContext(RAW_CONTEXT);
   const catalog = opCatalog(readOpsSchema(), RASTER_OPS);
@@ -185,8 +244,8 @@ test('提示词：发出去的内容里没有白名单之外的字段', () => {
   assert.ok(!prompt.includes('deadbeef'), '校验和不能在提示词里');
   // 清单里放行的是 raster.* 与 vector.*：feature.* 虽然已实现，但**故意不给 AI**
   // （删要素风险高，且按执行顺序排在后面）—— 见 server/src/llm-plan.ts 的说明。
-  assert.ok(!prompt.includes('"feature.delete"'), '故意不放行的 op 不该进清单');
-  assert.ok(prompt.includes('"raster.adjustLevels"'), '已实现的栅格 op 要进清单');
+  assert.ok(!prompt.includes('feature.delete'), '故意不放行的 op 不该进清单');
+  assert.ok(prompt.includes('raster.adjustLevels'), '已实现的栅格 op 要进清单');
 });
 
 test('op 清单：引擎实现了的矢量 op 必须看得见（2026-10-24 补的洞）', () => {
@@ -240,6 +299,41 @@ test('op 清单：feature.* 只放行只读的那个（汇总），删与改不�
   );
 });
 
+test('op 清单：每个 op 都要有用途与示例，示例必须过闸门①', () => {
+  const schema = readOpsSchema();
+  const catalog = opCatalog(schema, implementedOps());
+  assert.ok(catalog.length > 0);
+  for (const entry of catalog) {
+    assert.ok(entry.use.length > 0, `${entry.op} 没有一句话用途 —— 模型只能猜它做什么`);
+    assert.ok(
+      entry.example && Object.keys(entry.example).length > 0,
+      `${entry.op} 没有参数示例 —— 弱模型没有可抄的形状`,
+    );
+    const issues = validatePlanSchema(
+      { version: '1.0', ops: [{ op: entry.op, params: entry.example }] },
+      schema,
+    );
+    assert.deepEqual(
+      issues.map((i) => i.message),
+      [],
+      `${entry.op} 的示例过不了契约：${issues.map((i) => i.message).join('；')}`,
+    );
+  }
+});
+
+test('提示词：清单是槽位说明，不是原始 JSON Schema（不能再出现 $ref）', () => {
+  const prompt = buildPlanPrompt({
+    context: buildPlanContext(RAW_CONTEXT),
+    instruction: '把这一层的耕地改成 01',
+    catalog: opCatalog(readOpsSchema(), implementedOps()),
+  });
+  assert.ok(!prompt.includes('$ref'), '模型读不懂 $ref，必须换成能直接照抄的槽位');
+  assert.ok(!prompt.includes('additionalProperties'), '校验器字段不该出现在给模型的清单里');
+  assert.match(prompt, /参数（带 \* 为必填）/, '要标明哪些参数是必填');
+  assert.match(prompt, /- target\*：dataset:\/\//, 'target 要标必填并给出写法');
+  assert.match(prompt, /示例：\{/, '每个 op 都要给一份可照抄的示例');
+});
+
 test('提示词里看得见矢量 op：模型得能选得到它', () => {
   // 这是"洞"的最后一环：清单里有了，还得真的进了发出去的那段提示词。
   const prompt = buildPlanPrompt({
@@ -247,10 +341,10 @@ test('提示词里看得见矢量 op：模型得能选得到它', () => {
     instruction: '给底图加一列面积',
     catalog: opCatalog(readOpsSchema(), implementedOps()),
   });
-  assert.ok(prompt.includes('"vector.addField"'), '已实现的矢量 op 要出现在提示词里');
-  assert.ok(prompt.includes('"vector.query"'), '属性查询也要在');
-  assert.ok(prompt.includes('"vector.reproject"'), '重投影也要在');
-  assert.ok(!prompt.includes('"feature.delete"'), '没实现的 op 不该在');
+  assert.ok(prompt.includes('vector.addField'), '已实现的矢量 op 要出现在提示词里');
+  assert.ok(prompt.includes('vector.query'), '属性查询也要在');
+  assert.ok(prompt.includes('vector.reproject'), '重投影也要在');
+  assert.ok(!prompt.includes('feature.delete'), '没实现的 op 不该在');
 });
 
 test('每个已实现的 op，要么在 AI 清单里，要么在「故意不给 AI」名单里点名', () => {
@@ -500,6 +594,80 @@ test('端到端（假模型）：模型回空计划 + 说明缺什么 → 判成
   assert.equal(res.error, 'plan_needs_clarification');
   assert.match(res.message ?? '', /未指明/, '要把模型自己给的原因带回来');
   assert.deepEqual(res.schemaIssues, [], '这不是契约问题，不该挂一堆 schema 问题');
+});
+
+test('分步：步骤清单的识别只认「没有 ops」的那一种', () => {
+  assert.deepEqual(
+    readStepOutline({ version: '1.0', intent: '总目标', steps: ['先重投影', '再改值'] }),
+    ['先重投影', '再改值'],
+  );
+  assert.equal(
+    readStepOutline({ version: '1.0', steps: ['先重投影'], ops: [{ op: 'raster.clip', params: {} }] }),
+    null,
+    '带 ops 的是计划，不是步骤清单',
+  );
+  assert.equal(readStepOutline({ version: '1.0', steps: ['  ', '第二步'] }), null, '空步骤不算');
+  assert.equal(readStepOutline({ version: '1.0', steps: [] }), null, '空数组不算');
+  assert.equal(readStepOutline({ version: '0.9', steps: ['第一步', '第二步'] }), null, '版本不对不算');
+  // 弱模型常把步骤写成对象：认 goal / step / title 三个键
+  assert.deepEqual(
+    readStepOutline({ version: '1.0', steps: [{ goal: '重投影' }, { step: '改值' }, { title: '出图' }] }),
+    ['重投影', '改值', '出图'],
+    '对象形式的步骤也要接住',
+  );
+});
+
+test('分步：模型先给步骤清单 → ok=true、plan=null、steps 带回来', async () => {
+  const res = await createPlan({
+    prompt: '把这一层重投影到 EPSG:4547，再把地类里的耕地改成 01',
+    context: RAW_CONTEXT,
+    fetchImpl: fakeChat(
+      JSON.stringify({
+        version: '1.0',
+        intent: '先重投影再改地类编码',
+        steps: ['把《底图》重投影到 EPSG:4547', '把地类里的耕地改成 01'],
+      }),
+    ),
+  });
+
+  assert.equal(res.ok, true, '步骤清单不是失败');
+  assert.equal(res.error, null);
+  assert.equal(res.plan, null, '还没出计划');
+  assert.deepEqual(res.steps, ['把《底图》重投影到 EPSG:4547', '把地类里的耕地改成 01']);
+});
+
+test('分步：stepOnly 时模型又拆步骤 → 明确让用户把这一步写具体', async () => {
+  const res = await createPlan({
+    prompt: '第 1 步（共 2 步）：把这一层重投影到 EPSG:4547。总目标：重投影后改值',
+    stepOnly: true,
+    context: RAW_CONTEXT,
+    fetchImpl: fakeChat(
+      JSON.stringify({ version: '1.0', intent: '总目标', steps: ['先重投影', '再改值'] }),
+    ),
+  });
+  assert.equal(res.ok, false);
+  assert.equal(res.error, 'plan_needs_clarification');
+  assert.match(res.message ?? '', /又拆成了 2/);
+});
+
+test('分步：提示词教模型先拆步骤；stepOnly 时明确不许再拆', () => {
+  const catalog = opCatalog(readOpsSchema(), RASTER_OPS);
+  const normal = buildPlanPrompt({
+    context: buildPlanContext(RAW_CONTEXT),
+    instruction: '把这一层重投影，再改地类',
+    catalog,
+  });
+  assert.match(normal, /步骤清单/, '正常模式要教模型拆步骤');
+  assert.match(normal, /"steps"/, '要给出步骤清单的 JSON 形状');
+  assert.ok(!normal.includes('不要再拆 steps'), '正常模式不该出现 stepOnly 的禁令');
+
+  const stepOnly = buildPlanPrompt({
+    context: buildPlanContext(RAW_CONTEXT),
+    instruction: '第 1 步：把这一层重投影',
+    catalog,
+    stepOnly: true,
+  });
+  assert.match(stepOnly, /不要再拆 steps/, 'stepOnly 时必须明确禁止再拆');
 });
 
 test('端到端（假模型）：空计划但明说「尚未支持」→ 判成引擎做不了', async () => {

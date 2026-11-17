@@ -487,17 +487,24 @@ async function recordOperations(
  * 字段名、字段类型、要素数量、坐标系标识由引擎用 GDAL 探查后补齐
  * （见 `llm-plan.ts` 的 enrichContext）—— 补的是元数据，不是数据本身。
  *
+ * `activeLayerId` 是用户在画布上明确选中的那一层：带上它，
+ * 模型才能把「这一层」落到具体文件上，而不是从可见层里猜。
+ *
  * 读不到清单（根没登记、项目还没建）就当空项目：提议层照常可用，
  * 只是模型看不到图层而已，不该因此整个请求失败。
  */
-async function manifestContext(root: string | null): Promise<unknown> {
-  if (!root) return { projectName: '', layers: [] };
+async function manifestContext(root: string | null, activeLayerId?: unknown): Promise<unknown> {
+  if (!root) return { projectName: '', layers: [], activeLayerId: null };
   try {
     const m = await projects.readManifest(root);
-    if (!m) return { projectName: '', layers: [] };
-    return { projectName: m.name, layers: m.layers };
+    if (!m) return { projectName: '', layers: [], activeLayerId: null };
+    const active =
+      typeof activeLayerId === 'string' && m.layers.some((l) => l.id === activeLayerId)
+        ? activeLayerId
+        : null;
+    return { projectName: m.name, layers: m.layers, activeLayerId: active };
   } catch {
-    return { projectName: '', layers: [] };
+    return { projectName: '', layers: [], activeLayerId: null };
   }
 }
 
@@ -818,9 +825,10 @@ function foldCasePath(p: string): string {
             model?: string;
             effort?: string;
             root?: string;
+            activeLayerId?: string;
           };
           const root = body.root ?? null;
-          const context = body.context ?? (await manifestContext(root));
+          const context = body.context ?? (await manifestContext(root, body.activeLayerId));
           const preview = await buildContextPreview({
             context,
             prompt: body.prompt ?? '',
@@ -851,14 +859,17 @@ function foldCasePath(p: string): string {
             providerId?: string;
             context?: unknown;
             root?: string;
+            activeLayerId?: string;
+            stepOnly?: boolean;
           };
           const root = body.root ?? null;
-          const context = body.context ?? (await manifestContext(root));
+          const context = body.context ?? (await manifestContext(root, body.activeLayerId));
           const result = await createPlan({
             prompt: body.prompt ?? '',
             model: body.model,
             effort: body.effort,
             providerId: body.providerId,
+            stepOnly: body.stepOnly === true,
             context,
             root,
             // 闸门②的引擎前置校验：交给引擎自己判（GDAL + 调度器）

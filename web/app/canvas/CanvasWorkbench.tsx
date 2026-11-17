@@ -1546,6 +1546,7 @@ export default function CanvasWorkbench() {
               <AiSidePanel
                 projectRoot={projectRef ? (projectRef.path ?? projectRef.handle ?? null) : null}
                 activeLayerName={activeLayer?.name ?? null}
+                activeLayerId={activeLayerId}
                 onClose={() => setAiPanelOpen(false)}
                 onExecuted={() => {
                   void refreshAfterAi();
