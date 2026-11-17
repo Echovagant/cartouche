@@ -87,7 +87,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/set-key.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-engine.ps1
 ```
 
-也可以在 <http://127.0.0.1:8080/ai.html> 里粘贴——只驻留内存，服务重启即失效。
+也可以在画布右侧的「AI 改图」面板里粘贴——只驻留内存，服务重启即失效。
 
 **磁盘上只允许出现 DPAPI 密文。** 密文绑定当前 Windows 用户，别的账号、别的机器都解不开。
 

@@ -38,7 +38,7 @@ $PROVIDERS = @{
 if (-not $PROVIDERS.ContainsKey($Provider)) {
   Write-Output ("[key] 不认识的接入线：{0}" -f $Provider)
   Write-Output ("[key] 可选：{0}" -f (($PROVIDERS.Keys | Sort-Object) -join ', '))
-  Write-Output '[key] 本机 Ollama 不用密钥；自定义端点的 key 在 AI 页面里粘贴（跟端点走）。'
+  Write-Output '[key] 本机模型不用密钥；自定义端点的 key 在画布右侧的 AI 面板里粘贴（跟端点走）。'
   return
 }
 
