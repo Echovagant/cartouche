@@ -19,7 +19,7 @@ const eng = (p) => pathToFileURL(join(root, 'src', 'engine', p)).href;
 const { resolveGdal } = await import(eng('gdal/env.ts'));
 const { tools } = await import(eng('gdal/runner.ts'));
 const { LocalFolderStore } = await import(eng('workspace/index.ts'));
-const { probeLayer } = await import(eng('vector/read.ts'));
+const { probeLayer, readFeatures } = await import(eng('vector/read.ts'));
 const { writeFeatures } = await import(eng('vector/write.ts'));
 
 const loc = resolveGdal();
@@ -287,29 +287,67 @@ test('KML：写回后字段（含 DateTime）/图层名/WGS84 都在，属性真
   }
 });
 
-test('KML：多图层与 0 要素都明确拒绝', async () => {
+test('GML：沿用源文件的命名空间与前缀', async () => {
   const { dir, store, geojson } = setup();
   try {
-    // 单图层：0 要素拒绝
-    const single = join(dir, 'single.kml');
-    await ogr(['-f', 'LIBKML', '-nln', 'cities', single, geojson]);
+    const gml = join(dir, 'custom.gml');
+    await ogr([
+      '-f', 'GML', '-nln', 'cities',
+      '-dsco', 'TARGET_NAMESPACE=http://example.com/foo',
+      '-dsco', 'PREFIX=foo',
+      gml, geojson,
+    ]);
+    assert.ok(readFileSync(gml, 'utf8').includes('xmlns:foo="http://example.com/foo"'));
+
+    const read = (await readFeatures(loc, { path: gml })).features;
+    await writeFeatures(loc, store, { target: 'custom.gml', features: read });
+
+    const xml = readFileSync(gml, 'utf8');
+    assert.ok(xml.includes('xmlns:foo="http://example.com/foo"'), '写回后命名空间不能换掉');
+    assert.ok(xml.includes('<foo:FeatureCollection'), '根元素的命名空间前缀要沿用');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('KML：0 要素写回明确拒绝（KML 没有表结构可保）', async () => {
+  const { dir, store, geojson } = setup();
+  try {
+    const kml = join(dir, 'cities.kml');
+    await ogr(['-f', 'LIBKML', '-nln', 'cities', kml, geojson]);
     await assert.rejects(
-      () => writeFeatures(loc, store, { target: 'single.kml', features: [] }),
+      () => writeFeatures(loc, store, { target: 'cities.kml', features: [] }),
       /字段定义/,
     );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
-    // 多图层：从两层 GDB 生成一个多图层 KML
+test('KML：多图层按原顺序写回，未改的层原样保留', async () => {
+  const { dir, store, geojson } = setup();
+  try {
     const gdb = join(dir, 'two.gdb');
     await ogr(['-f', 'OpenFileGDB', '-nln', 'first', gdb, geojson]);
     await ogr(['-update', '-nln', 'second', gdb, geojson]);
     const multi = join(dir, 'multi.kml');
     await ogr(['-f', 'LIBKML', multi, gdb]);
-    const read = await probeLayer(loc, multi);
-    assert.ok(read.layerNames.length > 1, '夹具应有两个图层');
-    await assert.rejects(
-      () => writeFeatures(loc, store, { target: 'multi.kml', features: recordsOf() }),
-      /只支持单图层/,
-    );
+    const orderBefore = await layerOrder(multi);
+    assert.deepEqual(orderBefore, ['first', 'second']);
+    const secondBefore = await layerDetail(multi, 'second');
+
+    const res = await writeFeatures(loc, store, {
+      target: 'multi.kml',
+      features: recordsOf([{ NAME: '北京', POP: 8888, HEIGHT: 43.5 }]),
+    });
+
+    assert.deepEqual(await layerOrder(multi), ['first', 'second'], '图层顺序不能变');
+    const firstAfter = await layerDetail(multi, 'first');
+    assert.equal(firstAfter.count, 1, '改的那一层应是 1 条');
+    const secondAfter = await layerDetail(multi, 'second');
+    assert.equal(secondAfter.count, secondBefore.count, '没改的层要素数不能变');
+    assert.deepEqual(secondAfter.fields, secondBefore.fields, '没改的层字段不能变');
+    assert.equal(res.layerName, 'first');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

@@ -46,7 +46,7 @@
  * —— 引擎读多图层容器读的是第一个图层，顺序一变，下次读到的就是别的图层了。
  * 所以写完要把 `gpkg_contents` 的顺序改回原样（见 restoreGpkgLayerOrder）。
  */
-import { copyFileSync, existsSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { basename, dirname, join, sep } from 'node:path';
 import { tools } from '../gdal/runner.ts';
@@ -577,7 +577,7 @@ async function writeGpkgFeatures(
  *
  * 字段故意做成 LayerInfo 的超集：`sameSrs` / `srsMatchesWkt` 可以直接吃。
  */
-interface GdbLayerDetail extends LayerInfo {
+interface VectorLayerDetail extends LayerInfo {
   /** 图层名（与 layerName 同值，读起来短一些） */
   readonly name: string;
   /** 字段定义（带宽度），重建层结构时用它保住原类型 */
@@ -753,11 +753,11 @@ async function layerGeometryType(
 }
 
 /** 探一个 FileGDB 图层的细节（FID/几何列名、字段、坐标系、要素数）。 */
-async function probeGdbLayer(
+async function probeLayerDetail(
   loc: GdalLocation,
   path: string,
   layerName: string,
-): Promise<GdbLayerDetail> {
+): Promise<VectorLayerDetail> {
   const res = await tools(loc).ogrInfo(['-ro', '-so', path, layerName]);
   if (!res.ok) {
     throw new VectorError(
@@ -788,14 +788,14 @@ async function probeGdbLayer(
  * 顺序一变，下次打开读到的就是别的层了。OpenFileGDB 的 `-overwrite`
  * 会把被替换的层挪到最后（实测），所以这里根本不用它，改成整库重建。
  */
-async function probeGdbLayers(loc: GdalLocation, path: string): Promise<GdbLayerDetail[]> {
+async function probeLayerDetails(loc: GdalLocation, path: string): Promise<VectorLayerDetail[]> {
   const res = await tools(loc).ogrInfo(['-ro', '-so', '-al', path]);
   if (!res.ok) {
     throw new VectorError(`读不了这个 FileGDB：${basename(path)}`, res.stderr);
   }
   const names = parseLayerSummaries(res.stdout).map((l) => l.name);
-  const out: GdbLayerDetail[] = [];
-  for (const name of names) out.push(await probeGdbLayer(loc, path, name));
+  const out: VectorLayerDetail[] = [];
+  for (const name of names) out.push(await probeLayerDetail(loc, path, name));
   return out;
 }
 
@@ -868,8 +868,8 @@ async function uniqueBackupRel(
  *   - 其它图层的要素数、字段名与类型一个不差。
  */
 function assertGdbRewrite(
-  beforeLayers: readonly GdbLayerDetail[],
-  afterLayers: readonly GdbLayerDetail[],
+  beforeLayers: readonly VectorLayerDetail[],
+  afterLayers: readonly VectorLayerDetail[],
   layerName: string,
   expectedCount: number,
   srsWkt: string | undefined,
@@ -928,18 +928,14 @@ function assertGdbRewrite(
 /**
  * 写回一个 FileGDB：**整库重建 + 整目录替换**。
  *
- * 为什么不是像 GeoPackage 那样"只动那一层"：OpenFileGDB 的 `-overwrite`
- * 会把被替换的图层挪到目录末尾（实测），而引擎读的是第一个图层 ——
- * 顺序一变，下次打开读到的就是别的层。与其写坏，不如重建成一个新目录：
+ * 为什么不能像 GeoPackage 那样直接 `-overwrite` 目标层：OpenFileGDB 的
+ * `-overwrite` 会把被替换的图层挪到目录末尾（实测），而引擎读的是第一个图层 ——
+ * 顺序一变，下次打开读到的就是别的层。
  *
- *   1. 按原顺序逐层建进临时目录里的新 .gdb；
- *      - 目标层：先把"字段定义 + 类型"写成一份 OGR VRT（原有列照原定义、新列按值推断），
- *        再从 VRT 建层 —— 字段类型与宽度不会因为 GeoJSON 重猜而漂移；
- *      - 其它层：原样复制（字段、坐标系、FID/几何列名都跟着走）。
- *   2. 核对层序、要素数、字段；不过就中止，原目录一个字节不动；
- *   3. 原目录 rename 成备份 → 新目录 rename 到位 → 再核对一次；失败就退回。
- *
- * 代价：整库要重写一遍（多图层库比"只改一层"慢）。换来的是层序与类型不漂。
+ * 为什么也不走"清空 + append"的就地路线（试过，被实测否掉）：
+ * `ogrinfo -dialect SQLITE -sql 'DELETE FROM …'` 删 1420 行要 **22.6 秒**，
+ * 而整库重建同样数据只要 **2.4 秒** —— 看起来更省的那条路实际更慢。
+ * 所以保留重建：按原顺序逐层建，目标层用 VRT 钉住字段类型，其它层原样复制。
  */
 async function writeGdbFeatures(
   loc: GdalLocation,
@@ -953,7 +949,7 @@ async function writeGdbFeatures(
     throw new VectorError(`写回中止：这个 FileGDB 不存在（${targetRel}）`);
   }
 
-  const beforeLayers = await probeGdbLayers(loc, targetAbs);
+  const beforeLayers = await probeLayerDetails(loc, targetAbs);
   if (beforeLayers.length === 0) {
     throw new VectorError(`写回中止：这个 FileGDB 里没有图层可写（${targetRel}）`);
   }
@@ -1027,8 +1023,9 @@ async function writeGdbFeatures(
       }
     }
 
+
     // ── 2) 换目录之前先核对新库 ────────────────────────────────
-    const built = await probeGdbLayers(loc, buildAbs);
+    const built = await probeLayerDetails(loc, buildAbs);
     assertGdbRewrite(beforeLayers, built, layerName, options.features.length, options.srsWkt);
 
     // ── 3) 整目录替换（原目录改名当备份）──────────────────────
@@ -1048,7 +1045,7 @@ async function writeGdbFeatures(
 
     // ── 4) 落地后再核对一次；不过就从备份退回 ─────────────────
     try {
-      const finalLayers = await probeGdbLayers(loc, targetAbs);
+      const finalLayers = await probeLayerDetails(loc, targetAbs);
       assertGdbRewrite(beforeLayers, finalLayers, layerName, options.features.length, options.srsWkt);
       const finalTarget = finalLayers.find((l) => l.name === layerName)!;
       return {
@@ -1083,6 +1080,26 @@ async function writeGdbFeatures(
 }
 
 /* ────────────────────────────── GML ────────────────────────────── */
+
+/**
+ * 读源 GML 根元素的应用命名空间与前缀。
+ *
+ * GML 写器默认用 `ogr` + `http://ogr.maptools.org/`；沿用它自己的命名空间，
+ * 下游按命名空间解析的工具才不会因为"换了个命名空间"认不出来。
+ */
+function readGmlNamespace(absPath: string): { prefix: string; uri: string } | null {
+  try {
+    const head = readFileSync(absPath, 'utf8').slice(0, 8192);
+    const root = /<([A-Za-z_][\w.-]*):[A-Za-z_][\w.-]*[\s>]/.exec(head);
+    const prefix = root?.[1];
+    if (!prefix || /^(gml|xsi|xml|xlink)$/i.test(prefix)) return null;
+    const escaped = prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const decl = new RegExp(`xmlns:${escaped}="([^"]+)"`).exec(head);
+    return decl ? { prefix, uri: decl[1]! } : null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * 写回一个 GML：**重新生成主文件与 .xsd**，整组替换。
@@ -1155,6 +1172,11 @@ async function writeGmlFeatures(
       // 只贴标签不重投影：坐标原样搬过去，坐标系标签原样带过去
       args.push('-a_srs', sourceInfo.srsWkt);
     }
+    if (existed) {
+      // 沿用源文件的命名空间/前缀（GDAL 默认会写成 ogr / ogr.maptools.org）
+      const ns = readGmlNamespace(targetAbs);
+      if (ns) args.push('-dsco', `TARGET_NAMESPACE=${ns.uri}`, '-dsco', `PREFIX=${ns.prefix}`);
+    }
     args.push(outMain, schemaVrt);
 
     const res = await gdal.ogr2ogr(args);
@@ -1223,15 +1245,15 @@ async function writeGmlFeatures(
 /* ────────────────────────────── KML ────────────────────────────── */
 
 /**
- * 写回一个 KML：重新生成单文件。
+ * 写回一个 KML：重新生成单文件，**多图层按原顺序重建**。
  *
- * 三条约束来自 KML 规范与 LIBKML 驱动的行为，不是我们的取舍：
+ * 约束来自 KML 规范与 LIBKML 驱动的行为，不是我们的取舍：
  *  - **坐标只能是 WGS84**：LIBKML 写入时会把源坐标系转回 4326（实测 3857 源转回来
  *    坐标正确）。所以 KML 不能当作"重投影到别的坐标系"的载体，那种请求直接拒绝。
- *  - **单图层**：多图层 KML 的写回要先选层，本轮明确拒绝而不是只写第一层。
- *  - **样式不随属性表走**：KML 的样式是显示信息，重写后按默认样式生成。
+ *  - **0 要素**：KML 没有独立表结构，写空会丢全部字段定义，直接拒绝。
  *  - 属性列与 KML 内置字段（Name / description …）重名时，驱动会自动加后缀
  *    （实测 NAME → NAME2）—— 值不丢，但列名会变，这是 KML 的结构决定的。
+ *  - 被改的那一层样式按默认重写；**没改的层原样从源 KML 复制**（样式跟着走）。
  */
 async function writeKmlFeatures(
   loc: GdalLocation,
@@ -1242,15 +1264,8 @@ async function writeKmlFeatures(
 ): Promise<WriteFeaturesResult> {
   const gdal = tools(loc);
   const existed = existsSync(targetAbs);
-  const sourceInfo = existed ? await probeLayer(loc, targetAbs) : null;
+  const beforeLayers = existed ? await probeLayerDetails(loc, targetAbs) : [];
 
-  if (sourceInfo && sourceInfo.layerNames.length > 1) {
-    throw new VectorError(
-      `写回中止：这个 KML 里有 ${sourceInfo.layerNames.length} 个图层` +
-        `（${sourceInfo.layerNames.join('、')}），本轮只支持单图层 KML 写回。` +
-        '请先在 GIS 软件里拆成单图层再改。',
-    );
-  }
   if (options.srsWkt) {
     const wanted = epsgOf(options.srsWkt);
     if (wanted !== null && wanted !== 4326) {
@@ -1260,7 +1275,7 @@ async function writeKmlFeatures(
       );
     }
   }
-  if (sourceInfo && sourceInfo.fields.length > 0 && options.features.length === 0) {
+  if (options.features.length === 0) {
     throw new VectorError(
       'KML 没有独立的表结构文件，写成 0 个要素会丢掉全部字段定义。' +
         '这一层至少要保留一条要素；要清空请直接删掉这个 KML。',
@@ -1268,13 +1283,14 @@ async function writeKmlFeatures(
   }
 
   const layerName =
-    options.layerName ?? sourceInfo?.layerName ?? basename(targetAbs).replace(/\.[^.]+$/, '');
-  if (options.layerName && sourceInfo && !sourceInfo.layerNames.includes(options.layerName)) {
+    options.layerName ?? beforeLayers[0]?.name ?? basename(targetAbs).replace(/\.[^.]+$/, '');
+  if (options.layerName && beforeLayers.length > 0 && !beforeLayers.some((l) => l.name === layerName)) {
     throw new VectorError(
-      `写回中止：这个 KML 里没有「${options.layerName}」这一层` +
-        `（有：${sourceInfo.layerNames.join('、')}）`,
+      `写回中止：这个 KML 里没有「${layerName}」这一层` +
+        `（有：${beforeLayers.map((l) => l.name).join('、')}）`,
     );
   }
+  const targetBefore = beforeLayers.find((l) => l.name === layerName) ?? null;
 
   const tempDir = makeTempDir(targetAbs);
   try {
@@ -1289,7 +1305,7 @@ async function writeKmlFeatures(
       sourceLayer: basename(geoJson).replace(/\.[^.]+$/, ''),
       layerName,
       fields: fieldTypesForWrite(
-        (sourceInfo?.fields ?? []).map((f) => ({ name: f.name, type: f.type })),
+        targetBefore?.fieldDefs ?? [],
         options.features,
         options.dropFieldNames,
       ),
@@ -1299,39 +1315,89 @@ async function writeKmlFeatures(
     });
 
     const outMain = join(tempDir, basename(targetAbs));
-    const args = ['-f', 'LIBKML', '-nln', layerName];
-    // GeoJSON 总是声明成 4326；必须把源坐标系贴回去，LIBKML 才知道要转回 WGS84
-    const crs = options.srsWkt ?? sourceInfo?.srsWkt;
-    if (crs) args.push('-a_srs', crs);
-    args.push(outMain, schemaVrt);
-
-    const res = await gdal.ogr2ogr(args);
-    if (!res.ok) {
-      throw new VectorError(`写不进去：${targetRel}（KML 生成失败）`, res.stderr);
+    // 按原顺序重建所有图层：目标层用 VRT，其它层原样从源 KML 复制（样式跟着走）
+    for (let i = 0; i < beforeLayers.length; i += 1) {
+      const layer = beforeLayers[i]!;
+      const isTarget = layer.name === layerName;
+      const base = i === 0
+        ? ['-f', 'LIBKML', '-nln', layer.name]
+        : ['-update', '-nln', layer.name];
+      const crs = options.srsWkt ?? layer.srsWkt;
+      const args = isTarget
+        ? [...base, ...(crs ? ['-a_srs', crs] : []), outMain, schemaVrt]
+        : [...base, outMain, targetAbs, layer.name];
+      const res = await gdal.ogr2ogr(args);
+      if (!res.ok) {
+        throw new VectorError(
+          `写不进去：${targetRel}（KML 生成失败：${layer.name}）`,
+          res.stderr,
+        );
+      }
+    }
+    if (beforeLayers.length === 0) {
+      // 新建 KML：只有目标层
+      const args = ['-f', 'LIBKML', '-nln', layerName];
+      if (options.srsWkt) args.push('-a_srs', options.srsWkt);
+      args.push(outMain, schemaVrt);
+      const res = await gdal.ogr2ogr(args);
+      if (!res.ok) {
+        throw new VectorError(`写不进去：${targetRel}（KML 生成失败）`, res.stderr);
+      }
     }
     if (!existsSync(outMain)) {
-      throw new VectorError(`写回失败：转换命令跑完了但没产出文件（${targetRel}）`, res.stderr);
+      throw new VectorError(`写回失败：转换命令跑完了但没产出文件（${targetRel}）`);
     }
 
-    const after = await probeLayer(loc, outMain);
-    if (after.featureCount !== options.features.length) {
+    // ── 核对：层序、目标层要素/字段、其它层原样 ──────────────────
+    const afterLayers = await probeLayerDetails(loc, outMain);
+    if (beforeLayers.length > 0) {
+      if (afterLayers.length !== beforeLayers.length) {
+        throw new VectorError(
+          `写回中止：写出来的 KML 有 ${afterLayers.length} 个图层，原来有 ${beforeLayers.length} 个。`,
+        );
+      }
+      for (let i = 0; i < beforeLayers.length; i += 1) {
+        if (afterLayers[i]!.name !== beforeLayers[i]!.name) {
+          throw new VectorError(
+            `写回中止：图层顺序变了（第 ${i + 1} 层原来是「${beforeLayers[i]!.name}」，` +
+              `现在是「${afterLayers[i]!.name}」）。`,
+          );
+        }
+      }
+    } else if (afterLayers.length !== 1 || afterLayers[0]!.name !== layerName) {
+      throw new VectorError(`写回中止：写出来的 KML 图层不是「${layerName}」。`);
+    }
+    const afterTarget = afterLayers.find((l) => l.name === layerName);
+    if (!afterTarget) {
+      throw new VectorError(`写回中止：写完之后找不到「${layerName}」这一层。`);
+    }
+    if (afterTarget.featureCount !== options.features.length) {
       throw new VectorError(
-        `写回中止：写出来的 KML 有 ${after.featureCount} 个要素，写进去的是 ${options.features.length} 个。`,
+        `写回中止：写出来的 KML 有 ${afterTarget.featureCount} 个要素，写进去的是 ${options.features.length} 个。`,
       );
     }
-    if (sourceInfo && sourceInfo.fields.length > 0 && after.fields.length < sourceInfo.fields.length) {
+    if (targetBefore && targetBefore.fields.length > 0 && afterTarget.fields.length < targetBefore.fields.length) {
       throw new VectorError(
-        `写回中止：写出来的 KML 只剩 ${after.fields.length} 列，原文件有 ${sourceInfo.fields.length} 列 —— 字段定义丢了。`,
-      );
-    }
-    if (after.layerName !== layerName) {
-      throw new VectorError(
-        `写回中止：写出来的图层名是「${after.layerName}」，不是原来的「${layerName}」。`,
+        `写回中止：写出来的 KML 只剩 ${afterTarget.fields.length} 列，原文件有 ${targetBefore.fields.length} 列 —— 字段定义丢了。`,
       );
     }
     // KML 一定是 4326：这里核对的是"驱动真的把它当 WGS84 写了"
-    if (after.epsg !== null && after.epsg !== 4326) {
-      throw new VectorError(`写回中止：KML 的坐标系是 EPSG:${after.epsg}，不是 WGS84。`);
+    if (afterTarget.epsg !== null && afterTarget.epsg !== 4326) {
+      throw new VectorError(`写回中止：KML 的坐标系是 EPSG:${afterTarget.epsg}，不是 WGS84。`);
+    }
+    if (beforeLayers.length > 0) {
+      for (const other of beforeLayers) {
+        if (other.name === layerName) continue;
+        const now = afterLayers.find((l) => l.name === other.name)!;
+        if (now.featureCount !== other.featureCount) {
+          throw new VectorError(
+            `写回中止：「${other.name}」这一层的要素数从 ${other.featureCount} 变成了 ${now.featureCount}。`,
+          );
+        }
+        if (fieldSignature(now.fields) !== fieldSignature(other.fields)) {
+          throw new VectorError(`写回中止：「${other.name}」这一层的字段变了。`);
+        }
+      }
     }
 
     const { backupPath } = await replaceFileAtomically(store, {
@@ -1344,9 +1410,9 @@ async function writeKmlFeatures(
       backupPath,
       files: [targetRel],
       removed: [],
-      fieldNames: after.fields.map((f) => f.name),
-      featureCount: after.featureCount,
-      layerName: after.layerName,
+      fieldNames: afterTarget.fields.map((f) => f.name),
+      featureCount: afterTarget.featureCount,
+      layerName: afterTarget.name,
     };
   } finally {
     rmSync(tempDir, { recursive: true, force: true });

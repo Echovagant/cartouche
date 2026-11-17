@@ -272,8 +272,8 @@ const WRITABLE = [
   { ext: '.geojson', note: 'GeoJSON' },
   { ext: '.gpkg', note: 'GeoPackage（只动你指定的那一层，别的层原样留着）' },
   { ext: '.gdb', note: 'File Geodatabase（整库重建，层序与其它图层不变）' },
-  { ext: '.gml', note: 'GML（主文件 + .xsd 一起换）' },
-  { ext: '.kml', note: 'KML（单图层，WGS84；样式按默认重写）' },
+  { ext: '.gml', note: 'GML（主文件 + .xsd 一起换，沿用原命名空间）' },
+  { ext: '.kml', note: 'KML（多图层按原顺序；WGS84；被改层的样式按默认重写）' },
 ];
 
 const READONLY_RASTER = [
@@ -305,7 +305,7 @@ const ABOUT = [
   },
   {
     title: '能不能在 ArcGIS 里打开',
-    body: '能。写回的是原图件，坐标系原样保留；坐标系的来源与伴随文件是否齐全，由兼容性自检报告逐项写清。',
+    body: '按 Esri 的格式写回，坐标系与伴随文件原样保留，写后用 GDAL 回读校验。ArcGIS 侧能否打开属于交付前的人工验收项——建议在一台装有 ArcGIS 的机器上打开一次；本机不装 ArcGIS，这一步没有被自动化测试覆盖。',
   },
 ];
 
