@@ -14,12 +14,24 @@ import type { GdalLocation } from '../gdal/env.ts';
 import type { WorkspaceAdapter } from '../workspace/index.ts';
 import type { OpValueResult } from '../ops/executor.ts';
 import { evaluate, parseExpression, toSql, type ExprNode } from '../expression/index.ts';
+// 量算与「按条件汇总面积」同一套口径：面按外环减洞、经纬度直接拒绝。
+// 这个模块只依赖 geometry 与 vector/types，不会和本文件形成环。
+import { crsMeasureOf, geometryKind, planarArea } from '../feature/measure.ts';
 import { matchesWhere, probeLayer, readFeatures, referencedFields } from './read.ts';
 import { formatForPath, writeFeatures } from './write.ts';
 import { toRelPathChecked } from './paths.ts';
 import { findWrittenField } from './field-names.ts';
 import { VectorError, type FeatureRecord } from './types.ts';
 import type { VectorOpDeps } from './query.ts';
+
+/**
+ * 面积伪列。
+ *
+ * 用户（和模型）会说「加一列面积」；ArcGIS 的字段计算器也有 `!shape.area!`。
+ * 这里给一个固定名字 AREA，按**平方米**算 —— 与「按条件汇总面积」同一口径。
+ * 图层里如果本来就有 AREA 列，真实列优先，不会被伪列顶掉。
+ */
+const AREA_PSEUDO = 'AREA';
 
 /** 读一个非空字符串参数；没有、或只有空白，返回 undefined。 */
 function readString(params: Readonly<Record<string, unknown>>, key: string): string | undefined {
@@ -101,8 +113,32 @@ export async function runVectorAddField(
   const exprNode: ExprNode = parseExpression(exprSql);
   const whereNode = where ? parseExpression(toSql(where)) : null;
 
+  // 面积伪列 AREA：图层里没有同名真实列时才生效（真实列优先）。
+  // 只有表达式/条件真的用到它时才检查坐标系 —— 别的算式不该被面积规则误伤。
+  const realAreaColumn = info.fields.find((f) => f.name.toUpperCase() === AREA_PSEUDO) ?? null;
+  const areaPseudo = realAreaColumn === null && referencesArea([exprNode, whereNode]);
+  let metersPerUnit = 1;
+  if (areaPseudo) {
+    const measure = crsMeasureOf(info);
+    const tag = info.epsg !== null ? `EPSG:${info.epsg}` : '未标注坐标系';
+    if (measure.kind === 'geographic') {
+      throw new VectorError(
+        `这个图层的坐标系是${tag}，按平面算出来的面积没有意义（度² 不是面积，越往高纬偏得越多）。` +
+          '要把面积写进一列，请先把图层重投影到米制投影坐标系（vector.reproject），再算 AREA。',
+      );
+    }
+    if (measure.kind === 'unknown' || measure.metersPerUnit === null) {
+      throw new VectorError(
+        '这个图层没有可用的投影坐标系（不知道坐标单位是什么），算不出以平方米为单位的面积。' +
+          '给图层补上投影坐标系，或改用能直接算的列。',
+      );
+    }
+    metersPerUnit = measure.metersPerUnit;
+  }
+
   // 列名先核一遍：条件里写了不存在的列，要在使用者看到属性表之前就报错
   const known = (name: string): boolean =>
+    (areaPseudo && name.toUpperCase() === AREA_PSEUDO) ||
     info.fields.some((f) => f.name.toLowerCase() === name.toLowerCase());
   for (const field of [...referencedFields(exprNode), ...(whereNode ? referencedFields(whereNode) : [])]) {
     if (!known(field)) {
@@ -114,14 +150,26 @@ export async function runVectorAddField(
   // 读出全部要素：写回时要把整层数据都写出去（不写的那部分等于删了）
   const read = await readFeatures(deps.loc, { path: abs });
 
+  // 面要素才有面积；点/线算出来全是 0，写一列 0 等于骗人。
+  if (areaPseudo) {
+    const hasArea = read.features.some((f) => f.geometry !== null && geometryKind(f.geometry) === 'area');
+    if (!hasArea) {
+      throw new VectorError('这一层是点/线要素，没有面积可算（AREA 只对面要素有意义）。');
+    }
+  }
+
   let updated = 0;
   const computed: unknown[] = [];
   const nextFeatures: FeatureRecord[] = read.features.map((f) => {
     const properties: Record<string, unknown> = { ...f.properties };
-    const hit = whereNode === null ? true : matchesWhere(whereNode, f.properties);
+    // AREA = 平面面积 × 单位换算²，统一成平方米；条件里也能用它筛选
+    const row: Record<string, unknown> = areaPseudo
+      ? { ...f.properties, [AREA_PSEUDO]: planarArea(f.geometry, '要素') * metersPerUnit * metersPerUnit }
+      : f.properties;
+    const hit = whereNode === null ? true : matchesWhere(whereNode, row);
     let value: string | number | boolean | null = null;
     if (hit) {
-      value = writableValue(evaluate(exprNode, f.properties));
+      value = writableValue(evaluate(exprNode, row));
       updated += 1;
     }
     computed.push(value);
@@ -135,7 +183,7 @@ export async function runVectorAddField(
       kind: 'value',
       summary:
         `将加字段「${fieldName}」：${updated} 条要素会赋值（共 ${read.features.length} 条）` +
-        `（预演：没有写盘）`,
+        `（预演：没有写盘${areaPseudo ? '；AREA 按平方米' : ''}）`,
       data: {
         fieldName,
         updated,
@@ -196,6 +244,9 @@ export async function runVectorAddField(
   if (writtenField !== fieldName) {
     caveats.push(`Shapefile 的列名被规范化成了「${writtenField}」`);
   }
+  if (areaPseudo) {
+    caveats.push('「AREA」是要素面积，单位平方米');
+  }
   if (rounded > 0) {
     caveats.push(`${rounded} 条的小数被存成了整数（Shapefile 的整数列会四舍五入）`);
   }
@@ -215,6 +266,14 @@ export async function runVectorAddField(
       ...(rounded > 0 ? { rounded } : {}),
     },
   };
+}
+
+/** 表达式 / 条件里是否引用了面积伪列（大小写不敏感） */
+function referencesArea(nodes: readonly (ExprNode | null)[]): boolean {
+  return nodes.some(
+    (node) =>
+      node !== null && referencedFields(node).some((name) => name.toUpperCase() === AREA_PSEUDO),
+  );
 }
 
 /**

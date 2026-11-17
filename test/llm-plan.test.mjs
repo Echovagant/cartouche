@@ -332,6 +332,9 @@ test('提示词：清单是槽位说明，不是原始 JSON Schema（不能再�
   assert.match(prompt, /参数（带 \* 为必填）/, '要标明哪些参数是必填');
   assert.match(prompt, /- target\*：dataset:\/\//, 'target 要标必填并给出写法');
   assert.match(prompt, /示例：\{/, '每个 op 都要给一份可照抄的示例');
+  // 面积伪列的口径必须真的送到模型面前，否则它又会以为 AREA 不存在
+  assert.match(prompt, /面积伪列 AREA/, '要告诉模型 AREA 是可用的伪列');
+  assert.match(prompt, /平方米/, '要告诉模型 AREA 的单位');
 });
 
 test('提示词里看得见矢量 op：模型得能选得到它', () => {
