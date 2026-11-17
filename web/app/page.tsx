@@ -259,7 +259,7 @@ const SOURCE_HINT = {
   ],
 };
 
-/* ── 格式支持：按"能不能改"分三组，不打太极 ── */
+/* ── 格式支持：按"能不能改"分组，不打太极 ── */
 
 const WRITABLE = [
   { ext: '.tff', note: 'GeoTIFF 内容 + .tfw/.prj 伴随文件' },
@@ -273,14 +273,11 @@ const WRITABLE = [
   { ext: '.gpkg', note: 'GeoPackage（只动你指定的那一层，别的层原样留着）' },
   { ext: '.gdb', note: 'File Geodatabase（整库重建，层序与其它图层不变）' },
   { ext: '.gml', note: 'GML（主文件 + .xsd 一起换）' },
+  { ext: '.kml', note: 'KML（单图层，WGS84；样式按默认重写）' },
 ];
 
 const READONLY_RASTER = [
   { ext: '.vrt', note: 'GDAL 虚拟栅格（不含像素，改它引用的源文件）' },
-];
-
-const READONLY_VECTOR = [
-  { ext: '.kml', note: 'KML' },
 ];
 
 /* ── 关于 ── */
@@ -742,7 +739,7 @@ export default function Home() {
               <p className="mt-4 font-mono text-body-sm text-ink-3">Ctrl+C 可复制本段</p>
             </div>
 
-            <div className="mt-12 grid grid-cols-1 gap-4 lg:grid-cols-3">
+            <div className="mt-12 grid grid-cols-1 gap-4 lg:grid-cols-2">
               {/* 能改 */}
               <div
                 data-format="group"
@@ -791,33 +788,6 @@ export default function Home() {
                 </p>
                 <ul className="mt-5 space-y-2">
                   {READONLY_RASTER.map((f) => (
-                    <li key={f.ext} data-format="row" className="flex items-baseline gap-2.5">
-                      <span className="mono-num font-mono text-[14px] font-medium text-ink-2">{f.ext}</span>
-                      <span className="text-body-sm text-ink-3">{f.note}</span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-
-              {/* 只读矢量 */}
-              <div data-format="group" className="reveal rounded-panel border border-line bg-surface p-6">
-                <div className="flex items-center gap-2">
-                  <span
-                    aria-hidden="true"
-                    className="grid h-[17px] w-[17px] place-items-center rounded-full border border-ink-4 text-[10px] leading-none text-ink-3"
-                  >
-                    ○
-                  </span>
-                  <h3 className="font-display text-display-3 text-ink">
-                    矢量 · 只读
-                  </h3>
-                </div>
-                <p className="mt-2.5 text-body leading-relaxed text-ink-2">
-                  这几个格式我们只读不写：能出图、能查属性、能导出。
-                  要改它们，先另存成上面那几种之一。
-                </p>
-                <ul className="mt-5 space-y-2">
-                  {READONLY_VECTOR.map((f) => (
                     <li key={f.ext} data-format="row" className="flex items-baseline gap-2.5">
                       <span className="mono-num font-mono text-[14px] font-medium text-ink-2">{f.ext}</span>
                       <span className="text-body-sm text-ink-3">{f.note}</span>

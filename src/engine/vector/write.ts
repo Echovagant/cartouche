@@ -96,8 +96,9 @@ export function formatForPath(path: string): VectorWriteFormat {
   if (lower.endsWith('.gpkg')) return 'gpkg';
   if (lower.endsWith('.gdb')) return 'gdb';
   if (lower.endsWith('.gml')) return 'gml';
+  if (lower.endsWith('.kml')) return 'kml';
   throw new VectorError(
-    `写回只支持 .shp、.geojson、.gpkg、.gdb 与 .gml，这个文件是 ${basename(path)}（换个格式再试）`,
+    `写回只支持 .shp、.geojson、.gpkg、.gdb、.gml 与 .kml，这个文件是 ${basename(path)}（换个格式再试）`,
   );
 }
 
@@ -150,7 +151,10 @@ async function existingDataFiles(
           : format === 'gdb'
             // FileGDB 是目录，不按文件粒度处理
             ? []
-            : [ownSuffix, '.geojson', '.json'].filter((s) => s !== '');
+            : format === 'kml'
+              // KML 是单个文件（.kmz 不在写回范围内）
+              ? [ownSuffix]
+              : [ownSuffix, '.geojson', '.json'].filter((s) => s !== '');
   let names: string[];
   try {
     names = await store.list(dirRel);
@@ -243,10 +247,17 @@ function parseLayerSummaries(stdout: string): GpkgLayerSummary[] {
       cur.featureCount = Number(counted[1]);
       continue;
     }
-    // 字段行长这样："名称: String (0.0)"。
+    // 字段行长这样："名称: String (0.0)"；Date/Time/DateTime 没有宽度，只写「名字: 类型」。
     // 排除掉 Geometry:/Extent:/Layer SRS WKT: 这些同样是"名字: 值"的行。
     const field = /^([^:]+):\s+[A-Za-z0-9]+\s*\(/.exec(line);
-    if (field) cur.fields.push(field[1]!.trim());
+    if (field) {
+      cur.fields.push(field[1]!.trim());
+      continue;
+    }
+    const bare = /^([^:]+):\s+(String|Integer64|Integer|Real|Date|Time|DateTime|Binary)\s*$/.exec(line);
+    if (bare && !/^(Geometry|Extent|Layer SRS WKT|Data axis)/.test(line)) {
+      cur.fields.push(bare[1]!.trim());
+    }
   }
   return out;
 }
@@ -587,18 +598,24 @@ interface VrtField {
 
 /** 从 `ogrinfo -so` 输出里拆字段定义（带宽度，OGR 字段类型名照抄）。 */
 function parseFieldDefs(stdout: string): VrtField[] {
+  // Date/Time/DateTime 这类字段没有 `(宽度)`，只写「名字: 类型」
+  const BARE = /^(.+?):\s+(String|Integer64|Integer|Real|Date|Time|DateTime|Binary)\s*$/;
   const out: VrtField[] = [];
   for (const line of stdout.split(/\r?\n/)) {
     if (/^(Geometry|Extent|Data axis)/.test(line)) continue;
     const m = /^(.+?):\s+([A-Za-z0-9]+)\s*\(([\d.]+)\)/.exec(line);
-    if (!m) continue;
-    const name = m[1]!.trim();
-    const width = Number(m[3]);
-    out.push({
-      name,
-      type: m[2]!,
-      ...(Number.isFinite(width) && width > 0 ? { width } : {}),
-    });
+    if (m) {
+      const name = m[1]!.trim();
+      const width = Number(m[3]);
+      out.push({
+        name,
+        type: m[2]!,
+        ...(Number.isFinite(width) && width > 0 ? { width } : {}),
+      });
+      continue;
+    }
+    const bare = BARE.exec(line);
+    if (bare) out.push({ name: bare[1]!.trim(), type: bare[2]! });
   }
   return out;
 }
@@ -635,16 +652,16 @@ function inferFieldType(features: readonly FeatureRecord[], name: string): strin
 function fieldTypesForWrite(
   sourceFields: readonly VrtField[],
   features: readonly FeatureRecord[],
+  dropFieldNames: readonly string[] = [],
 ): VrtField[] {
-  const present = presentFieldNames(features);
-  // 0 要素：没有值可参照，按原结构整份保留（否则空图层会变成"没有列"）
-  const keepAll = features.length === 0;
+  const dropped = new Set(dropFieldNames.map((n) => n.toLowerCase()));
   const seen = new Set<string>();
   const out: VrtField[] = [];
   for (const f of sourceFields) {
     if (seen.has(f.name)) continue;
-    // 有要素但原列不在要素里 → 这一列被改名 / 删掉了，不能再凭空造一个空列
-    if (!keepAll && !present.has(f.name)) continue;
+    // 只有调用方明确说"这一列被改名/删掉了"才去掉；
+    // 要素里没有这一列也可能是整列为空，那种情况要留住列（界面上的表结构不能平白少一列）。
+    if (dropped.has(f.name.toLowerCase())) continue;
     seen.add(f.name);
     out.push(f);
   }
@@ -834,8 +851,12 @@ async function uniqueBackupRel(
   label?: string,
 ): Promise<string> {
   const base = `${targetRel}.bak.${label ?? timestamp()}`;
-  if (!(await store.exists(base))) return base;
-  return `${base}.${randomBytes(3).toString('hex')}`;
+  // FileGDB 的备份是整个目录：以 .gdb 结尾才可以直接用 ArcGIS / GDAL 打开
+  const candidate = targetRel.toLowerCase().endsWith('.gdb') ? `${base}.gdb` : base;
+  if (!(await store.exists(candidate))) return candidate;
+  return targetRel.toLowerCase().endsWith('.gdb')
+    ? `${base}.${randomBytes(3).toString('hex')}.gdb`
+    : `${base}.${randomBytes(3).toString('hex')}`;
 }
 
 /**
@@ -960,7 +981,11 @@ async function writeGdbFeatures(
       sourceAbs: tempGeoJson,
       sourceLayer: basename(tempGeoJson).replace(/\.[^.]+$/, ''),
       layerName,
-      fields: fieldTypesForWrite(beforeLayer.fieldDefs, options.features),
+      fields: fieldTypesForWrite(
+        beforeLayer.fieldDefs,
+        options.features,
+        options.dropFieldNames,
+      ),
       geometryType: beforeLayer.geometryType,
       sourceFields: presentFieldNames(options.features),
     });
@@ -1114,6 +1139,7 @@ async function writeGmlFeatures(
       fields: fieldTypesForWrite(
         (sourceInfo?.fields ?? []).map((f) => ({ name: f.name, type: f.type })),
         options.features,
+        options.dropFieldNames,
       ),
       geometryType,
       sourceFields: presentFieldNames(options.features),
@@ -1194,6 +1220,139 @@ async function writeGmlFeatures(
   }
 }
 
+/* ────────────────────────────── KML ────────────────────────────── */
+
+/**
+ * 写回一个 KML：重新生成单文件。
+ *
+ * 三条约束来自 KML 规范与 LIBKML 驱动的行为，不是我们的取舍：
+ *  - **坐标只能是 WGS84**：LIBKML 写入时会把源坐标系转回 4326（实测 3857 源转回来
+ *    坐标正确）。所以 KML 不能当作"重投影到别的坐标系"的载体，那种请求直接拒绝。
+ *  - **单图层**：多图层 KML 的写回要先选层，本轮明确拒绝而不是只写第一层。
+ *  - **样式不随属性表走**：KML 的样式是显示信息，重写后按默认样式生成。
+ *  - 属性列与 KML 内置字段（Name / description …）重名时，驱动会自动加后缀
+ *    （实测 NAME → NAME2）—— 值不丢，但列名会变，这是 KML 的结构决定的。
+ */
+async function writeKmlFeatures(
+  loc: GdalLocation,
+  store: WorkspaceAdapter,
+  options: WriteFeaturesOptions,
+  targetRel: string,
+  targetAbs: string,
+): Promise<WriteFeaturesResult> {
+  const gdal = tools(loc);
+  const existed = existsSync(targetAbs);
+  const sourceInfo = existed ? await probeLayer(loc, targetAbs) : null;
+
+  if (sourceInfo && sourceInfo.layerNames.length > 1) {
+    throw new VectorError(
+      `写回中止：这个 KML 里有 ${sourceInfo.layerNames.length} 个图层` +
+        `（${sourceInfo.layerNames.join('、')}），本轮只支持单图层 KML 写回。` +
+        '请先在 GIS 软件里拆成单图层再改。',
+    );
+  }
+  if (options.srsWkt) {
+    const wanted = epsgOf(options.srsWkt);
+    if (wanted !== null && wanted !== 4326) {
+      throw new VectorError(
+        `KML 只能是 WGS84（EPSG:4326），不能写成 EPSG:${wanted}。` +
+          '要换投影请用 GeoPackage / Shapefile / FileGDB。',
+      );
+    }
+  }
+  if (sourceInfo && sourceInfo.fields.length > 0 && options.features.length === 0) {
+    throw new VectorError(
+      'KML 没有独立的表结构文件，写成 0 个要素会丢掉全部字段定义。' +
+        '这一层至少要保留一条要素；要清空请直接删掉这个 KML。',
+    );
+  }
+
+  const layerName =
+    options.layerName ?? sourceInfo?.layerName ?? basename(targetAbs).replace(/\.[^.]+$/, '');
+  if (options.layerName && sourceInfo && !sourceInfo.layerNames.includes(options.layerName)) {
+    throw new VectorError(
+      `写回中止：这个 KML 里没有「${options.layerName}」这一层` +
+        `（有：${sourceInfo.layerNames.join('、')}）`,
+    );
+  }
+
+  const tempDir = makeTempDir(targetAbs);
+  try {
+    const geoJson = join(tempDir, `input-${randomBytes(6).toString('hex')}.geojson`);
+    writeFileSync(geoJson, featuresToGeoJson(options.features), 'utf8');
+
+    // 与 GML/GDB 同一条思路：VRT 钉住字段类型，再由 LIBKML 建 KML
+    const schemaVrt = join(tempDir, 'schema.vrt');
+    buildSchemaVrt({
+      vrtPath: schemaVrt,
+      sourceAbs: geoJson,
+      sourceLayer: basename(geoJson).replace(/\.[^.]+$/, ''),
+      layerName,
+      fields: fieldTypesForWrite(
+        (sourceInfo?.fields ?? []).map((f) => ({ name: f.name, type: f.type })),
+        options.features,
+        options.dropFieldNames,
+      ),
+      // KML 读出来是 "Unknown (any)"，钉不住；交给要素自己推断
+      geometryType: null,
+      sourceFields: presentFieldNames(options.features),
+    });
+
+    const outMain = join(tempDir, basename(targetAbs));
+    const args = ['-f', 'LIBKML', '-nln', layerName];
+    // GeoJSON 总是声明成 4326；必须把源坐标系贴回去，LIBKML 才知道要转回 WGS84
+    const crs = options.srsWkt ?? sourceInfo?.srsWkt;
+    if (crs) args.push('-a_srs', crs);
+    args.push(outMain, schemaVrt);
+
+    const res = await gdal.ogr2ogr(args);
+    if (!res.ok) {
+      throw new VectorError(`写不进去：${targetRel}（KML 生成失败）`, res.stderr);
+    }
+    if (!existsSync(outMain)) {
+      throw new VectorError(`写回失败：转换命令跑完了但没产出文件（${targetRel}）`, res.stderr);
+    }
+
+    const after = await probeLayer(loc, outMain);
+    if (after.featureCount !== options.features.length) {
+      throw new VectorError(
+        `写回中止：写出来的 KML 有 ${after.featureCount} 个要素，写进去的是 ${options.features.length} 个。`,
+      );
+    }
+    if (sourceInfo && sourceInfo.fields.length > 0 && after.fields.length < sourceInfo.fields.length) {
+      throw new VectorError(
+        `写回中止：写出来的 KML 只剩 ${after.fields.length} 列，原文件有 ${sourceInfo.fields.length} 列 —— 字段定义丢了。`,
+      );
+    }
+    if (after.layerName !== layerName) {
+      throw new VectorError(
+        `写回中止：写出来的图层名是「${after.layerName}」，不是原来的「${layerName}」。`,
+      );
+    }
+    // KML 一定是 4326：这里核对的是"驱动真的把它当 WGS84 写了"
+    if (after.epsg !== null && after.epsg !== 4326) {
+      throw new VectorError(`写回中止：KML 的坐标系是 EPSG:${after.epsg}，不是 WGS84。`);
+    }
+
+    const { backupPath } = await replaceFileAtomically(store, {
+      target: targetRel,
+      tempPath: outMain,
+      ...(options.label ? { label: options.label } : {}),
+    });
+
+    return {
+      backupPath,
+      files: [targetRel],
+      removed: [],
+      fieldNames: after.fields.map((f) => f.name),
+      featureCount: after.featureCount,
+      layerName: after.layerName,
+    };
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
 /**
  * 把一套文件写回目标。
  *
@@ -1215,6 +1374,9 @@ export async function writeFeatures(
   }
   if (format === 'gml') {
     return writeGmlFeatures(loc, store, options, targetRel, targetAbs);
+  }
+  if (format === 'kml') {
+    return writeKmlFeatures(loc, store, options, targetRel, targetAbs);
   }
   const gdal = tools(loc);
 

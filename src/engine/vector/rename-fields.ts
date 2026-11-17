@@ -142,6 +142,8 @@ export async function runVectorRenameFields(
     features: renamed,
     // 改名不该顺手把 GBK 的属性表换成 UTF-8
     encoding: encodingForWriteback(targetAbs),
+    // 旧列名是主动去掉的：不说清楚的话，写回层会把"整列为空"和"列被改名"混为一谈
+    dropFieldNames: plans.map((p) => p.from),
   });
 
   // ── 写回后核对：列在不在、实际叫什么、值有没有变 ───────────────

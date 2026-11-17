@@ -62,6 +62,12 @@ export async function probeLayer(loc: GdalLocation, path: string): Promise<Layer
 
 /** 把 ogrinfo -so -al 的输出拆成结构化信息。 */
 export function parseLayerInfo(stdout: string): LayerInfo {
+  /**
+   * 不带宽度的字段类型：ogrinfo 对 Date/Time/DateTime 这类字段只写「名字: 类型」，
+   * 没有后面的 `(宽度)`。只认 `(...)` 的写法会把它们整列漏掉 ——
+   * 于是列名提示、写回的字段保真都少了几列（实测 KML 的 timestamp/begin/end 就是这样丢的）。
+   */
+  const BARE_FIELD = /^(.+?):\s+(String|Integer64|Integer|Real|Date|Time|DateTime|Binary|StringList|IntegerList|IntegerList64|RealList)\s*$/;
   const lines = stdout.split(/\r?\n/);
   let layerName = '';
   const layerNames: string[] = [];
@@ -126,6 +132,12 @@ export function parseLayerInfo(stdout: string): LayerInfo {
     if (fieldMatch && !/^(Geometry|Extent|Metadata|Layer SRS WKT|Data axis)/.test(line)) {
       const name = fieldMatch[1]!.trim();
       if (name !== '') fields.push({ name, type: fieldMatch[2]! });
+      continue;
+    }
+    const bareMatch = BARE_FIELD.exec(line);
+    if (bareMatch && !/^(Geometry|Extent|Metadata|Layer SRS WKT|Data axis)/.test(line)) {
+      const name = bareMatch[1]!.trim();
+      if (name !== '') fields.push({ name, type: bareMatch[2]! });
     }
   }
 

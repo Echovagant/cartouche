@@ -117,8 +117,9 @@ export interface ReadFeaturesResult {
  * - gpkg：GeoPackage —— **一个文件里的多个图层**（底层是 SQLite）
  * - gdb：ESRI File Geodatabase —— **一个目录里的多个图层**（OpenFileGDB 驱动）
  * - gml：GML —— 主文件 + .xsd 结构文件（单图层）
+ * - kml：KML —— 单图层；坐标系固定 WGS84（写入时由 LIBKML 自动转回来）
  */
-export type VectorWriteFormat = 'shapefile' | 'geojson' | 'gpkg' | 'gdb' | 'gml';
+export type VectorWriteFormat = 'shapefile' | 'geojson' | 'gpkg' | 'gdb' | 'gml' | 'kml';
 
 /**
  * 写要素的选项。
@@ -160,6 +161,14 @@ export interface WriteFeaturesOptions {
    * 不给就用 UTF-8（这是现在的行为，也是转码交差的默认目标）。
    */
   readonly encoding?: string;
+  /**
+   * 这次写回**主动去掉**的旧列名（改字段名时用）。
+   *
+   * 为什么需要显式给：要素里没有某一列，既可能是"列被删/改名了"，
+   * 也可能只是"这一列的值全是空"。前者要把旧列去掉，后者要把列留住 ——
+   * 光看要素猜不出来，所以由知道意图的调用方说清楚。
+   */
+  readonly dropFieldNames?: readonly string[];
 }
 
 /**

@@ -193,6 +193,7 @@ test('GDB：写一层之后图层顺序不变，其它图层要素/字段一个�
     assert.deepEqual(secondAfter.fields, secondBefore.fields, '没动的那一层字段不能变');
 
     assert.ok(res.backupPath, '必须留下备份');
+    assert.ok(res.backupPath.endsWith('.gdb'), 'FileGDB 的备份要以 .gdb 结尾，才能直接打开');
     assert.ok(existsSync(join(dir, res.backupPath, 'gdb')), '备份必须是完整的 GDB 目录（含 gdb 文件）');
     assert.equal(res.layerName, 'first');
     assert.equal(res.featureCount, 1);
@@ -234,12 +235,99 @@ test('GDB：改字段名后旧列不残留，值原样搬过去', async () => {
       delete properties.NAME;
       return { ...f, properties };
     });
-    await writeFeatures(loc, store, { target: 'cities.gdb', features });
+    await writeFeatures(loc, store, {
+      target: 'cities.gdb',
+      features,
+      dropFieldNames: ['NAME'],
+    });
 
     const after = await layerDetail(target, 'first');
     assert.ok(!after.fields.some((l) => l.startsWith('NAME:')), '旧列 NAME 不能残留在文件里');
     assert.ok(after.fields.some((l) => l.startsWith('CITY: String')), '新列 CITY 要在');
     assert.ok(after.fields.some((l) => l.startsWith('HEIGHT: Real')), '其余列的类型不能变');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/* ────────────────────────────── KML ────────────────────────────── */
+
+test('KML：写回后字段（含 DateTime）/图层名/WGS84 都在，属性真的改了', async () => {
+  const { dir, store, geojson } = setup();
+  try {
+    const kml = join(dir, 'cities.kml');
+    await ogr(['-f', 'LIBKML', '-nln', 'cities', kml, geojson]);
+    const before = await probeLayer(loc, kml);
+    assert.equal(before.layerName, 'cities');
+    assert.equal(before.featureCount, 2);
+    assert.equal(before.epsg, 4326);
+    // KML 的 timestamp/begin/end 是 DateTime（ogrinfo 不给宽度），解析器不能漏
+    assert.ok(before.fields.some((f) => f.name === 'timestamp' && f.type === 'DateTime'));
+
+    const res = await writeFeatures(loc, store, {
+      target: 'cities.kml',
+      features: recordsOf([{ NAME: '北京', POP: 7777, HEIGHT: 43.5 }]),
+    });
+
+    const after = await probeLayer(loc, kml);
+    assert.equal(after.layerName, 'cities', '图层名不能变');
+    assert.equal(after.featureCount, 1);
+    assert.equal(after.epsg, 4326, 'KML 必须是 WGS84');
+    const names = after.fields.map((f) => f.name);
+    for (const field of before.fields) {
+      // NAME 与 KML 内置的 Name 撞名，驱动会给它加后缀（NAME → NAME2），值不丢
+      if (field.name === 'NAME') continue;
+      assert.ok(names.includes(field.name), `字段 ${field.name} 不能丢（含 DateTime 列）`);
+    }
+    assert.ok(names.includes('NAME2'), '与内置 Name 撞名的列会被加后缀，不能丢');
+    assert.ok(res.backupPath, '必须留下备份');
+    assert.ok(readFileSync(kml, 'utf8').includes('7777'), '新属性要真的写进 KML');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('KML：多图层与 0 要素都明确拒绝', async () => {
+  const { dir, store, geojson } = setup();
+  try {
+    // 单图层：0 要素拒绝
+    const single = join(dir, 'single.kml');
+    await ogr(['-f', 'LIBKML', '-nln', 'cities', single, geojson]);
+    await assert.rejects(
+      () => writeFeatures(loc, store, { target: 'single.kml', features: [] }),
+      /字段定义/,
+    );
+
+    // 多图层：从两层 GDB 生成一个多图层 KML
+    const gdb = join(dir, 'two.gdb');
+    await ogr(['-f', 'OpenFileGDB', '-nln', 'first', gdb, geojson]);
+    await ogr(['-update', '-nln', 'second', gdb, geojson]);
+    const multi = join(dir, 'multi.kml');
+    await ogr(['-f', 'LIBKML', multi, gdb]);
+    const read = await probeLayer(loc, multi);
+    assert.ok(read.layerNames.length > 1, '夹具应有两个图层');
+    await assert.rejects(
+      () => writeFeatures(loc, store, { target: 'multi.kml', features: recordsOf() }),
+      /只支持单图层/,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('KML：要求重投影到非 WGS84 时明确拒绝', async () => {
+  const { dir, store, geojson } = setup();
+  try {
+    const kml = join(dir, 'cities.kml');
+    await ogr(['-f', 'LIBKML', '-nln', 'cities', kml, geojson]);
+    await assert.rejects(
+      () => writeFeatures(loc, store, {
+        target: 'cities.kml',
+        features: recordsOf(),
+        srsWkt: 'PROJCRS["WGS 84 / Pseudo-Mercator",BASEGEOGCRS["WGS 84"],ID["EPSG",3857]]',
+      }),
+      /WGS84|EPSG:4326/,
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
