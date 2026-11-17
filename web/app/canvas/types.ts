@@ -4,6 +4,7 @@
  * 单独抽出来是为了让组件之间只依赖数据、不依赖引擎 hook 的实现：
  * 引擎返回结构以后要变，改 useEngine 就够了，组件不用跟着动。
  */
+import type { LayerStyle } from './symbology';
 
 /** 图层种类：栅格底图 / 矢量要素层 */
 export type LayerKind = 'raster' | 'vector';
@@ -190,6 +191,8 @@ export interface MapLayer {
    * 该标记会写进项目清单，属于层的固有属性而非临时状态。
    */
   chunked?: boolean;
+  /** 符号化与标注；没配就是原来的单色 */
+  style?: LayerStyle;
 }
 
 /* ───────── 项目清单（`.cartouche/project.json`） ───────── */
@@ -212,6 +215,8 @@ export interface ProjectLayer {
   readonly opacity: number;
   /** 视口分块模式（大文件）：恢复时直接按视口加载，不再做全量尝试 */
   readonly chunked?: boolean;
+  /** 符号化与标注 */
+  readonly style?: LayerStyle;
 }
 
 /** 地图视角：中心点（经度、纬度）与缩放级别 */

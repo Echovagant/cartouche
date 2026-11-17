@@ -36,6 +36,14 @@ import {
 } from 'maplibre-gl';
 import { drawSheet, metersPerPixelAt, pdfScaleDenominator, type SheetLegendItem } from './sheet';
 import { LegendPanel } from './LegendPanel';
+import {
+  featuresOf,
+  labelAnchor,
+  labelText,
+  legendItemsForLayer,
+  symbologyColorExpression,
+  type LabelStyle,
+} from './symbology';
 import type {
   EditGesture,
   EditPreview,
@@ -369,6 +377,9 @@ export default function MapCanvas({
   // 用 ref 留住最新的 props，避免把回调重建进 map 的事件监听里
   const layersRef = useRef<readonly MapLayer[]>(layers);
   layersRef.current = layers;
+  const vectorDataRef = useRef(vectorData);
+  vectorDataRef.current = vectorData;
+  const labelRef = useRef<HTMLCanvasElement | null>(null);
   const sheetMetaRef = useRef(sheetMeta);
   sheetMetaRef.current = sheetMeta;
   const onSelectRef = useRef(onSelectFeatures);
@@ -414,11 +425,113 @@ export default function MapCanvas({
   const legend = useCallback((): SheetLegendItem[] => {
     return layersRef.current
       .filter((layer) => layer.visible)
-      .map((layer) => ({
-        name: layer.name.replace(/\.[^./\\]+$/, ''),
-        color: layer.kind === 'raster' ? '#b08d57' : '#2f6f5e',
-      }));
+      .flatMap((layer) =>
+        layer.kind === 'raster'
+          ? [{ name: layer.name.replace(/\.[^./\\]+$/, ''), color: '#b08d57' }]
+          : legendItemsForLayer(layer.name, layer.style?.symbology),
+      );
   }, []);
+
+  /** 当前所有要画的标注（上层优先；超过 600 条就不画了，避免卡死）。 */
+  const collectLabelEntries = useCallback((): Array<{
+    text: string;
+    lngLat: [number, number];
+    style: LabelStyle;
+  }> => {
+    const out: Array<{ text: string; lngLat: [number, number]; style: LabelStyle }> = [];
+    // 上层先画，碰撞时上层优先
+    for (let i = layersRef.current.length - 1; i >= 0; i -= 1) {
+      const layer = layersRef.current[i]!;
+      const labels = layer.style?.labels;
+      if (layer.kind !== 'vector' || !layer.visible || !labels) continue;
+      let scanned = 0;
+      for (const feature of featuresOf(vectorDataRef.current.get(layer.id))) {
+        // 单层最多扫 5000 条：标注是屏幕上的即时叠加，不能为它把主线程拖住
+        if ((scanned += 1) > 5000) break;
+        const text = labelText(feature.properties, labels.field);
+        if (!text) continue;
+        const anchor = labelAnchor(feature.geometry);
+        if (!anchor) continue;
+        out.push({ text, lngLat: anchor, style: labels });
+        if (out.length >= 600) return out;
+      }
+    }
+    return out;
+  }, []);
+
+  /**
+   * 把标注画到 2D 上下文。
+   *
+   * 走覆盖层而不是 MapLibre 的 symbol 层：symbol 层要配 glyphs（SDF 字体），
+   * 本工具是离线的，引在线 glyphs 会破坏「图件不出本机」；自己托管中文
+   * SDF 字体是另一整套构建链。最小切片先用 2D 画，导出时同一套逻辑重画。
+   *
+   * @param scale 设备像素 / CSS 像素；屏幕覆盖层用 1（ctx 已按 dpr 缩放），导出用 devicePixelRatio
+   */
+  const paintLabelEntries = useCallback(
+    (
+      ctx: CanvasRenderingContext2D,
+      entries: ReturnType<typeof collectLabelEntries>,
+      project: (lngLat: [number, number]) => { x: number; y: number },
+      scale: number,
+      cssWidth: number,
+      cssHeight: number,
+    ) => {
+      const boxes: Array<{ x1: number; y1: number; x2: number; y2: number }> = [];
+      ctx.save();
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.lineJoin = 'round';
+      for (const entry of entries) {
+        const p = project(entry.lngLat);
+        const x = p.x * scale;
+        const y = p.y * scale;
+        if (x < -80 * scale || y < -80 * scale || x > cssWidth * scale + 80 * scale || y > cssHeight * scale + 80 * scale) {
+          continue;
+        }
+        const size = entry.style.size * scale;
+        ctx.font = `600 ${size}px "Noto Sans SC","Microsoft YaHei",sans-serif`;
+        const width = ctx.measureText(entry.text).width;
+        const height = size * 1.2;
+        const pad = 2 * scale;
+        const box = { x1: x - width / 2 - pad, y1: y - height / 2 - pad, x2: x + width / 2 + pad, y2: y + height / 2 + pad };
+        // 简单占位避让：先画的优先，后面重叠的不画
+        if (boxes.some((b) => box.x1 < b.x2 && box.x2 > b.x1 && box.y1 < b.y2 && box.y2 > b.y1)) {
+          continue;
+        }
+        boxes.push(box);
+        ctx.lineWidth = Math.max(2 * scale, size / 5);
+        ctx.strokeStyle = entry.style.halo;
+        ctx.strokeText(entry.text, x, y);
+        ctx.fillStyle = entry.style.color;
+        ctx.fillText(entry.text, x, y);
+      }
+      ctx.restore();
+    },
+    [],
+  );
+
+  /** 屏幕覆盖层上的标注（地图移动时重画）。 */
+  const drawLabelsOverlay = useCallback(() => {
+    const map = mapRef.current;
+    const canvas = labelRef.current;
+    if (!map || !canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const dpr = window.devicePixelRatio || 1;
+    const cssWidth = canvas.width / dpr;
+    const cssHeight = canvas.height / dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, cssWidth, cssHeight);
+    paintLabelEntries(
+      ctx,
+      collectLabelEntries(),
+      (lngLat) => map.project(lngLat),
+      1,
+      cssWidth,
+      cssHeight,
+    );
+  }, [collectLabelEntries, paintLabelEntries]);
 
   /** 把图面要素画到覆盖层（屏幕坐标，按 CSS 像素绘制） */
   const drawSheetOverlay = useCallback(() => {
@@ -530,6 +643,14 @@ export default function MapCanvas({
       overlay.style.width = `${rect.width}px`;
       overlay.style.height = `${rect.height}px`;
     }
+    // 标注层与图面要素覆盖层同尺寸（标注在下、图框在上）
+    const labels = labelRef.current;
+    if (labels && (labels.width !== width || labels.height !== height)) {
+      labels.width = width;
+      labels.height = height;
+      labels.style.width = `${rect.width}px`;
+      labels.style.height = `${rect.height}px`;
+    }
   }, []);
 
   /**
@@ -626,6 +747,7 @@ export default function MapCanvas({
           paint: { 'raster-opacity': layer.opacity },
         });
       } else {
+        const color = symbologyColorExpression(layer.style?.symbology) as never;
         map.addSource(sourceId, {
           type: 'geojson',
           data: { type: 'FeatureCollection', features: [] },
@@ -634,21 +756,36 @@ export default function MapCanvas({
           id: layerId,
           type: 'fill',
           source: sourceId,
+          filter: ['==', ['geometry-type'], 'Polygon'],
           paint: {
-            'fill-color': '#2f6f5e',
+            'fill-color': color,
             'fill-opacity': 0.25 * layer.opacity,
             'fill-outline-color': '#1f5347',
           },
         });
-        // 线状要素（河流等）用 fill 画不出来，补一层线
+        // 线与面的边界都走线层；点用单独的圆点层
         map.addLayer({
           id: `${layerId}-line`,
           type: 'line',
           source: sourceId,
+          filter: ['any', ['==', ['geometry-type'], 'Polygon'], ['==', ['geometry-type'], 'LineString']],
           paint: {
-            'line-color': '#1f5347',
-            'line-width': 1.6,
+            'line-color': color,
+            'line-width': ['case', ['==', ['geometry-type'], 'Polygon'], 1.2, 1.8] as never,
             'line-opacity': layer.opacity,
+          },
+        });
+        map.addLayer({
+          id: `${layerId}-point`,
+          type: 'circle',
+          source: sourceId,
+          filter: ['==', ['geometry-type'], 'Point'],
+          paint: {
+            'circle-color': color,
+            'circle-radius': 4,
+            'circle-opacity': layer.opacity,
+            'circle-stroke-color': '#ffffff',
+            'circle-stroke-width': 1,
           },
         });
       }
@@ -661,6 +798,7 @@ export default function MapCanvas({
       // 高亮 source 是常驻的，不属于任何图层，不能跟着清理掉
       if (sourceId === HIGHLIGHT_SOURCE) continue;
       const layerId = sourceId.replace('src-', 'lyr-');
+      if (map.getLayer(`${layerId}-point`)) map.removeLayer(`${layerId}-point`);
       if (map.getLayer(`${layerId}-line`)) map.removeLayer(`${layerId}-line`);
       if (map.getLayer(layerId)) map.removeLayer(layerId);
       map.removeSource(sourceId);
@@ -675,17 +813,31 @@ export default function MapCanvas({
       if (layer.kind === 'raster') {
         map.setPaintProperty(layerId, 'raster-opacity', layer.opacity);
       } else {
+        const color = symbologyColorExpression(layer.style?.symbology) as never;
+        map.setPaintProperty(layerId, 'fill-color', color);
         map.setPaintProperty(layerId, 'fill-opacity', 0.25 * layer.opacity);
         // 线层是独立的 layer，隐藏时必须一起隐藏，否则会剩下一条"幽灵线"
         if (map.getLayer(`${layerId}-line`)) {
           map.setLayoutProperty(`${layerId}-line`, 'visibility', visibility);
+          map.setPaintProperty(`${layerId}-line`, 'line-color', color);
           map.setPaintProperty(`${layerId}-line`, 'line-opacity', layer.opacity);
+        }
+        if (map.getLayer(`${layerId}-point`)) {
+          map.setLayoutProperty(`${layerId}-point`, 'visibility', visibility);
+          map.setPaintProperty(`${layerId}-point`, 'circle-color', color);
+          map.setPaintProperty(`${layerId}-point`, 'circle-opacity', layer.opacity);
         }
       }
     }
 
     // 叠放次序：数组末尾在最上，用 moveLayer 逐个压到前一个之后
-    const order = current.map((layer) => `lyr-${layer.id}`);
+    const order: string[] = [];
+    for (const layer of current) {
+      order.push(`lyr-${layer.id}`);
+      if (layer.kind === 'vector') {
+        order.push(`lyr-${layer.id}-line`, `lyr-${layer.id}-point`);
+      }
+    }
     order.forEach((layerId, index) => {
       if (!map.getLayer(layerId)) return;
       const before = order[index + 1];
@@ -756,15 +908,27 @@ export default function MapCanvas({
       refreshRaster();
       syncOverlaySize();
       paintOverlay();
+      drawLabelsOverlay();
       // 视口 bbox 派发给上层：分块（chunked）图层的重裁由它决定要不要做
       onViewportChangeRef.current?.(currentBBox(map));
     };
     map.on('moveend', onMoveEnd);
 
+    // 拖动过程中只重画标注（不重画图框/编辑预览），用 rAF 合并高频事件
+    let labelRaf = 0;
+    const onMove = (): void => {
+      if (labelRaf) return;
+      labelRaf = requestAnimationFrame(() => {
+        labelRaf = 0;
+        drawLabelsOverlay();
+      });
+    };
+    map.on('move', onMove);
+
     const onClick = (event: MapMouseEvent) => {
       const targets = layersRef.current
         .filter((layer) => layer.visible && layer.kind === 'vector')
-        .flatMap((layer) => [`lyr-${layer.id}`, `lyr-${layer.id}-line`])
+        .flatMap((layer) => [`lyr-${layer.id}`, `lyr-${layer.id}-line`, `lyr-${layer.id}-point`])
         .filter((id) => Boolean(map.getLayer(id)));
       if (targets.length === 0) {
         onSelectRef.current([]);
@@ -834,18 +998,21 @@ export default function MapCanvas({
     const observer = new ResizeObserver(() => {
       syncOverlaySize();
       paintOverlay();
+      drawLabelsOverlay();
     });
     observer.observe(container);
 
     return () => {
       observer.disconnect();
+      cancelAnimationFrame(labelRaf);
+      map.off('move', onMove);
       map.off('mousedown', onMouseDown);
       map.off('mousemove', onMouseMove);
       map.off('mouseup', onMouseUp);
       map.remove();
       mapRef.current = null;
     };
-  }, [paintOverlay, refreshRaster, syncOverlaySize]);
+  }, [paintOverlay, refreshRaster, syncOverlaySize, drawLabelsOverlay]);
 
   // 图层变化 → 同步 source / layer
   useEffect(() => {
@@ -853,7 +1020,8 @@ export default function MapCanvas({
     syncLayers();
     syncOverlaySize();
     paintOverlay();
-  }, [styleReady, layers, syncLayers, syncOverlaySize, paintOverlay]);
+    drawLabelsOverlay();
+  }, [styleReady, layers, syncLayers, syncOverlaySize, paintOverlay, drawLabelsOverlay]);
 
   /**
    * 拉伸档位变了 → 重新出图。
@@ -904,7 +1072,9 @@ export default function MapCanvas({
       // 6.x 的 setData 返回 Promise：挂上 catch，免得图层已删时的拒绝变成未处理异常
       void source.setData(data as never).catch(() => undefined);
     }
-  }, [vectorData, styleReady, layers]);
+    // 数据变了，标注的锚点与文本也要跟着变
+    drawLabelsOverlay();
+  }, [vectorData, styleReady, layers, drawLabelsOverlay]);
 
   /**
    * 矢量图层加载完 → 把视野挪到数据范围。
@@ -1031,6 +1201,18 @@ export default function MapCanvas({
         ctx.fillRect(0, 0, width, height);
         ctx.drawImage(source, 0, 0);
 
+        // 标注：屏幕上是 2D 覆盖层，导出时用同一套逻辑重画到纸面上
+        const cssWidth = map.getCanvas().clientWidth || width;
+        const labelScale = width / cssWidth;
+        paintLabelEntries(
+          ctx,
+          collectLabelEntries(),
+          (lngLat) => map.project(lngLat),
+          labelScale,
+          cssWidth,
+          height / labelScale,
+        );
+
         const dpr = window.devicePixelRatio || 1;
         const center = map.getCenter();
         // 每设备像素对应的地面米数：MapLibre 的比例尺是按 CSS 像素算的
@@ -1098,7 +1280,7 @@ export default function MapCanvas({
         };
       },
     }),
-    [legend, buildRasterUrl, currentBBox, rasterSize],
+    [legend, buildRasterUrl, currentBBox, rasterSize, collectLabelEntries, paintLabelEntries],
   );
 
   return (
@@ -1113,6 +1295,11 @@ export default function MapCanvas({
       <div className="absolute inset-0">
         <div ref={containerRef} className="h-full w-full" />
       </div>
+      <canvas
+        ref={labelRef}
+        className="pointer-events-none absolute inset-0"
+        aria-hidden="true"
+      />
       <canvas
         ref={overlayRef}
         className="pointer-events-none absolute inset-0"

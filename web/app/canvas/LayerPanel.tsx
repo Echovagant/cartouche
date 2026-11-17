@@ -14,6 +14,7 @@ import {
   ArrowDownIcon,
   ArrowUpIcon,
   FolderOpenIcon,
+  PaletteIcon,
   StackIcon,
   TrashIcon,
 } from '@phosphor-icons/react';
@@ -51,6 +52,8 @@ export interface LayerPanelProps {
   onSelectLayer: (id: string) => void;
   /** 打开图层选择器（矢量层专用：勾选多图层容器里的图层重新加载） */
   onPickLayers: (id: string) => void;
+  /** 打开符号化 / 标注面板（矢量层专用） */
+  onEditStyle: (id: string) => void;
   /** 点目录条目时请求进入该目录 */
   onEnterDirectory: (name: string) => void;
   /** 返回上一级 */
@@ -88,6 +91,7 @@ export default function LayerPanel({
   onMoveLayer,
   onSelectLayer,
   onPickLayers,
+  onEditStyle,
   onEnterDirectory,
   onGoUp,
 }: LayerPanelProps) {
@@ -270,14 +274,24 @@ export default function LayerPanel({
                       <ArrowDownIcon size={12} weight="bold" />
                     </ActionButton>
                     {layer.kind === 'vector' ? (
-                      <ActionButton
-                        variant="quiet"
-                        onClick={() => onPickLayers(layer.id)}
-                        className="!px-1.5 !py-0.5 text-[11px]"
-                        title="勾选容器内的图层重新加载"
-                      >
-                        <StackIcon size={12} weight="bold" />
-                      </ActionButton>
+                      <>
+                        <ActionButton
+                          variant="quiet"
+                          onClick={() => onEditStyle(layer.id)}
+                          className="!px-1.5 !py-0.5 text-[11px]"
+                          title="符号化与标注"
+                        >
+                          <PaletteIcon size={12} weight="bold" />
+                        </ActionButton>
+                        <ActionButton
+                          variant="quiet"
+                          onClick={() => onPickLayers(layer.id)}
+                          className="!px-1.5 !py-0.5 text-[11px]"
+                          title="勾选容器内的图层重新加载"
+                        >
+                          <StackIcon size={12} weight="bold" />
+                        </ActionButton>
+                      </>
                     ) : null}
                     <ActionButton
                       variant="danger"

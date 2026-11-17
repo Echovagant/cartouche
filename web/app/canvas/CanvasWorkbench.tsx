@@ -25,6 +25,8 @@ import { CanvasBoot, ExportDevelop, LayerArrival, SelectionShutter } from './Can
 import ConfirmCard, { type ExecOutcome } from './ConfirmCard';
 import EditToolbar from './EditToolbar';
 import LayerPanel from './LayerPanel';
+import SymbologyPanel from './SymbologyPanel';
+import type { LayerStyle } from './symbology';
 import LayoutPanel, { type LayoutPreviewInput } from './LayoutPanel';
 import MapCanvas, { type MapCanvasHandle } from './MapCanvas';
 import { ProjectLoading } from './ProjectLoading';
@@ -211,6 +213,8 @@ export default function CanvasWorkbench() {
   const stageRef = useRef<HTMLDivElement | null>(null);
 
   const [vectorData, setVectorData] = useState<Map<string, unknown>>(() => new Map());
+  /** 正在编辑样式的图层 id；null = 面板关闭 */
+  const [styleLayerId, setStyleLayerId] = useState<string | null>(null);
   const [extents, setExtents] = useState<Map<string, readonly [number, number, number, number]>>(
     () => new Map(),
   );
@@ -706,6 +710,7 @@ export default function CanvasWorkbench() {
     });
     setSelected((prev) => prev.filter((feature) => feature.layerId !== id));
     setActiveLayerId((prev) => (prev === id ? null : prev));
+    setStyleLayerId((prev) => (prev === id ? null : prev));
   }, []);
 
   const toggleVisibility = useCallback((id: string) => {
@@ -716,6 +721,12 @@ export default function CanvasWorkbench() {
 
   const changeOpacity = useCallback((id: string, opacity: number) => {
     setLayers((prev) => prev.map((layer) => (layer.id === id ? { ...layer, opacity } : layer)));
+  }, []);
+
+  /** 保存符号化 / 标注（样式属于图层状态，跟着清单一起落盘） */
+  const saveLayerStyle = useCallback((id: string, style: LayerStyle) => {
+    setLayers((prev) => prev.map((layer) => (layer.id === id ? { ...layer, style } : layer)));
+    setStyleLayerId(null);
   }, []);
 
   /** direction: 1 = 上移（更靠前/更上），-1 = 下移 */
@@ -852,6 +863,7 @@ export default function CanvasWorkbench() {
       visible: l.visible,
       opacity: l.opacity,
       chunked: l.chunked,
+      style: l.style,
     }));
     // 先清空上一个项目留下的数据：两个项目都可能有 layer-1，
     // 不清的话旧项目的 GeoJSON 会灌进新项目的图层里
@@ -897,6 +909,7 @@ export default function CanvasWorkbench() {
         visible: l.visible,
         opacity: l.opacity,
         ...(l.chunked ? { chunked: true } : {}),
+        ...(l.style ? { style: l.style } : {}),
       })),
       ...(v ? { view: { center: v.center, zoom: v.zoom } } : {}),
     };
@@ -1308,6 +1321,7 @@ export default function CanvasWorkbench() {
                   onMoveLayer={moveLayer}
                   onSelectLayer={setActiveLayerId}
                   onPickLayers={(id) => void openLayerPicker(id)}
+                  onEditStyle={(id) => setStyleLayerId(id)}
                   onEnterDirectory={(name) => setDir((prev) => (prev ? prev + '/' + name : name))}
                   onGoUp={() =>
                     setDir((prev) => (prev.includes('/') ? prev.slice(0, prev.lastIndexOf('/')) : ''))
@@ -1645,6 +1659,21 @@ export default function CanvasWorkbench() {
         />
 
         <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+
+        {(() => {
+          const layer = styleLayerId ? layers.find((l) => l.id === styleLayerId) : undefined;
+          if (!layer) return null;
+          return (
+            <SymbologyPanel
+              open
+              layerName={layer.name}
+              style={layer.style}
+              data={vectorData.get(layer.id)}
+              onSave={(style) => saveLayerStyle(layer.id, style)}
+              onClose={() => setStyleLayerId(null)}
+            />
+          );
+        })()}
       </div>
     </>
   );

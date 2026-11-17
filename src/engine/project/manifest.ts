@@ -9,10 +9,41 @@
 import { isAbsolute } from 'node:path';
 
 /** 清单格式版本号：加字段时递增，旧项目仍按旧版解析。 */
-export const PROJECT_MANIFEST_VERSION = 1;
+export const PROJECT_MANIFEST_VERSION = 2;
 
 /** 图层类型：栅格或矢量。 */
 export type ProjectLayerKind = 'raster' | 'vector';
+
+/** 符号化渲染器（最小切片：单色 / 唯一值 / 分级色彩）。 */
+export type LayerSymbology =
+  | { readonly kind: 'single'; readonly color: string }
+  | {
+      readonly kind: 'unique';
+      readonly field: string;
+      readonly colors: Readonly<Record<string, string>>;
+      readonly fallback: string;
+    }
+  | {
+      readonly kind: 'graduated';
+      readonly field: string;
+      readonly method: 'equal' | 'quantile';
+      readonly breaks: readonly number[];
+      readonly colors: readonly string[];
+    };
+
+/** 标注：一个字段、固定字号/颜色/描边。 */
+export interface LayerLabels {
+  readonly field: string;
+  readonly size: number;
+  readonly color: string;
+  readonly halo: string;
+}
+
+/** 图层的显示样式（与 web/app/canvas/symbology.ts 的类型一一对应）。 */
+export interface LayerStyle {
+  readonly symbology?: LayerSymbology;
+  readonly labels?: LayerLabels;
+}
 
 /**
  * 项目里的一个图层。
@@ -26,6 +57,10 @@ export interface ProjectLayer {
   readonly path: string;
   readonly visible: boolean;
   readonly opacity: number;
+  /** 视口分块模式（大文件）：恢复时直接按视口加载 */
+  readonly chunked?: boolean;
+  /** 符号化与标注；没配就没有这个字段 */
+  readonly style?: LayerStyle;
 }
 
 /** 出图设置：图签标题、制图人、纸张方向与 dpi。 */
@@ -231,6 +266,129 @@ function isSafeRelative(p: string): boolean {
   return !parts.includes('..');
 }
 
+/** 读一个非空字符串（用于颜色、字段名）。 */
+function nonEmptyString(v: unknown, label: string): string {
+  if (typeof v !== 'string' || v.trim() === '') {
+    throw new ManifestError(`${label}必须是非空字符串，现在写的是「${describeValue(v)}」。`);
+  }
+  return v.trim();
+}
+
+/**
+ * 校验图层的样式（符号化 + 标注）。
+ *
+ * 样式是可选字段：没配就没有。配了但写坏了就**明确报错**，
+ * 而不是悄悄丢掉 —— 用户以为样式存上了、打开却没了，比报错更难查。
+ */
+function validateLayerStyle(raw: unknown, layerId: string): LayerStyle | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new ManifestError(
+      `图层 ${layerId} 的 style 必须是一个对象。检查 .cartouche/project.json 的 layers[].style。`,
+    );
+  }
+  const o = raw as Record<string, unknown>;
+  const style: { symbology?: LayerSymbology; labels?: LayerLabels } = {};
+
+  const sym = o.symbology;
+  if (sym !== undefined && sym !== null) {
+    if (typeof sym !== 'object' || Array.isArray(sym)) {
+      throw new ManifestError(`图层 ${layerId} 的 style.symbology 必须是一个对象。`);
+    }
+    const s = sym as Record<string, unknown>;
+    const kind = pick(
+      s.kind,
+      ['single', 'unique', 'graduated'] as const,
+      'single',
+      `图层 ${layerId} 的符号化类型`,
+    );
+    if (kind === 'single') {
+      style.symbology = {
+        kind,
+        color: nonEmptyString(s.color, `图层 ${layerId} 的单色颜色`),
+      };
+    } else if (kind === 'unique') {
+      const field = nonEmptyString(s.field, `图层 ${layerId} 唯一值的字段名`);
+      const colorsRaw = s.colors;
+      if (typeof colorsRaw !== 'object' || colorsRaw === null || Array.isArray(colorsRaw)) {
+        throw new ManifestError(
+          `图层 ${layerId} 的唯一值颜色表（style.symbology.colors）必须是一个对象。`,
+        );
+      }
+      const colors: Record<string, string> = {};
+      for (const [key, value] of Object.entries(colorsRaw)) {
+        colors[key] = nonEmptyString(value, `图层 ${layerId} 唯一值「${key}」的颜色`);
+      }
+      if (Object.keys(colors).length === 0) {
+        throw new ManifestError(`图层 ${layerId} 的唯一值颜色表是空的。`);
+      }
+      style.symbology = {
+        kind,
+        field,
+        colors,
+        fallback: nonEmptyString(s.fallback, `图层 ${layerId} 唯一值的兜底颜色`),
+      };
+    } else {
+      const field = nonEmptyString(s.field, `图层 ${layerId} 分级色彩的字段名`);
+      const method = pick(
+        s.method,
+        ['equal', 'quantile'] as const,
+        'equal',
+        `图层 ${layerId} 的分级方法`,
+      );
+      if (!Array.isArray(s.breaks)) {
+        throw new ManifestError(`图层 ${layerId} 的分级断点（style.symbology.breaks）必须是数组。`);
+      }
+      const breaks = s.breaks.map((b, i) => {
+        if (typeof b !== 'number' || !Number.isFinite(b)) {
+          throw new ManifestError(`图层 ${layerId} 的第 ${i + 1} 个分级断点不是有限数字。`);
+        }
+        return b;
+      });
+      for (let i = 1; i < breaks.length; i += 1) {
+        if (breaks[i]! <= breaks[i - 1]!) {
+          throw new ManifestError(`图层 ${layerId} 的分级断点必须严格递增。`);
+        }
+      }
+      if (!Array.isArray(s.colors)) {
+        throw new ManifestError(`图层 ${layerId} 的分级颜色（style.symbology.colors）必须是数组。`);
+      }
+      const colors = s.colors.map((c, i) =>
+        nonEmptyString(c, `图层 ${layerId} 的第 ${i + 1} 个分级颜色`),
+      );
+      if (colors.length !== breaks.length + 1) {
+        throw new ManifestError(
+          `图层 ${layerId} 的分级颜色数（${colors.length}）必须等于断点数 + 1（${breaks.length + 1}）。`,
+        );
+      }
+      style.symbology = { kind, field, method, breaks, colors };
+    }
+  }
+
+  const labels = o.labels;
+  if (labels !== undefined && labels !== null) {
+    if (typeof labels !== 'object' || Array.isArray(labels)) {
+      throw new ManifestError(`图层 ${layerId} 的 style.labels 必须是一个对象。`);
+    }
+    const l = labels as Record<string, unknown>;
+    const field = nonEmptyString(l.field, `图层 ${layerId} 的标注字段名`);
+    const size = l.size;
+    if (typeof size !== 'number' || !Number.isFinite(size) || size < 6 || size > 72) {
+      throw new ManifestError(
+        `图层 ${layerId} 的标注字号必须是 6~72 的数字，现在写的是「${describeValue(size)}」。`,
+      );
+    }
+    style.labels = {
+      field,
+      size,
+      color: nonEmptyString(l.color, `图层 ${layerId} 的标注颜色`),
+      halo: nonEmptyString(l.halo, `图层 ${layerId} 的标注描边色`),
+    };
+  }
+
+  return style.symbology || style.labels ? style : undefined;
+}
+
 /** 校验出图设置（页幅、dpi、标题、制图人）。 */
 function validateSheet(raw: unknown): ProjectSheet {
   const o = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>;
@@ -290,7 +448,22 @@ function validateLayers(raw: unknown): ProjectLayer[] {
         `图层 ${id} 的透明度（opacity）必须是 0~1 之间的数字，现在写的是「${describeValue(opacity)}」。请改成 0~1 之间的数字。`,
       );
     }
-    out.push({ id, kind, path, visible, opacity });
+    const chunked = o.chunked;
+    if (chunked !== undefined && typeof chunked !== 'boolean') {
+      throw new ManifestError(
+        `图层 ${id} 的 chunked 必须是 true 或 false，现在写的是「${describeValue(chunked)}」。`,
+      );
+    }
+    const style = validateLayerStyle(o.style, id);
+    out.push({
+      id,
+      kind,
+      path,
+      visible,
+      opacity,
+      ...(chunked ? { chunked: true } : {}),
+      ...(style ? { style } : {}),
+    });
   }
   return out;
 }

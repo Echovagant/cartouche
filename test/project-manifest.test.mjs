@@ -168,7 +168,90 @@ test('清单：错误文案里不出现 undefined / [object Object] 这类占位
 
 test('清单：序列化是带缩进的纯 JSON，能被人直接看懂', () => {
   const text = dec.decode(serializeManifest(newManifest('示例项目', '2026-10-21T08:00:00.000Z')));
-  assert.match(text, /^\{\n {2}"version": 1,/);
+  assert.ok(text.startsWith(`{\n  "version": ${PROJECT_MANIFEST_VERSION},`), text.slice(0, 40));
   assert.ok(text.endsWith('\n'));
   assert.deepEqual(JSON.parse(text).name, '示例项目');
+});
+
+/* ── 符号化与标注（清单 version 2 起） ─────────────────────────── */
+
+test('清单：图层的符号化与标注能往返，chunked 也保留', () => {
+  const m = {
+    ...newManifest('样式', '2026-11-17T08:00:00.000Z'),
+    layers: [
+      {
+        id: 'l1',
+        kind: 'vector',
+        path: '水系/河流.shp',
+        visible: true,
+        opacity: 1,
+        chunked: true,
+        style: {
+          symbology: {
+            kind: 'unique',
+            field: '类型',
+            colors: { 'string:河流': '#2f6f3e', 'string:湖泊': '#5593bd' },
+            fallback: '#9aa5a0',
+          },
+          labels: { field: '名称', size: 14, color: '#1f2937', halo: '#ffffff' },
+        },
+      },
+      {
+        id: 'l2',
+        kind: 'vector',
+        path: '地形.tif',
+        visible: true,
+        opacity: 0.8,
+        style: {
+          symbology: {
+            kind: 'graduated',
+            field: '海拔',
+            method: 'quantile',
+            breaks: [100, 500],
+            colors: ['#e9f0e6', '#7fae74', '#1b4d2b'],
+          },
+        },
+      },
+    ],
+  };
+  const back = parseManifest(serializeManifest(m));
+  assert.deepEqual(back, m);
+  assert.equal(back.layers[0].chunked, true);
+  assert.equal(back.layers[1].style.symbology.breaks.length, 2);
+});
+
+test('清单：分级颜色数与断点数对不上 → 明确拒绝', () => {
+  const raw = {
+    ...baseManifest,
+    layers: [
+      {
+        id: 'l',
+        kind: 'vector',
+        path: 'a.geojson',
+        visible: true,
+        opacity: 1,
+        style: {
+          symbology: { kind: 'graduated', field: 'x', method: 'equal', breaks: [10, 20], colors: ['#111111', '#222222'] },
+        },
+      },
+    ],
+  };
+  assert.throws(() => parseManifest(enc.encode(JSON.stringify(raw))), /分级颜色数/);
+});
+
+test('清单：标注字号超出 6~72 → 明确拒绝', () => {
+  const raw = {
+    ...baseManifest,
+    layers: [
+      {
+        id: 'l',
+        kind: 'vector',
+        path: 'a.geojson',
+        visible: true,
+        opacity: 1,
+        style: { labels: { field: '名称', size: 200, color: '#000000', halo: '#ffffff' } },
+      },
+    ],
+  };
+  assert.throws(() => parseManifest(enc.encode(JSON.stringify(raw))), /字号/);
 });
