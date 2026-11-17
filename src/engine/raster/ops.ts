@@ -17,12 +17,21 @@
  * 共同的安全链路：占用检测 → 磁盘余量 → 备份 → 临时文件 → 原子替换 → 回读校验。
  */
 import { randomBytes } from 'node:crypto';
-import { rmSync, statfsSync, statSync, existsSync } from 'node:fs';
+import { mkdtempSync, readdirSync, renameSync, rmSync, statfsSync, statSync, existsSync } from 'node:fs';
 import { dirname, join, basename } from 'node:path';
 import { tools } from '../gdal/runner.ts';
 import type { GdalLocation } from '../gdal/env.ts';
-import { replaceFileAtomically } from '../gdal/writeback.ts';
+import { replaceFileGroupAtomically } from '../gdal/writeback.ts';
 import type { WorkspaceAdapter } from '../workspace/index.ts';
+import {
+  extensionMatches,
+  hasRotation,
+  managedFilesOf,
+  nodataArgument,
+  sameNodata,
+  writeFormatForDriver,
+  type RasterWriteFormat,
+} from './formats.ts';
 import {
   DEFAULT_OVERVIEW_THRESHOLD_BYTES,
   ensureOverviews,
@@ -203,6 +212,16 @@ function nearestExistingDir(dir: string): string {
     if (parent === cur) return cur;
     cur = parent;
   }
+}
+
+/**
+ * 在目标目录里建一个临时工作目录。
+ *
+ * 为什么不用系统临时目录：GDAL 的伴随文件（.hdr/.prj/.aux.xml）按**输出文件名**
+ * 落在输出旁边，落点必须与最终目标同卷，最后逐个 rename 才是原子替换。
+ */
+function tempDirNear(dirAbs: string): string {
+  return mkdtempSync(join(dirAbs, '.cartouche-tmp-'));
 }
 
 /**
@@ -542,7 +561,12 @@ export class RasterEditor {
    * 为什么失败不抛：用户的图已经改好了，不能因为金字塔没建起来把整次操作判成失败；
    * 但原因要留在结果里（outcome.error），不能静默吞掉。
    */
-  async #ensureOverviews(absPath: string): Promise<OverviewOutcome> {
+  async #ensureOverviews(absPath: string, spec?: RasterWriteFormat): Promise<OverviewOutcome> {
+    // CreateCopy-only 的格式（AAIGrid / EHdr / PNG）建不了外部金字塔：
+    // gdaladdo 需要可更新访问。与其让它报一条看不懂的 GDAL 错误，不如直接标清楚。
+    if (spec && !spec.supportsOverviews) {
+      return { built: false, ovrPath: null, skippedReason: 'format-not-supported' };
+    }
     return ensureRasterOverviews(this.#loc, absPath, {
       thresholdBytes: this.#overviewThresholdBytes,
       minFreeBytes: this.#overviewMinFreeBytes,
@@ -551,6 +575,31 @@ export class RasterEditor {
 
   #abs(rel: string): string {
     return this.#store.resolve(rel);
+  }
+
+  /**
+   * 把临时目录里产出的这一套文件换到目标上。
+   *
+   * 原地替换：整组备份 + 逐个原子替换 + 失败整组回滚；
+   * 另存为：连同伴随文件一起落到新路径，原文件一个字节都不动（见 writeback.ts）。
+   */
+  async #replaceGroup(
+    target: string,
+    outputPath: string | undefined,
+    tempDir: string,
+    spec: RasterWriteFormat,
+  ): Promise<{ backupPath: string | null }> {
+    const dest = outputPath ?? target;
+    const produced = readdirSync(tempDir);
+    const { backupPath } = await replaceFileGroupAtomically(this.#store, {
+      target,
+      tempDir,
+      produced,
+      // 另存为不碰原文件旁边的东西；原地替换则把这一套数据管的文件全算进来
+      managed: outputPath ? [] : managedFilesOf(dest, spec),
+      ...(outputPath ? { mode: 'copy' as const, outputPath } : {}),
+    });
+    return { backupPath };
   }
 
   /** 目标同目录下的临时文件路径（同卷 → rename 才是原子操作） */
@@ -566,23 +615,72 @@ export class RasterEditor {
   }
 
   /**
-   * 写回前的格式闸门。
+   * 写回前的格式闸门：**按源格式写回**，装不下的必须当场拒绝。
    *
-   * 写回统一走 `gdal_translate -of GTiff`（见 raw.ts），也就是**产出的一定是 GeoTIFF 字节**。
-   * 如果原文件不是 GeoTIFF，就会出现"内容换了、扩展名没换"的坏结果：
-   * 一个 HFA 的 .img 被写成 GeoTIFF，ArcGIS 按 HFA 去解析，直接打不开。
-   *
-   * 与其悄悄把文件改坏，不如在动手之前就拒绝，并把原因说清楚。
-   * （2026-10-22 实测：.png / .img / .vrt 改完都会变成 GeoTIFF 字节。）
+   * 每一道检查都对应一次"GDAL 不报错但结果错了"的坑：
+   *  - 驱动不认识：写出来是 GeoTIFF 字节、扩展名却是原来的，ArcGIS 打不开；
+   *  - 扩展名与驱动对不上：同上（比如把 GeoTIFF 改名成 .img）；
+   *  - 调色板索引图：调色板不在像素里，重写会退化成灰度；
+   *  - AAIGrid 多波段：驱动只写单波段，其余波段会被悄悄丢掉；
+   *  - PNG 浮点：PNG 规范只有 8/16 位无符号；
+   *  - AAIGrid / EHdr 带旋转：这两种头装不下旋转项，-a_ullr 会把它抹平；
+   *  - 各波段 nodata 不一致：gdal_translate 的 -a_nodata 只有一个值。
    */
-  #assertWritebackSafe(target: string, driver: string): void {
-    if (driver === 'GTiff') return;
-    throw new Error(
-      `这个文件是 ${driver} 格式，不能原样写回：写回时统一产出 GeoTIFF，` +
-        `文件名却还是原来的扩展名，ArcGIS 打开会失败。` +
-        `目前只有 GeoTIFF 族（.tff / .tif）支持改图；` +
-        `这个文件请先转成 GeoTIFF 再改。`,
-    );
+  #writeFormatFor(target: string, meta: RasterMeta): RasterWriteFormat {
+    const spec = writeFormatForDriver(meta.driver);
+    if (!spec) {
+      if (meta.driver === 'VRT') {
+        throw new Error(
+          '这个文件是 VRT 虚拟栅格，不能直接改：它本身不含像素，只是一张指向源文件的"菜谱"。' +
+            '请直接改它引用的源文件（VRT 会跟着变）。',
+        );
+      }
+      throw new Error(
+        `这个文件是 ${meta.driver} 格式，暂不支持改图。` +
+          '目前支持写回的栅格格式：GeoTIFF（.tif/.tiff）、Erdas Imagine（.img）、' +
+          'ESRI ASCII Grid（.asc）、ENVI 栅格（.bil）、PNG（.png）。' +
+          '其它格式请先转成这些格式再改。',
+      );
+    }
+    if (!extensionMatches(spec, target)) {
+      const want = spec.extensions.join(' / ');
+      throw new Error(
+        `文件名扩展名与真实格式不一致：这个文件的实际格式是 ${meta.driver}，` +
+          `对应的扩展名应为 ${want}。按现在的名字写回会产出"扩展名没变、字节是另一种格式"的坏文件，` +
+          'ArcGIS 打开会失败。请先把文件名改对（或另存成正确扩展名）再改图。',
+      );
+    }
+    if (meta.colorTable) {
+      throw new Error(
+        '这个栅格带调色板（索引色），暂不支持改图：像素里存的是调色板序号，' +
+          '重写会把调色板丢掉、整幅图变成灰度。请先在 GIS 软件里转成真彩色（RGB）再改。',
+      );
+    }
+    if (spec.singleBand && meta.bandCount > 1) {
+      throw new Error(
+        `这个文件是 ${meta.driver} 格式，只能存单波段，而它是 ${meta.bandCount} 波段。` +
+          '直接写回会把其余波段悄悄丢掉，所以本次不写。',
+      );
+    }
+    if (spec.pixelTypes && !spec.pixelTypes.includes(meta.pixelType)) {
+      throw new Error(
+        `这个文件是 ${meta.driver} 格式，只支持 ${spec.pixelTypes.join(' / ')} 像素；` +
+          `它是 ${meta.pixelType}。转成支持的位深会改变数值，所以本次不写。`,
+      );
+    }
+    if (!spec.supportsRotation && hasRotation(meta.geotransform)) {
+      throw new Error(
+        `这个文件是 ${meta.driver} 格式，它的文件头装不下旋转的仿射参数。` +
+          '写回会把旋转抹平、整幅图错位，所以本次不写；请先把它转成 GeoTIFF 再改。',
+      );
+    }
+    if (meta.nodataConflict) {
+      throw new Error(
+        '这个栅格的各波段 nodata 不一致，写回只能保留一个值，会改变其余波段的语义，所以本次不写。' +
+          '请先在 GIS 软件里统一 nodata 再改。',
+      );
+    }
+    return spec;
   }
 
   /**
@@ -597,7 +695,12 @@ export class RasterEditor {
     }
     const info = JSON.parse(res.stdout) as {
       size?: [number, number];
-      bands?: { type?: string; colorInterpretation?: string }[];
+      bands?: {
+        type?: string;
+        colorInterpretation?: string;
+        noDataValue?: number;
+        colorTable?: unknown;
+      }[];
       geoTransform?: number[];
       coordinateSystem?: { wkt?: string };
       driverShortName?: string;
@@ -608,16 +711,25 @@ export class RasterEditor {
     if (!width || !height || !bandCount) {
       throw new Error(`栅格尺寸异常：${absPath}`);
     }
+    const bandList = info.bands ?? [];
+    // nodata 按波段取：写回只带得走一个值，各波段不一致时必须拒绝而不是挑一个写
+    const nodataOf = (b: { noDataValue?: number }): number | null =>
+      typeof b.noDataValue === 'number' ? b.noDataValue : null;
+    const nodata = bandList.length > 0 ? nodataOf(bandList[0]!) : null;
+    const nodataConflict = bandList.some((b) => !sameNodata(nodataOf(b), nodata));
     return {
       width,
       height,
       bandCount,
       // 源类型不认识就报错：按 8 位处理会把 16 位静默压成 255
       pixelType: pixelTypeFromGdal(info.bands?.[0]?.type),
-      colorInterpretation: (info.bands ?? []).map((b) => b.colorInterpretation ?? 'Undefined'),
+      colorInterpretation: bandList.map((b) => b.colorInterpretation ?? 'Undefined'),
       geotransform: info.geoTransform ? [...info.geoTransform] : null,
       crs: info.coordinateSystem?.wkt ?? null,
       driver: String(info.driverShortName ?? 'GTiff'),
+      nodata,
+      nodataConflict,
+      colorTable: bandList.some((b) => Boolean(b.colorTable)),
     };
   }
 
@@ -691,8 +803,10 @@ export class RasterEditor {
     const wholeBytes = meta.width * meta.height * meta.bandCount * BYTES_PER_SAMPLE[meta.pixelType];
     this.#assertWithinSizeLimit(wholeBytes);
 
+    // 格式闸门必须在**读像素与写盘之前**过：装不下的格式连读都不必读，
+    // 扩展名/波段数/位深对不上的，一个字节都不该动。
+    const spec = this.#writeFormatFor(outputPath ?? target, meta);
     const before = await this.#read(target);
-    this.#assertWritebackSafe(target, before.driver);
     // 整图路径没有区域可校验（给了区域就走窗口路径），所以这里只保留 mutate 调用。
     // 区域整体落在影像之外的检查在窗口路径入口处（regionHitsRaster）。
     const newBands = await mutate(before, { win: null, localRegion: null });
@@ -730,28 +844,30 @@ export class RasterEditor {
     // 放在写临时文件之前 —— 写下去才发现装不下，就只剩半个文件了。
     const need = writebackSpace(this.#abs(target), wholeBytes, Boolean(outputPath));
     assertFreeSpace(this.#abs(dest), need.bytes, this.#minFreeBytes, '写回', need.detail);
-    const temp = this.#tempPath(dest, 'tmp.tif');
-    await writeRasterPixels(this.#loc, temp, {
-      width: before.width,
-      height: before.height,
-      bands: newBands,
-      // 类型与颜色解释都从原图带过来：写回链路要按原类型落盘，
-      // 颜色解释也必须保住，否则叠回原图时 gdalbuildvrt 会判异构而跳过窗口。
-      pixelType: before.pixelType,
-      colorInterpretation: before.colorInterpretation,
-      geotransform: before.geotransform,
-      crs: before.crs,
-    });
-    const { backupPath } = await replaceFileAtomically(
-      this.#store,
-      outputPath
-        ? { target, tempPath: temp, mode: 'copy', outputPath }
-        : { target, tempPath: temp },
-    );
+    const tempDir = tempDirNear(dirname(this.#abs(dest)));
+    let backupPath: string | null = null;
+    try {
+      await writeRasterPixels(this.#loc, join(tempDir, basename(this.#abs(dest))), {
+        width: before.width,
+        height: before.height,
+        bands: newBands,
+        // 类型与颜色解释都从原图带过来：写回链路要按原类型落盘，
+        // 颜色解释也必须保住，否则叠回原图时 gdalbuildvrt 会判异构而跳过窗口。
+        pixelType: before.pixelType,
+        colorInterpretation: before.colorInterpretation,
+        geotransform: before.geotransform,
+        crs: before.crs,
+        driver: spec.of,
+        nodata: before.nodata,
+      });
+      ({ backupPath } = await this.#replaceGroup(target, outputPath, tempDir, spec));
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
     // 回读校验读的是**落地的那个文件**：另存为时是新文件，不是原文件
     const after = await this.#read(dest);
     // 写回成功之后建金字塔：大影像没有金字塔，缩放显示会卡到不可用
-    const overview = await this.#ensureOverviews(this.#abs(dest));
+    const overview = await this.#ensureOverviews(this.#abs(dest), spec);
 
     return {
       op,
@@ -766,7 +882,11 @@ export class RasterEditor {
       verified:
         after.width === before.width &&
         after.height === before.height &&
-        after.bandCount === before.bandCount,
+        after.bandCount === before.bandCount &&
+        // 格式与位深是这次改动的核心承诺：写回后仍必须是原来的格式与类型
+        after.driver === meta.driver &&
+        after.pixelType === before.pixelType &&
+        sameNodata(after.nodata, before.nodata),
       width: after.width,
       height: after.height,
       bandCount: after.bandCount,
@@ -823,8 +943,8 @@ export class RasterEditor {
       windowBytes(win, meta.bandCount, BYTES_PER_SAMPLE[meta.pixelType]),
     );
 
-    // 写回闸门：窗口路径产出的也是 GeoTIFF，非 GTiff 同样不能原样写回
-    this.#assertWritebackSafe(target, meta.driver);
+    // 写回闸门：装不下的格式（VRT / 多波段 AAIGrid / 浮点 PNG …）在动手前就拒绝
+    const spec = this.#writeFormatFor(outputPath ?? target, meta);
 
     // 只读窗口（不是整读）：Node 内存里只有窗口大小
     const before = await readRasterWindow(this.#loc, abs, win);
@@ -871,11 +991,16 @@ export class RasterEditor {
     const wholeBytes = frame.width * frame.height * meta.bandCount * BYTES_PER_SAMPLE[meta.pixelType];
     const need = writebackSpace(this.#abs(target), wholeBytes, Boolean(outputPath));
     assertFreeSpace(this.#abs(dest), need.bytes, this.#minFreeBytes, '写回', need.detail);
-    const winTmp = this.#tempPath(dest, 'win.tif');
-    const mergedTmp = this.#tempPath(dest, 'merged.tif');
+    const tempDir = tempDirNear(dirname(this.#abs(dest)));
+    const mergedAbs = join(tempDir, basename(this.#abs(dest)));
+    const winDriver = windowDriver(spec, meta);
+    const winAbs = join(
+      tempDir,
+      `.win-${randomBytes(4).toString('hex')}${windowExtension(winDriver, spec)}`,
+    );
     let backupPath: string | null = null;
     try {
-      await writeRasterPixels(this.#loc, winTmp, {
+      await writeRasterPixels(this.#loc, winAbs, {
         width: win.w,
         height: win.h,
         bands: newBands,
@@ -888,24 +1013,34 @@ export class RasterEditor {
         geotransform: before.geotransform,
         // crs 必须继承原图的 —— 坐标系不一致时同样是「heterogeneous projection」跳过。
         crs: meta.crs,
+        // 颜色解释为 Undefined 的源必须用同格式窗口（见 windowDriver 的说明）
+        driver: winDriver,
+        nodata: meta.nodata,
       });
 
-      // 叠回原图：产出与原图同尺寸、同仿射、同波段类型的完整文件
-      await overlayWindowOntoRaster(this.#loc, abs, winTmp, mergedTmp);
+      // 叠回原图：产出与原图同尺寸、同仿射、同波段类型、同格式的完整文件
+      await overlayWindowOntoRaster(this.#loc, abs, winAbs, mergedAbs, {
+        driver: spec.of,
+        nodata: meta.nodata,
+      });
 
-      const replaced = await replaceFileAtomically(
-        this.#store,
-        outputPath
-          ? { target, tempPath: mergedTmp, mode: 'copy', outputPath }
-          : { target, tempPath: mergedTmp },
-      );
-      backupPath = replaced.backupPath;
+      // 临时目录里除窗口之外的文件才是这一套新数据（窗口的伴随文件也按 .win- 开头）
+      const winStem = basename(winAbs).replace(/\.[^.]+$/, '');
+      const produced = readdirSync(tempDir).filter((n) => !n.startsWith(winStem));
+      const { backupPath: groupBackup } = await replaceFileGroupAtomically(this.#store, {
+        target,
+        tempDir,
+        produced,
+        managed: outputPath ? [] : managedFilesOf(dest, spec),
+        ...(outputPath ? { mode: 'copy' as const, outputPath } : {}),
+      });
+      backupPath = groupBackup;
 
       // 回读校验只读窗口：窗口外的像素不逐字节比对（那要读整个文件）
       // 另存为时校验的是**新文件**（原地替换时校验的是原文件）
       const verified = await this.#verifyWindow(dest, win, newBands, frame);
       // 写回成功之后建金字塔（另存为时建在**新文件**旁边：那是现在装着新内容的文件）
-      const overview = await this.#ensureOverviews(this.#abs(dest));
+      const overview = await this.#ensureOverviews(this.#abs(dest), spec);
 
       return {
         op,
@@ -925,8 +1060,7 @@ export class RasterEditor {
         overview,
       };
     } finally {
-      rmSync(winTmp, { force: true });
-      rmSync(mergedTmp, { force: true });
+      rmSync(tempDir, { recursive: true, force: true });
     }
   }
 
@@ -952,8 +1086,11 @@ export class RasterEditor {
     }
     const afterFrame = await readRasterFrame(this.#loc, this.#abs(target));
     if (afterFrame.width !== frame.width || afterFrame.height !== frame.height) return false;
+    // 仿射参数按**相对容差**比：AAIGrid 头只有 10 位有效数字，
+    // 256 行 × 0.0333 之后原点会在第 10 位小数上差 1e-10 量级（实测 90 → 89.999999999916）。
+    // 绝对相等会把一次正确的写回判成"没校验通过"。1e-9 的相对容差在 90° 处约 1e-7°（赤道 1 厘米）。
     for (let i = 0; i < 6; i++) {
-      if (frame.geotransform[i] !== afterFrame.geotransform[i]) return false;
+      if (!nearlyEqual(frame.geotransform[i] ?? 0, afterFrame.geotransform[i] ?? 0)) return false;
     }
     return true;
   }
@@ -964,14 +1101,40 @@ export class RasterEditor {
     target: string,
     produce: (temp: string) => Promise<void>,
   ): Promise<RasterOpResult> {
+    const abs = this.#abs(target);
+    const meta = await this.#metaOf(abs);
+    // 格式闸门在动手之前：裁剪/重采样同样要按源格式写回
+    const spec = this.#writeFormatFor(target, meta);
     const before = await this.#read(target);
-    this.#assertWritebackSafe(target, before.driver);
-    const temp = this.#tempPath(target, 'tmp.tif');
-    await produce(temp);
-    const { backupPath } = await replaceFileAtomically(this.#store, { target, tempPath: temp });
+    const tempDir = tempDirNear(dirname(abs));
+    let backupPath: string | null = null;
+    try {
+      const stagedTif = join(tempDir, `.stage-${randomBytes(4).toString('hex')}.tif`);
+      // 先把结果做成 GeoTIFF（gdalwarp 写 CreateCopy-only 的格式并不可靠），
+      // 再按源格式转一次 —— 多走一趟换来的是"每种格式都走同一条已验证的路"。
+      await produce(stagedTif);
+      const mainName = basename(abs);
+      if (spec.driver === 'GTiff') {
+        renameSync(stagedTif, join(tempDir, mainName));
+      } else {
+        const tr = await tools(this.#loc).translate([
+          '-of', spec.of, '-ot', meta.pixelType,
+          ...(meta.nodata !== null ? ['-a_nodata', nodataArgument(meta.nodata)] : []),
+          stagedTif, join(tempDir, mainName),
+        ]);
+        if (!tr.ok) {
+          throw new Error(`按源格式（${meta.driver}）写出失败：${mainName}\n${tr.stderr}`);
+        }
+        rmSync(stagedTif, { force: true });
+      }
+      ({ backupPath } = await this.#replaceGroup(target, undefined, tempDir, spec));
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+
     const after = await this.#read(target);
     // 写回成功之后建金字塔（GDAL 级改动同样换了内容，金字塔要跟着新内容走）
-    const overview = await this.#ensureOverviews(this.#abs(target));
+    const overview = await this.#ensureOverviews(abs, spec);
     let affected = 0;
     const a = before.bands[0];
     const b = after.bands[0];
@@ -981,13 +1144,17 @@ export class RasterEditor {
     }
     return {
       op,
-      target: this.#abs(target),
+      target: abs,
       affectedPixels: affected,
       totalPixels: before.width * before.height,
       checksumBefore: before.checksum,
       checksumAfter: after.checksum,
       backupPath,
-      verified: after.width > 0 && after.height > 0,
+      verified:
+        after.width > 0 &&
+        after.height > 0 &&
+        after.driver === meta.driver &&
+        after.pixelType === before.pixelType,
       width: after.width,
       height: after.height,
       bandCount: after.bandCount,
@@ -1221,6 +1388,33 @@ export class RasterEditor {
   }
 }
 
+/** 两个浮点数是否几乎相等（相对容差 1e-9）。 */
+function nearlyEqual(a: number, b: number): boolean {
+  const scale = Math.max(1, Math.abs(a), Math.abs(b));
+  return Math.abs(a - b) <= 1e-9 * scale;
+}
+
+/**
+ * 窗口临时文件用哪种驱动。
+ *
+ * 判据不是"源是什么格式"，而是**源的波段颜色解释能不能在 GTiff 里原样落地**：
+ *  - Gray / RGB / RGBA：GTiff 窗口带上 `-colorinterp` 就能对齐，走 GTiff 最稳；
+ *  - Undefined（HFA / EHdr 常见，浮点 AAIGrid 也是）：GTiff 单波段写不出 Undefined
+ *    （实测会变成 Gray），gdalbuildvrt 判"heterogeneous band color interpretation"
+ *    后**静默跳过窗口**、退出码仍是 0 —— 所以窗口必须用同一种源格式。
+ */
+function windowDriver(spec: RasterWriteFormat, meta: RasterMeta): string {
+  const allUndefined = meta.colorInterpretation.every(
+    (ci) => ci.toLowerCase() === 'undefined',
+  );
+  return allUndefined ? spec.of : 'GTiff';
+}
+
+/** 窗口临时文件的扩展名（要能让 GDAL 按扩展名认出格式）。 */
+function windowExtension(driver: string, spec: RasterWriteFormat): string {
+  return driver === 'GTiff' ? '.tif' : spec.extensions[0]!;
+}
+
 /** 两个仿射参数是否相同（逐项比较，容差 1e-9）。 */
 function sameGeotransform(a: readonly number[] | null, b: readonly number[] | null): boolean {
   if (!a || !b || a.length < 6 || b.length < 6) return false;
@@ -1242,6 +1436,12 @@ interface RasterMeta {
   readonly crs: string | null;
   /** GDAL 驱动短名（GTiff / HFA / PNG …） */
   readonly driver: string;
+  /** 无效值标记；没有就是 null */
+  readonly nodata: number | null;
+  /** 各波段的 nodata 不一致（写回只带得走一个值） */
+  readonly nodataConflict: boolean;
+  /** 是否带调色板（索引色）—— 写回会把调色板丢掉 */
+  readonly colorTable: boolean;
 }
 
 /**
@@ -1274,6 +1474,7 @@ function windowAsPixels(win: RasterWindowPixels, meta: RasterMeta): RasterPixels
     geotransform: win.geotransform,
     crs: win.crs,
     driver: meta.driver,
+    nodata: meta.nodata,
     checksum: win.checksum,
   };
 }

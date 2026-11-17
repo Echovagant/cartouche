@@ -19,7 +19,7 @@ import type { GdalLocation } from '../gdal/env.ts';
 export const DEFAULT_OVERVIEW_THRESHOLD_BYTES = 200 * 1024 * 1024;
 
 /** 没建金字塔的原因。调用方靠它区分"要不要提示用户"，所以不能合并成一种。 */
-export type OverviewSkipReason = 'not-found' | 'below-threshold' | 'already-exists';
+export type OverviewSkipReason = 'not-found' | 'below-threshold' | 'already-exists' | 'format-not-supported';
 
 /** 建金字塔的结果 */
 export interface OverviewResult {

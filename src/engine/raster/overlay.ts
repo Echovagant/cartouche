@@ -27,6 +27,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { tools, type ToolResult } from '../gdal/runner.ts';
 import type { GdalLocation } from '../gdal/env.ts';
+import { nodataArgument } from './formats.ts';
 import { readRasterFrame } from './raw.ts';
 import type { RasterFrame } from './window.ts';
 
@@ -174,6 +175,7 @@ interface RasterMeta {
   readonly geotransform: readonly number[];
   readonly bandType: string | null;
   readonly bandCount: number;
+  readonly driver: string;
 }
 
 /**
@@ -190,6 +192,7 @@ async function readMeta(loc: GdalLocation, path: string): Promise<RasterMeta> {
     size?: [number, number];
     geoTransform?: number[];
     bands?: { type?: string }[];
+    driverShortName?: string;
   };
   const width = info.size?.[0] ?? 0;
   const height = info.size?.[1] ?? 0;
@@ -202,21 +205,29 @@ async function readMeta(loc: GdalLocation, path: string): Promise<RasterMeta> {
     geotransform: info.geoTransform,
     bandType: info.bands?.[0]?.type ?? null,
     bandCount: info.bands?.length ?? 0,
+    driver: String(info.driverShortName ?? 'GTiff'),
   };
 }
 
 /**
- * 合成完再核对一次产出：尺寸、仿射、波段类型都必须与原图一致。
+ * 合成完再核对一次产出：尺寸、仿射、波段类型、驱动都必须与原图一致。
  * 这是最后一道闸门 —— 上面任何一处判断漏了，产出对不上就会在这里被抓住。
  */
 async function assertOutputMatchesOriginal(
   loc: GdalLocation,
   originalAbsPath: string,
   outAbsPath: string,
+  expectedDriver: string,
 ): Promise<void> {
   const original = await readMeta(loc, originalAbsPath);
   const out = await readMeta(loc, outAbsPath);
 
+  if (out.driver !== expectedDriver) {
+    throw new Error(
+      `合成产出的格式是 ${out.driver}，不是要求的 ${expectedDriver}：` +
+        `写回必须按源格式落盘，扩展名与字节对不上会打不开。`,
+    );
+  }
   if (out.width !== original.width || out.height !== original.height) {
     throw new Error(
       `合成产出的尺寸（${out.width}×${out.height}）与原图（${original.width}×${original.height}）不一致。`,
@@ -248,14 +259,19 @@ async function assertOutputMatchesOriginal(
  * 先建 VRT 再核对网格：建 VRT 时 GDAL 会把"跳过了哪个源"直接写进 stderr，
  * 那条原文还指名道姓，比我们自己推断的原因更权威；
  * 网格错位、窗口越界这些 GDAL 不吭声的错，再由我们自己逐条核对。
+ *
+ * @param options.driver 产出格式（GDAL 驱动短名）。必须与源文件一致（GTiff / HFA / AAIGrid / EHdr / PNG）
+ * @param options.nodata 无效值标记；给了就一并写进产出
  */
 export async function overlayWindowOntoRaster(
   loc: GdalLocation,
   originalAbsPath: string,
   windowAbsPath: string,
   outAbsPath: string,
+  options?: { readonly driver?: string; readonly nodata?: number | null },
 ): Promise<void> {
   const gdal = tools(loc);
+  const driver = options?.driver ?? 'GTiff';
   const tmp = mkdtempSync(join(tmpdir(), 'cartouche-overlay-'));
   try {
     const original = await readRasterFrame(loc, originalAbsPath);
@@ -279,12 +295,16 @@ export async function overlayWindowOntoRaster(
     assertWindowOntoGrid(original, window);
 
     // 不加 -ot：加了会把 16 位压成 8 位（实测 UInt16 会被压成 255）。
-    const outRes = await gdal.translate(['-of', 'GTiff', vrt, outAbsPath]);
+    const outArgs = ['-of', driver, vrt, outAbsPath];
+    if (typeof options?.nodata === 'number') {
+      outArgs.splice(2, 0, '-a_nodata', nodataArgument(options.nodata));
+    }
+    const outRes = await gdal.translate(outArgs);
     if (!outRes.ok) {
-      throw new Error(`合成输出失败：${outAbsPath}\n${outRes.stderr}`);
+      throw new Error(`合成输出失败（${driver}）：${outAbsPath}\n${outRes.stderr}`);
     }
 
-    await assertOutputMatchesOriginal(loc, originalAbsPath, outAbsPath);
+    await assertOutputMatchesOriginal(loc, originalAbsPath, outAbsPath, driver);
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }

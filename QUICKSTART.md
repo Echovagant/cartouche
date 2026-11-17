@@ -93,9 +93,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-engine.ps1
 
 ## 八、能改哪些格式
 
-- **能改 · 原样写回**：`.tff`、`.tif`（GeoTIFF）。格式、坐标系、伴随文件都跟着走，ArcGIS 照常打开。
-- **能看能导出 · 不改**：`.img` `.vrt` `.asc` `.bil` `.png`（栅格），`.shp` `.gdb` `.gpkg` `.geojson` `.kml` `.gml`（矢量）。
-  写回统一产出 GeoTIFF，改了会换格式，所以工具会**明确拒绝**而不是把文件改坏。
+- **能改 · 原样写回**：
+  - 栅格：`.tff` `.tif`（GeoTIFF）、`.img`（Erdas Imagine）、`.asc`（ESRI ASCII Grid）、
+    `.bil`（ENVI）、`.png`（8/16 位无符号）。格式、位深、坐标系、伴随文件都跟着走，ArcGIS 照常打开。
+  - 矢量：`.shp`、`.geojson`、`.gpkg`。
+- **能看能导出 · 不改**：`.vrt`（虚拟栅格：本身不含像素，改它引用的源文件），
+  `.gdb` `.kml` `.gml`（矢量）。
+- **会明确拒绝的**：带调色板的索引色栅格（重写会丢调色板）、扩展名与真实格式不一致的文件。
+  工具会说明原因，而不是把文件改坏。
 
 ## 九、出问题看哪儿
 
@@ -104,7 +109,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-engine.ps1
 | 地图一片空白 | 用 file:// 打开了。用 http://127.0.0.1:8080/canvas.html |
 | 提示"无法连接引擎服务" | 终端 1 的引擎没起，或端口不是 8787 |
 | 提示缺 GDAL 驱动 | `npm run doctor` 看看具体缺哪个 |
-| 写回被拒绝 | 目标不是 GeoTIFF，先转成 .tif 再改 |
+| 写回被拒绝 | 看提示：VRT 要改它引用的源文件；调色板位图先转成真彩色；扩展名与真实格式不一致时先把名字改对 |
 | 写回报"文件被占用" | ArcGIS 打开着这个数据，工具不会硬来 |
 
 ## 十、许可

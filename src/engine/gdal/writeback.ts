@@ -11,7 +11,7 @@
  *    这是用户要的"另存为新文件"按钮的引擎侧实现。
  */
 import { randomBytes } from 'node:crypto';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { OccupiedError, sha256, type WorkspaceAdapter } from '../workspace/index.ts';
 
 /**
@@ -422,6 +422,192 @@ export async function replaceFileAtomically(
     throw err;
   }
   return { backupPath };
+}
+
+/**
+ * 一组文件的替换请求（栅格的多文件数据集：主文件 + 伴随文件）。
+ *
+ * 栅格不像 Shapefile 那样天然是"一组"，但 AAIGrid 的 .prj、EHdr 的 .hdr、
+ * PNG 的 .aux.xml 都是数据的一部分：只换主文件，ArcGIS 会按旧的伴随文件定位/认坐标系。
+ */
+export interface FileGroupReplaceRequest {
+  /** 主文件的工作区相对路径 */
+  readonly target: string;
+  /** 新文件所在目录（绝对路径，与目标同卷） */
+  readonly tempDir: string;
+  /** 临时目录里属于**这一套新数据**的文件名（含主文件） */
+  readonly produced: readonly string[];
+  /**
+   * 目标旁边归这一套数据管的全部文件（含主文件）。
+   *
+   * 备份按整组做；这一轮没再产生的（旧 .prj / 旧 .ovr）会被清掉 ——
+   * 留着它们等于对新数据撒谎。
+   */
+  readonly managed: readonly string[];
+  readonly backup?: boolean;
+  readonly label?: string;
+  readonly mode?: WriteBackMode;
+  /** mode='copy' 时的目标路径（工作区相对路径） */
+  readonly outputPath?: string;
+}
+
+/** 相对路径统一成正斜杠（HTTP 流程里出现过反斜杠）。 */
+function normRel(path: string): string {
+  return path.split('\\').join('/');
+}
+
+/**
+ * 一组文件的原子性：**做不到一次性换掉**，但能做到"换到一半失败就整组退回"。
+ *
+ * 顺序是刻意的：伴随文件先换、主文件最后换 —— 主文件的 rename 就是这次写回的
+ * 提交点。中途失败时从整组备份恢复，并删掉这一轮新造出来的文件。
+ *
+ * 与 Shapefile 的回滚同一套思路（见 vector/write.ts），代价也相同：
+ * 存在"换了几个文件"的瞬间，但最终要么全换、要么全退回。
+ */
+export async function replaceFileGroupAtomically(
+  store: WorkspaceAdapter,
+  req: FileGroupReplaceRequest,
+): Promise<{ backupPath: string | null; files: string[] }> {
+  if ((req.mode ?? 'replace') === 'copy') {
+    return replaceFileGroupCopy(store, req);
+  }
+
+  const targetRel = normRel(req.target);
+  const targetName = targetRel.slice(targetRel.lastIndexOf('/') + 1);
+  if (!req.produced.includes(targetName)) {
+    throw new Error(
+      `写回中止：临时目录里没有主文件 ${targetName}（产出了：${req.produced.join('、') || '无'}）`,
+    );
+  }
+  const dirRel = dirOf(targetRel);
+  const producedRel = req.produced.map((n) => (dirRel ? `${dirRel}/${n}` : n));
+
+  await store.assertWritable(targetRel);
+
+  // 1) 整组备份：主文件与它的伴随文件必须一起备，回滚时才拿得回一套完整的
+  let backupRel: string | null = null;
+  const backedUp: string[] = [];
+  if (req.backup ?? true) {
+    backupRel = `${targetRel}.bak.${req.label ?? timestamp()}`;
+    if (await mayExist(store, backupRel)) {
+      backupRel = `${backupRel}.${randomBytes(3).toString('hex')}`;
+    }
+    for (const rel of req.managed) {
+      try {
+        await store.copy(rel, `${backupRel}/${basename(rel)}`);
+        backedUp.push(rel);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException | undefined)?.code === 'ENOENT') continue;
+        throw new Error(
+          `写回中止：备份原文件失败，没有动过任何数据（${rel}）：${(err as Error).message}`,
+        );
+      }
+    }
+  }
+
+  // 2) 逐个 rename：伴随文件先，主文件最后（提交点）
+  const touched: string[] = [];
+  try {
+    for (const name of req.produced) {
+      if (name === targetName) continue;
+      const rel = dirRel ? `${dirRel}/${name}` : name;
+      await store.rename(join(req.tempDir, name), rel);
+      touched.push(rel);
+    }
+    await store.rename(join(req.tempDir, targetName), targetRel);
+    touched.push(targetRel);
+  } catch (err) {
+    await restoreGroup(store, backupRel, backedUp, touched);
+    const code = (err as NodeJS.ErrnoException | undefined)?.code;
+    if (code === 'EPERM' || code === 'EBUSY' || code === 'EACCES') {
+      throw new OccupiedError(targetRel, err);
+    }
+    throw err;
+  }
+
+  // 3) 清掉这一轮没再产生的旧文件：旧 .hdr/.prj/.ovr 留着会指向旧内容
+  for (const rel of req.managed) {
+    if (rel === targetRel || producedRel.includes(rel)) continue;
+    // .aux.xml 可能是用户或别的软件写进去的元数据（AREA_OR_POINT、统计、来源信息）：
+    // 新产出没有它时不删 —— 删掉是静默丢元数据。真正的派生文件（.prj/.ovr/.hdr…）才清。
+    if (rel.toLowerCase().endsWith('.aux.xml')) continue;
+    try {
+      await store.remove(rel);
+    } catch {
+      // 清不掉不算写回失败：它是旧的派生文件，不影响新数据能不能打开
+    }
+  }
+
+  return { backupPath: backupRel, files: producedRel };
+}
+
+/**
+ * 另存为（copy）：把这一组文件落到新路径，原文件一个字节都不动。
+ *
+ * 不做备份（原文件没被改），也不清目标旁边原有的伴随文件 ——
+ * 这一轮产出的名字都按 outputPath 的主名派生，覆盖的是新文件自己的伴随文件。
+ */
+async function replaceFileGroupCopy(
+  store: WorkspaceAdapter,
+  req: FileGroupReplaceRequest,
+): Promise<{ backupPath: null; files: string[] }> {
+  const { outputRel } = assertCopyTarget(store, req.target, req.outputPath);
+  const outNorm = normRel(outputRel);
+  const outName = outNorm.slice(outNorm.lastIndexOf('/') + 1);
+  if (!req.produced.includes(outName)) {
+    throw new Error(
+      `写回中止：临时目录里没有主文件 ${outName}（产出了：${req.produced.join('、') || '无'}）`,
+    );
+  }
+  await store.assertWritable(outputRel);
+  const dirRel = dirOf(outNorm);
+  const files: string[] = [];
+  // 与 replace 一致：伴随文件先落，主文件最后落
+  const ordered = [...req.produced.filter((n) => n !== outName), outName];
+  for (const name of ordered) {
+    const rel = dirRel ? `${dirRel}/${name}` : name;
+    await store.rename(join(req.tempDir, name), rel);
+    files.push(rel);
+  }
+  return { backupPath: null, files };
+}
+
+/**
+ * 整组回滚：备份里的文件逐个复制回去，并删掉这一轮新造出来的文件。
+ *
+ * 用 copy 而不是 rename：备份本身要留着，用户还能再查一次。
+ *
+ * "新造出来的"按**备份里有没有**判断，而不是按"归不归这套数据管"：
+ * 旧数据本来没有 .prj、这一轮新写了一个，失败后必须把它删掉 ——
+ * 留着它，旧主文件旁边就多了一个指向错误坐标系的伴随文件。
+ */
+async function restoreGroup(
+  store: WorkspaceAdapter,
+  backupRel: string | null,
+  backedUp: readonly string[],
+  touched: readonly string[],
+): Promise<void> {
+  // 没有备份就无从回滚：保持已替换的文件，由调用方自己的整组备份兜底
+  if (!backupRel) return;
+  for (const rel of backedUp) {
+    try {
+      await store.copy(`${backupRel}/${basename(rel)}`, rel);
+    } catch {
+      throw new Error(
+        `回滚也失败了（${rel}）：备份在 ${backupRel}，请从备份里手工恢复`,
+      );
+    }
+  }
+  for (const rel of touched) {
+    if (!backedUp.includes(rel)) {
+      try {
+        await store.remove(rel);
+      } catch {
+        /* 删不掉就留着：它不参与旧数据的读取 */
+      }
+    }
+  }
 }
 
 export { OccupiedError };

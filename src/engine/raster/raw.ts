@@ -14,6 +14,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { tools } from '../gdal/runner.ts';
 import type { GdalLocation } from '../gdal/env.ts';
+import { nodataArgument } from './formats.ts';
 import { windowGeotransform, type RasterFrame, type RasterWindow } from './window.ts';
 import {
   BYTES_PER_SAMPLE,
@@ -53,11 +54,17 @@ export interface RasterPixels {
   /**
    * GDAL 驱动短名（如 `GTiff` / `HFA` / `PNG` / `VRT`）。
    *
-   * 写回时统一用 `gdal_translate -of GTiff` 产出，所以**只有 GTiff 能原样写回**——
-   * 别的驱动写出来的是 GeoTIFF 字节，扩展名却还是原来的，ArcGIS 直接打不开。
-   * 引擎据此在动手前就拒绝，而不是把文件改坏。
+   * 写回按这个驱动选 `-of`（见 formats.ts）：内容换了、格式也必须还是原来的，
+   * 否则 ArcGIS 按扩展名去解析会直接打不开。VRT 是虚拟菜谱，不在可写回之列。
    */
   readonly driver: string;
+  /**
+   * 无效值标记（nodata）。没有就是 null。
+   *
+   * 必须跟着写回去：改图后丢了 nodata，原来的"空白区"会变成参与统计与渲染的
+   * 真实像元，图看着就多出一片脏数据。
+   */
+  readonly nodata: number | null;
   /** 内容校验和（波段顺序拼接） */
   readonly checksum: string;
 }
@@ -275,7 +282,7 @@ export async function readRasterPixels(
   }
   const info = JSON.parse(infoRes.stdout) as {
     size?: [number, number];
-    bands?: { type?: string; colorInterpretation?: string }[];
+    bands?: { type?: string; colorInterpretation?: string; noDataValue?: number }[];
     geoTransform?: number[];
     coordinateSystem?: { wkt?: string };
     driverShortName?: string;
@@ -316,6 +323,7 @@ export async function readRasterPixels(
     geotransform: info.geoTransform ? [...info.geoTransform] : null,
     crs: info.coordinateSystem?.wkt ?? null,
     driver: String(info.driverShortName ?? 'GTiff'),
+    nodata: typeof info.bands?.[0]?.noDataValue === 'number' ? info.bands[0]!.noDataValue! : null,
     checksum: checksumOf(bands),
   };
 }
@@ -403,7 +411,7 @@ function resolveColorInterp(
   return out;
 }
 
-/** 把原始像素写成 GeoTIFF（保留仿射参数与坐标系） */
+/** 把原始像素写成栅格（保留仿射参数、坐标系、nodata 与源格式） */
 export async function writeRasterPixels(
   loc: GdalLocation,
   outAbsPath: string,
@@ -417,6 +425,10 @@ export async function writeRasterPixels(
     readonly colorInterpretation?: readonly string[];
     readonly geotransform: readonly number[] | null;
     readonly crs: string | null;
+    /** GDAL 驱动短名：默认 GTiff。写回时必须给**源格式**，否则扩展名与字节对不上 */
+    readonly driver?: string;
+    /** 无效值标记；给了就写 `-a_nodata`，null / 省略表示不带 */
+    readonly nodata?: number | null;
   },
 ): Promise<void> {
   const gdal = tools(loc);
@@ -494,7 +506,8 @@ export async function writeRasterPixels(
   // ENVI 头就算写了 data type = 12，最后这一步 `-ot Byte` 也会把值压成 255
   // （退出码 0、stderr 空，实测 GDAL 3.13.3）。
   // 引擎的类型名与 GDAL 的 `-ot` 取值一一对应，所以直接用源类型。
-  const args = ['-of', 'GTiff', '-ot', pixels.pixelType];
+  const driver = pixels.driver ?? 'GTiff';
+  const args = ['-of', driver, '-ot', pixels.pixelType];
   // ENVI 中转不带颜色解释，窗口读回来会是 Undefined，
   // 与原图的 Red/Green/Blue 异构 -> gdalbuildvrt 直接跳过窗口。
   // -colorinterp 只能给一次，值用逗号分隔。
@@ -504,22 +517,33 @@ export async function writeRasterPixels(
   }
   const gt = pixels.geotransform;
   if (gt && gt.length >= 6) {
-    const originX = gt[0] ?? 0;
-    const pixelW = gt[1] ?? 1;
-    const originY = gt[3] ?? 0;
-    const pixelH = gt[5] ?? -1;
-    const lrx = originX + pixels.width * pixelW;
-    const lry = originY + pixels.height * pixelH;
-    args.push('-a_ullr', String(originX), String(originY), String(lrx), String(lry));
+    // 有旋转项时必须用 -a_gt：-a_ullr 只有四个角点，会把旋转悄悄抹掉。
+    // 没有旋转的常见情形仍走 -a_ullr —— 两者写出来的东西在轴对齐时等价。
+    if (Math.abs(gt[2] ?? 0) > 1e-12 || Math.abs(gt[4] ?? 0) > 1e-12) {
+      args.push('-a_gt', ...gt.slice(0, 6).map(String));
+    } else {
+      const originX = gt[0] ?? 0;
+      const pixelW = gt[1] ?? 1;
+      const originY = gt[3] ?? 0;
+      const pixelH = gt[5] ?? -1;
+      const lrx = originX + pixels.width * pixelW;
+      const lry = originY + pixels.height * pixelH;
+      args.push('-a_ullr', String(originX), String(originY), String(lrx), String(lry));
+    }
   }
   if (pixels.crs) {
     args.push('-a_srs', pixels.crs);
+  }
+  if (typeof pixels.nodata === 'number') {
+    // nodata 必须跟着写回去：丢了它，原来的"空白区"会变成参与渲染的真实像元。
+    // NaN 也是合法的 nodata（浮点栅格常见），写成 nan。
+    args.push('-a_nodata', nodataArgument(pixels.nodata));
   }
   args.push(bin, outAbsPath);
 
   const res = await gdal.translate(args);
   if (!res.ok) {
-    throw new Error(`写出 GeoTIFF 失败：${outAbsPath}\n${res.stderr}`);
+    throw new Error(`写出栅格失败（${driver}）：${outAbsPath}\n${res.stderr}`);
   }
 }
 
@@ -546,6 +570,8 @@ export interface RasterFrameInfo extends RasterFrame {
   readonly pixelType: PixelType;
   /** 每个波段的颜色解释（Red / Green / Blue / Gray / Undefined…） */
   readonly colorInterpretation: readonly string[];
+  /** 无效值标记；没有就是 null */
+  readonly nodata: number | null;
 }
 
 /** 读整图的基本信息（不读像素，很便宜） */
@@ -560,7 +586,7 @@ export async function readRasterFrame(
   }
   const info = JSON.parse(infoRes.stdout) as {
     size?: [number, number];
-    bands?: { type?: string; colorInterpretation?: string }[];
+    bands?: { type?: string; colorInterpretation?: string; noDataValue?: number }[];
     geoTransform?: number[];
     coordinateSystem?: { wkt?: string };
   };
@@ -584,6 +610,7 @@ export async function readRasterFrame(
     crs: info.coordinateSystem?.wkt ?? null,
     pixelType,
     colorInterpretation,
+    nodata: typeof info.bands?.[0]?.noDataValue === 'number' ? info.bands[0]!.noDataValue! : null,
   };
 }
 

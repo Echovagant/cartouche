@@ -264,17 +264,17 @@ const SOURCE_HINT = {
 const WRITABLE = [
   { ext: '.tff', note: 'GeoTIFF 内容 + .tfw/.prj 伴随文件' },
   { ext: '.tif', note: 'GeoTIFF' },
+  { ext: '.img', note: 'Erdas Imagine（HFA 原样写回）' },
+  { ext: '.asc', note: 'ESRI ASCII Grid（单波段，坐标系随 .prj 一起写）' },
+  { ext: '.bil', note: 'ENVI 栅格（.hdr / .prj 成套写回）' },
+  { ext: '.png', note: '位图（8/16 位；坐标系随 .aux.xml 写回）' },
   { ext: '.shp', note: 'Shapefile（一整套文件一起写回）' },
   { ext: '.geojson', note: 'GeoJSON' },
   { ext: '.gpkg', note: 'GeoPackage（只动你指定的那一层，别的层原样留着）' },
 ];
 
 const READONLY_RASTER = [
-  { ext: '.img', note: 'Erdas Imagine' },
-  { ext: '.vrt', note: 'GDAL 虚拟栅格' },
-  { ext: '.asc', note: 'ESRI ASCII Grid' },
-  { ext: '.bil', note: 'Band Interleaved by Line' },
-  { ext: '.png', note: '位图' },
+  { ext: '.vrt', note: 'GDAL 虚拟栅格（不含像素，改它引用的源文件）' },
 ];
 
 const READONLY_VECTOR = [
@@ -786,8 +786,8 @@ export default function Home() {
                   </h3>
                 </div>
                 <p className="mt-2.5 text-body leading-relaxed text-ink-2">
-                  能打开、能出图、能查属性、能导出。写回统一产出 GeoTIFF，改了会换格式，
-                  所以工具会明确拒绝，而不是把文件改坏。
+                  VRT 只是一张指向源文件的“菜谱”，本身不含像素——改它应该改源文件。
+                  带调色板的索引色栅格也不写：重写会把调色板丢掉，工具会明确拒绝而不是把图改成灰度。
                 </p>
                 <ul className="mt-5 space-y-2">
                   {READONLY_RASTER.map((f) => (

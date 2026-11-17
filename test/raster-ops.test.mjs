@@ -242,24 +242,36 @@ test('栅格操作：读像素时会报出驱动名（写回闸门靠它判断�
   }
 });
 
-test('写回闸门：非 GeoTIFF 的文件明确拒绝，且原文件一个字节不动', async () => {
-  // 2026-10-22 实测的坑：写回统一走 `gdal_translate -of GTiff`，
-  // 所以一个 HFA 的 .img 改完会变成 GeoTIFF 字节、扩展名却还是 .img —— ArcGIS 打不开。
-  // 引擎必须在动手前就拒绝，而不是把文件改坏。
+test('写回闸门：VRT 虚拟栅格明确拒绝，且引用链上的文件一个字节不动', async () => {
+  // VRT 不含像素，只是一张指向源文件的"菜谱"：改它应该改源文件，
+  // 而不是把 VRT 重写成另一种格式（那会让引用关系整个消失）。
   const { dir, editor, marked } = await setup();
   try {
-    const png = join(dir, 'marked.png');
-    const tr = await gdal.translate(['-of', 'PNG', marked, png]);
-    assert.equal(tr.ok, true, 'PNG 样本应生成成功');
-    const before = await readFile(png);
+    const vrt = join(dir, 'marked.vrt');
+    await writeFile(
+      vrt,
+      [
+        '<VRTDataset rasterXSize="16" rasterYSize="12">',
+        '  <SRS>EPSG:4326</SRS>',
+        '  <GeoTransform>120.30, 0.001, 0, 30.532, 0, -0.001</GeoTransform>',
+        '  <VRTRasterBand dataType="Byte" band="1">',
+        '    <SimpleSource><SourceFilename relativeToVRT="1">marked.tif</SourceFilename>',
+        '    <SourceBand>1</SourceBand></SimpleSource>',
+        '  </VRTRasterBand>',
+        '</VRTDataset>',
+      ].join('\n'),
+      'utf8',
+    );
+    const beforeVrt = await readFile(vrt);
+    const beforeTif = await readFile(marked);
 
     await assert.rejects(
-      () => editor.paint({ target: 'marked.png', region: REGION, color: '#00FF00' }),
-      /不能原样写回/,
+      () => editor.paint({ target: 'marked.vrt', region: REGION, color: '#00FF00' }),
+      /VRT|虚拟栅格/,
     );
 
-    const after = await readFile(png);
-    assert.deepEqual(after, before, '被拒绝后原文件必须一个字节都不动');
+    assert.deepEqual(await readFile(vrt), beforeVrt, '被拒绝后 VRT 必须一个字节都不动');
+    assert.deepEqual(await readFile(marked), beforeTif, 'VRT 引用的源文件也不能动');
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
