@@ -112,6 +112,22 @@ function fileStamp(): string {
 type ViewBBox = readonly [number, number, number, number];
 
 /**
+ * 源文件超过这个体积就直接按瓦片显示。
+ *
+ * 依据：整层转成 GeoJSON 的体积通常与源文件同量级或更大，512 MB 的源
+ * 不可能塞进 128 MB 的浏览器显示上限 —— 再做一次全量转换只是白等。
+ * 512 MB 以下的源仍走"整层 → 撞闸分块"的老路（属性表与标注都完整）。
+ */
+const MVT_SOURCE_BYTES = 512 * 1024 * 1024;
+
+/** 文件体积的人话显示（只用于提示语） */
+function formatSourceSize(bytes: number | null): string {
+  if (bytes === null || !Number.isFinite(bytes) || bytes <= 0) return '文件很大';
+  if (bytes >= 1073741824) return `${(bytes / 1073741824).toFixed(1)} GB`;
+  return `${Math.round(bytes / 1048576)} MB`;
+}
+
+/**
  * 视口包含判定：inner 完全落在 outer 外扩 25% 的范围里，就算"没走出已加载范围"。
  *
  * 没走出就不重拉 —— 用户在小范围里反复拖拽，不该每次都触发一次 ogr2ogr 裁剪
@@ -516,22 +532,30 @@ export default function CanvasWorkbench() {
    * 新增图层和恢复项目**共用这一份** —— 恢复时只回填图层列表是不够的，
    * 那样地图上还是一片空白（列表有了、数据没回来，用户以为没恢复成功）。
    *
-   * 体积闸自动降级：全量转换撞了 `payload_too_large` 就**按当前视口裁剪重试**，
-   * 重试成功把该层标记成 chunked（调用方合进图层对象、写进清单），下次恢复
-   * 直接走视口模式 —— 不再每开一次项目都撞一次闸。
+   * 三种加载方式按源的量级选：
+   *   - 整层：普通矢量，一次转成 GeoJSON（标注、属性表都齐）；
+   *   - 分块：整层撞了显示上限，按当前视口裁剪（属性表可用，视口变化自动补）；
+   *   - 瓦片：源文件 ≥ 512 MB，按需切 MVT（不做注定失败的整层转换；
+   *           属性表与点选可用，标注暂不画 —— 横幅里会说清楚）。
    *
-   * 返回 ok 与分块标记：新增图层失败时不要顺手把错误提示清掉。
+   * 返回 ok 与两种模式标记：新增图层失败时不要顺手把错误提示清掉。
    */
   const loadLayerData = useCallback(
     async (
       target: readonly MapLayer[],
       opts?: { layersFor?: ReadonlyMap<string, readonly string[]> },
-    ): Promise<{ ok: boolean; chunkedMarks: ReadonlyMap<string, boolean> }> => {
+    ): Promise<{
+      ok: boolean;
+      chunkedMarks: ReadonlyMap<string, boolean>;
+      tiledMarks: ReadonlyMap<string, string>;
+    }> => {
       let ok = true;
       // 记下这次请求属于哪个项目：中途换了项目就不要再往回写数据了
       const owner = projectKeyRef.current;
       const stillMine = (): boolean => projectKeyRef.current === owner;
       const chunkedMarks = new Map<string, boolean>();
+      /** 图层 id → MVT 的 source-layer 名 */
+      const tiledMarks = new Map<string, string>();
       // 加载进度（画布区遮罩）：只统计矢量层（栅格只查范围，毫秒级）
       const seq = (loadingSeqRef.current += 1);
       const vectorTotal = target.filter((l) => l.kind === 'vector').length;
@@ -567,12 +591,67 @@ export default function CanvasWorkbench() {
           };
           const selectedLayers = opts?.layersFor?.get(layer.id);
 
+          // 矢量的范围与源体积先查（ogrinfo -so，几百毫秒）：
+          // 源体积决定走"整层 / 分块 / 瓦片"，不能再等整层转换失败才知道。
+          let sourceBytes: number | null = null;
+          let extentLayerNames: readonly string[] | undefined;
+          if (layer.kind === 'vector') {
+            const extentRes = await engine.fetchExtent(layer.path);
+            if (extentRes.ok) {
+              if (!stillMine()) return { ok, chunkedMarks, tiledMarks };
+              sourceBytes = extentRes.data.bytes;
+              extentLayerNames = extentRes.data.layerNames;
+              const bbox = extentRes.data.bbox;
+              setExtents((prev) => {
+                const next = new Map(prev);
+                next.set(layer.id, [bbox[0], bbox[1], bbox[2], bbox[3]]);
+                return next;
+              });
+            }
+          }
+
+          /**
+           * 切到瓦片模式：补 source-layer 名并登记标记。
+           * 拿不到图层名就报错 —— 瓦片没有 source-layer 在 MapLibre 里是空图层，
+           * 用户会以为"加载成功了但什么都没画"。
+           */
+          const switchToTiles = async (): Promise<boolean> => {
+            let tileLayer = layer.tileLayer ?? extentLayerNames?.[0];
+            if (!tileLayer) {
+              const names = await engine.fetchVectorLayers(layer.path);
+              if (!stillMine()) return false;
+              if (names.ok) tileLayer = names.data.layerNames[0];
+            }
+            if (!tileLayer) {
+              setBanner(`读取 ${layer.path} 失败：找不到可切的图层。`);
+              ok = false;
+              return false;
+            }
+            tiledMarks.set(layer.id, tileLayer);
+            setBanner(
+              `${layer.name}（${formatSourceSize(sourceBytes)}）太大，已按瓦片方式显示：` +
+                '缩放平移会自动加载瓦片；首次浏览低倍视图需要现场切片（可能要几十秒）。' +
+                '瓦片模式暂不显示标注，属性可点击查看。',
+            );
+            return true;
+          };
+
           if (layer.kind === 'vector') {
             // 进度上报：告诉用户正在读哪个文件（大文件要读几十秒）
             setProgress(vectorDone, layer.name);
+
+            const huge = sourceBytes !== null && sourceBytes >= MVT_SOURCE_BYTES;
+            // 恢复项目的瓦片层 / 超大源：都不做整层转换
+            if (layer.tiled || huge) {
+              const ready = await switchToTiles();
+              if (!stillMine()) return { ok, chunkedMarks, tiledMarks };
+              if (ready) vectorDone += 1;
+              continue;
+            }
+
             let settled = false;
-            if (layer.chunked) {
-              // 分块层恢复：直接按当前视口拉，不做全量尝试
+            // 分块层恢复，或目录型数据源（.gdb 拿不到文件体积）：直接按视口拉
+            if (layer.chunked || sourceBytes === null) {
               //（每开一次项目都撞一次闸 = 干等一场注定失败的转换）
               const vp = mapHandleRef.current?.getViewport();
               if (vp) {
@@ -580,11 +659,20 @@ export default function CanvasWorkbench() {
                 if (res.ok) {
                   chunkBBoxRef.current.set(layer.id, vp.bbox);
                   settled = true;
-                } else if (res.code !== 'aborted') {
-                  setBanner(`读取 ${layer.path} 失败：${res.error}`);
+                } else if (res.code === 'aborted') {
+                  continue;
+                } else if (res.code === 'payload_too_large') {
+                  // 视口本身就装不下：改成瓦片，至少能看
+                  if (await switchToTiles()) {
+                    if (!stillMine()) return { ok, chunkedMarks, tiledMarks };
+                    vectorDone += 1;
+                    continue;
+                  }
                   ok = false;
                   continue;
                 } else {
+                  setBanner(`读取 ${layer.path} 失败：${res.error}`);
+                  ok = false;
                   continue;
                 }
               }
@@ -608,13 +696,31 @@ export default function CanvasWorkbench() {
                     void engine.buildPyramid(layer.path).then((built) => {
                       if (built.ok && built.data.note) setBanner(`${layer.name}：${built.data.note}`);
                     });
-                  } else if (retry.code !== 'aborted') {
-                    setBanner(`读取 ${layer.path} 失败：${retry.error}`);
+                  } else if (retry.code === 'aborted') {
+                    continue;
+                  } else if (retry.code === 'payload_too_large') {
+                    // 视口也装不下（缩得太远）：瓦片兜底
+                    if (await switchToTiles()) {
+                      if (!stillMine()) return { ok, chunkedMarks, tiledMarks };
+                      vectorDone += 1;
+                      continue;
+                    }
                     ok = false;
                     continue;
                   } else {
+                    setBanner(`读取 ${layer.path} 失败：${retry.error}`);
+                    ok = false;
                     continue;
                   }
+                } else if (res.code === 'payload_too_large') {
+                  // 地图还没建好、拿不到视口：只能瓦片兜底
+                  if (await switchToTiles()) {
+                    if (!stillMine()) return { ok, chunkedMarks, tiledMarks };
+                    vectorDone += 1;
+                    continue;
+                  }
+                  ok = false;
+                  continue;
                 } else {
                   setBanner(`读取 ${layer.path} 失败：${res.error}`);
                   ok = false;
@@ -626,13 +732,14 @@ export default function CanvasWorkbench() {
                 setBanner(res.note);
               }
             }
+            vectorDone += 1;
+            continue; // 矢量的范围已经查过
           }
 
-          // extent 查的是**全量**范围：fitBounds 要把人带到数据的完整范围上，
-          // 而不是当前视口那一小块（分块层尤其重要，栅格也靠它）
+          // 栅格：范围只有 GDAL 知道，数据本身按视口实时出图（不用先拉）
           const extentRes = await engine.fetchExtent(layer.path);
           if (extentRes.ok) {
-            if (!stillMine()) return { ok, chunkedMarks };
+            if (!stillMine()) return { ok, chunkedMarks, tiledMarks };
             const bbox = extentRes.data.bbox;
             setExtents((prev) => {
               const next = new Map(prev);
@@ -640,15 +747,14 @@ export default function CanvasWorkbench() {
               return next;
             });
           }
-          if (layer.kind === 'vector') vectorDone += 1;
         }
-        return { ok, chunkedMarks };
+        return { ok, chunkedMarks, tiledMarks };
       } finally {
         // 进度收尾：不管怎么退出（成功/失败/换项目），遮罩都要撤掉
         if (loadingSeqRef.current === seq) setLayerLoading(null);
       }
     },
-    [engine.fetchGeoJson, engine.fetchExtent, engine.buildPyramid, abortChunkLoad],
+    [engine.fetchGeoJson, engine.fetchExtent, engine.fetchVectorLayers, engine.buildPyramid, abortChunkLoad],
   );
 
   /* ───────── 图层操作 ───────── */
@@ -668,10 +774,15 @@ export default function CanvasWorkbench() {
       // 先把数据拉回来，**成功了才进清单**：失败还往里加，用户会得到一个
       // 图例上挂着、地图上却没有的"幽灵图层"，而且自动保存会把它写进项目
       // —— 下次打开就一直报错（2026-11-14 实测事故）。失败原因已进横幅。
-      const { ok, chunkedMarks } = await loadLayerData([layer]);
+      const { ok, chunkedMarks, tiledMarks } = await loadLayerData([layer]);
       if (!ok) return;
-      // 撞体积闸降级成功的层带上 chunked 标记（进清单，恢复时直接走视口模式）
-      const finalLayer: MapLayer = chunkedMarks.get(id) ? { ...layer, chunked: true } : layer;
+      // 撞体积闸降级成功的层带上相应标记（进清单，恢复时直接走该模式）
+      const tileLayer = tiledMarks.get(id);
+      const finalLayer: MapLayer = tileLayer
+        ? { ...layer, tiled: true, tileLayer }
+        : chunkedMarks.get(id)
+          ? { ...layer, chunked: true }
+          : layer;
       setLayers((prev) => {
         // 叠放次序 = 数组顺序（末尾在最上），和面板里的上移/下移一致。
         //
@@ -685,8 +796,8 @@ export default function CanvasWorkbench() {
         return [...prev.slice(0, firstVector), finalLayer, ...prev.slice(firstVector)];
       });
       setActiveLayerId(id);
-      // 分块加载的提示语是这次操作的结果说明，不能被这里清掉
-      if (!chunkedMarks.get(id)) setBanner(null);
+      // 分块 / 瓦片加载的提示语是这次操作的结果说明，不能被这里清掉
+      if (!chunkedMarks.get(id) && !tileLayer) setBanner(null);
     },
     [dir, loadLayerData],
   );
@@ -808,6 +919,10 @@ export default function CanvasWorkbench() {
     async (layerId: string) => {
       const layer = layersRef.current.find((l) => l.id === layerId);
       if (!layer || layer.kind !== 'vector') return;
+      if (layer.tiled) {
+        setBanner('瓦片模式的大图层只显示主图层，暂不支持勾选其他图层；需要时请先按视口加载或用 ArcGIS 导出。');
+        return;
+      }
       setLayerPicker({ layerId, path: layer.path, name: layer.name });
       setPickerOptions(null);
       setPickerSelected(new Set());
@@ -837,13 +952,16 @@ export default function CanvasWorkbench() {
       if (!picker || !layer) return;
       setPickerBusy(true);
       const layersFor = new Map([[picker.layerId, selected]]);
-      const { ok, chunkedMarks } = await loadLayerData([layer], { layersFor });
+      const { ok, chunkedMarks, tiledMarks } = await loadLayerData([layer], { layersFor });
       setPickerBusy(false);
       if (!ok) return; // 横幅已报错
+      const tileLayer = tiledMarks.get(picker.layerId);
       setLayers((prev) =>
-        prev.map((l) =>
-          l.id === picker.layerId && chunkedMarks.has(picker.layerId) ? { ...l, chunked: true } : l,
-        ),
+        prev.map((l) => {
+          if (l.id !== picker.layerId) return l;
+          if (tileLayer) return { ...l, tiled: true, tileLayer };
+          return chunkedMarks.has(picker.layerId) ? { ...l, chunked: true } : l;
+        }),
       );
       setLayerPicker(null);
       setBanner(`已按所选图层重新加载「${picker.name}」（${selected.length} 层）。`);
@@ -863,6 +981,8 @@ export default function CanvasWorkbench() {
       visible: l.visible,
       opacity: l.opacity,
       chunked: l.chunked,
+      ...(l.tiled ? { tiled: true } : {}),
+      ...(l.tileLayer ? { tileLayer: l.tileLayer } : {}),
       style: l.style,
     }));
     // 先清空上一个项目留下的数据：两个项目都可能有 layer-1，
@@ -883,11 +1003,15 @@ export default function CanvasWorkbench() {
     idRef.current = Math.max(idRef.current, maxN);
 
     // 数据也要拉回来 —— 只回填列表的话地图上是空的；
-    // 撞闸降级的层在这里就地补上 chunked 标记（下次打开直接走视口模式）
-    void loadLayerData(restored).then(({ chunkedMarks }) => {
-      if (chunkedMarks.size === 0) return;
+    // 撞闸降级的层在这里就地补上 chunked / tiled 标记（下次打开直接走该模式）
+    void loadLayerData(restored).then(({ chunkedMarks, tiledMarks }) => {
+      if (chunkedMarks.size === 0 && tiledMarks.size === 0) return;
       setLayers((prev) =>
-        prev.map((layer) => (chunkedMarks.has(layer.id) ? { ...layer, chunked: true } : layer)),
+        prev.map((layer) => {
+          const tileLayer = tiledMarks.get(layer.id);
+          if (tileLayer) return { ...layer, tiled: true, tileLayer };
+          return chunkedMarks.has(layer.id) ? { ...layer, chunked: true } : layer;
+        }),
       );
     });
   }, [manifest, loadLayerData]);
@@ -909,6 +1033,8 @@ export default function CanvasWorkbench() {
         visible: l.visible,
         opacity: l.opacity,
         ...(l.chunked ? { chunked: true } : {}),
+        ...(l.tiled ? { tiled: true } : {}),
+        ...(l.tiled && l.tileLayer ? { tileLayer: l.tileLayer } : {}),
         ...(l.style ? { style: l.style } : {}),
       })),
       ...(v ? { view: { center: v.center, zoom: v.zoom } } : {}),
@@ -1463,6 +1589,7 @@ export default function CanvasWorkbench() {
                       ref={mapHandleRef}
                       engineBase={engine.base}
                       buildRasterUrl={engine.rasterUrl}
+                      buildVectorTileUrl={engine.vectorTileUrl}
                       layers={layers}
                       engineError={engineError}
                       sheetMeta={sheetMeta}

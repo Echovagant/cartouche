@@ -220,6 +220,45 @@ test('清单：图层的符号化与标注能往返，chunked 也保留', () => 
   assert.equal(back.layers[1].style.symbology.breaks.length, 2);
 });
 
+test('清单：瓦片模式标记与 source-layer 能往返', () => {
+  const m = {
+    ...newManifest('瓦片', '2026-11-18T08:00:00.000Z'),
+    layers: [
+      {
+        id: 'l1',
+        kind: 'vector',
+        path: '大图/dense.gpkg',
+        visible: true,
+        opacity: 1,
+        tiled: true,
+        tileLayer: 'dense',
+      },
+    ],
+  };
+  const back = parseManifest(serializeManifest(m));
+  assert.deepEqual(back, m);
+  assert.equal(back.layers[0].tiled, true);
+  assert.equal(back.layers[0].tileLayer, 'dense');
+});
+
+test('清单：tileLayer 为空字符串 → 明确拒绝', () => {
+  const raw = {
+    ...baseManifest,
+    layers: [
+      {
+        id: 'l',
+        kind: 'vector',
+        path: 'a.gpkg',
+        visible: true,
+        opacity: 1,
+        tiled: true,
+        tileLayer: '  ',
+      },
+    ],
+  };
+  assert.throws(() => parseManifest(enc.encode(JSON.stringify(raw))), /tileLayer/);
+});
+
 test('清单：分级颜色数与断点数对不上 → 明确拒绝', () => {
   const raw = {
     ...baseManifest,

@@ -194,6 +194,11 @@ export interface MapCanvasProps {
   ) => string;
   /** 当前图层列表（数组顺序即叠放次序，末尾在最上） */
   layers: readonly MapLayer[];
+  /**
+   * 拼按需 MVT 瓦片模板 URL（由 useEngine 提供）。
+   * 只给 `tiled` 图层用：MapLibre 按 z/x/y 自己拉瓦片。
+   */
+  buildVectorTileUrl: (path: string) => string;
   /** 引擎不可用时的提示文案；非空时地图上盖一层可读提示，不白屏 */
   engineError: string | null;
   /** 标题栏信息（图名 / 操作人 / 出图时间） */
@@ -340,6 +345,7 @@ export default function MapCanvas({
   ref,
   engineBase,
   buildRasterUrl,
+  buildVectorTileUrl,
   layers,
   engineError,
   sheetMeta,
@@ -717,7 +723,20 @@ export default function MapCanvas({
     for (const layer of current) {
       const sourceId = `src-${layer.id}`;
       const layerId = `lyr-${layer.id}`;
-      if (map.getSource(sourceId)) continue;
+      const desiredSourceType =
+        layer.kind === 'raster' ? 'image' : layer.tiled ? 'vector' : 'geojson';
+      // 类型从样式 JSON 里读（source 实例上的 type 不在公开类型里）
+      const existingType = map.getStyle().sources?.[sourceId]?.type;
+      if (existingType) {
+        // 源类型没变就跳过；变了（例如中途从 GeoJSON 切到瓦片）必须拆掉重建，
+        // 否则新样式挂到旧 source 上，地图上什么都不会出现。
+        if (existingType === desiredSourceType) continue;
+        for (const suffix of ['-point', '-line']) {
+          if (map.getLayer(`${layerId}${suffix}`)) map.removeLayer(`${layerId}${suffix}`);
+        }
+        if (map.getLayer(layerId)) map.removeLayer(layerId);
+        map.removeSource(sourceId);
+      }
 
       if (layer.kind === 'raster') {
         const bbox = currentBBox(map);
@@ -748,14 +767,31 @@ export default function MapCanvas({
         });
       } else {
         const color = symbologyColorExpression(layer.style?.symbology) as never;
-        map.addSource(sourceId, {
-          type: 'geojson',
-          data: { type: 'FeatureCollection', features: [] },
-        });
+        if (layer.tiled) {
+          // 按需瓦片：MapLibre 按 z/x/y 自己拉，引擎现场切片并落缓存。
+          // maxzoom 给 20：再往下的层级由它拿 z20 的瓦片放大（overzoom）。
+          map.addSource(sourceId, {
+            type: 'vector',
+            tiles: [buildVectorTileUrl(layer.path)],
+            minzoom: 0,
+            maxzoom: 20,
+          });
+        } else {
+          map.addSource(sourceId, {
+            type: 'geojson',
+            data: { type: 'FeatureCollection', features: [] },
+          });
+        }
+        // 矢量瓦片必须显式指定 source-layer（瓦片内可能有多层）；
+        // GeoJSON 源没有这个概念，带上反而报错。
+        const sourceLayer = layer.tiled && layer.tileLayer
+          ? { 'source-layer': layer.tileLayer }
+          : {};
         map.addLayer({
           id: layerId,
           type: 'fill',
           source: sourceId,
+          ...sourceLayer,
           filter: ['==', ['geometry-type'], 'Polygon'],
           paint: {
             'fill-color': color,
@@ -768,6 +804,7 @@ export default function MapCanvas({
           id: `${layerId}-line`,
           type: 'line',
           source: sourceId,
+          ...sourceLayer,
           filter: ['any', ['==', ['geometry-type'], 'Polygon'], ['==', ['geometry-type'], 'LineString']],
           paint: {
             'line-color': color,
@@ -779,6 +816,7 @@ export default function MapCanvas({
           id: `${layerId}-point`,
           type: 'circle',
           source: sourceId,
+          ...sourceLayer,
           filter: ['==', ['geometry-type'], 'Point'],
           paint: {
             'circle-color': color,
@@ -845,7 +883,7 @@ export default function MapCanvas({
     });
     if (map.getLayer(HIGHLIGHT_LINE_LAYER)) map.moveLayer(HIGHLIGHT_LINE_LAYER);
     if (map.getLayer(HIGHLIGHT_FILL_LAYER)) map.moveLayer(HIGHLIGHT_FILL_LAYER);
-  }, [buildRasterUrl, currentBBox, rasterSize]);
+  }, [buildRasterUrl, buildVectorTileUrl, currentBBox, rasterSize]);
 
   // 建图：只做一次
   useEffect(() => {

@@ -191,6 +191,15 @@ export interface MapLayer {
    * 该标记会写进项目清单，属于层的固有属性而非临时状态。
    */
   chunked?: boolean;
+  /**
+   * 按需矢量瓦片模式：GB 级数据不做整层转换，按 MapLibre 的瓦片请求
+   * 现场切片（引擎缓存）。恢复项目时直接走瓦片，不再尝试整层加载。
+   *
+   * 代价：标注依赖已加载的 GeoJSON，瓦片模式暂不画标注（属性表与点选仍可用）。
+   */
+  tiled?: boolean;
+  /** MVT 瓦片里的图层名（MapLibre 的 source-layer） */
+  tileLayer?: string;
   /** 符号化与标注；没配就是原来的单色 */
   style?: LayerStyle;
 }
@@ -215,6 +224,10 @@ export interface ProjectLayer {
   readonly opacity: number;
   /** 视口分块模式（大文件）：恢复时直接按视口加载，不再做全量尝试 */
   readonly chunked?: boolean;
+  /** 按需矢量瓦片模式（超大文件）：恢复时直接走瓦片，不再做整层尝试 */
+  readonly tiled?: boolean;
+  /** MVT 瓦片内的图层名（source-layer） */
+  readonly tileLayer?: string;
   /** 符号化与标注 */
   readonly style?: LayerStyle;
 }

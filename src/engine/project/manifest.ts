@@ -59,6 +59,10 @@ export interface ProjectLayer {
   readonly opacity: number;
   /** 视口分块模式（大文件）：恢复时直接按视口加载 */
   readonly chunked?: boolean;
+  /** 按需矢量瓦片模式（超大文件）：恢复时直接走 MVT，不做整层转换 */
+  readonly tiled?: boolean;
+  /** MVT 瓦片内的图层名（MapLibre 的 source-layer）；tiled 时才有 */
+  readonly tileLayer?: string;
   /** 符号化与标注；没配就没有这个字段 */
   readonly style?: LayerStyle;
 }
@@ -454,6 +458,18 @@ function validateLayers(raw: unknown): ProjectLayer[] {
         `图层 ${id} 的 chunked 必须是 true 或 false，现在写的是「${describeValue(chunked)}」。`,
       );
     }
+    const tiled = o.tiled;
+    if (tiled !== undefined && typeof tiled !== 'boolean') {
+      throw new ManifestError(
+        `图层 ${id} 的 tiled 必须是 true 或 false，现在写的是「${describeValue(tiled)}」。`,
+      );
+    }
+    const tileLayerRaw = o.tileLayer;
+    if (tileLayerRaw !== undefined && (typeof tileLayerRaw !== 'string' || tileLayerRaw.trim() === '')) {
+      throw new ManifestError(
+        `图层 ${id} 的 tileLayer 必须是非空字符串，现在写的是「${describeValue(tileLayerRaw)}」。`,
+      );
+    }
     const style = validateLayerStyle(o.style, id);
     out.push({
       id,
@@ -462,6 +478,8 @@ function validateLayers(raw: unknown): ProjectLayer[] {
       visible,
       opacity,
       ...(chunked ? { chunked: true } : {}),
+      ...(tiled ? { tiled: true } : {}),
+      ...(tiled && typeof tileLayerRaw === 'string' ? { tileLayer: tileLayerRaw } : {}),
       ...(style ? { style } : {}),
     });
   }

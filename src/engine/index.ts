@@ -223,6 +223,9 @@ export {
   buildVectorPyramid,
   findPyramid,
   pyramidLevelForZoom,
+  buildMvtTile,
+  tileBbox4326,
+  lonLatToTile,
   datasetExtent,
   DatasetExtentError,
 } from './export/index.ts';
@@ -238,6 +241,8 @@ export type {
   PyramidInfo,
   PyramidLevel,
   PyramidLevelName,
+  MvtTileOptions,
+  MvtTileResult,
   DatasetExtentOptions,
   DatasetExtentResult,
 } from './export/index.ts';

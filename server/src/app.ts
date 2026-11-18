@@ -34,6 +34,7 @@ import {
   buildVectorPyramid,
   findPyramid,
   pyramidLevelForZoom,
+  buildMvtTile,
   probeLayer,
   datasetExtent,
   buildPdfFromJpeg,
@@ -654,10 +655,16 @@ export function createEngineServer(options: EngineServerOptions = {}): Server {
       res.end(payload);
     };
 
-    const binary = (status: number, buf: Buffer) => {
+    const binary = (
+      status: number,
+      buf: Buffer,
+      contentType = 'application/octet-stream',
+      contentEncoding?: string,
+    ) => {
       res.writeHead(status, {
-        'content-type': 'application/octet-stream',
+        'content-type': contentType,
         'content-length': buf.length,
+        ...(contentEncoding ? { 'content-encoding': contentEncoding } : {}),
         ...corsHeaders(),
       });
       res.end(buf);
@@ -1080,6 +1087,43 @@ function foldCasePath(p: string): string {
           const message = (err as Error).message;
           const bad = err instanceof PathEscapeError || /bbox|范围不合法/.test(message) ? 400 : 500;
           json(bad, { error: bad === 400 ? 'bad_request' : 'internal', message: scrub(message) });
+        }
+      })();
+      return;
+    }
+
+    /* ───────── 大矢量显示：按需 MVT 瓦片 ───────── */
+
+    if (url.pathname === '/api/data/mvt' && req.method === 'GET') {
+      void (async () => {
+        try {
+          if (!gdalLoc) {
+            json(503, { error: 'gdal_unavailable', message: '未找到 GDAL 运行时，无法切矢量瓦片；请先运行 npm run doctor' });
+            return;
+          }
+          const z = Number(url.searchParams.get('z'));
+          const x = Number(url.searchParams.get('x'));
+          const y = Number(url.searchParams.get('y'));
+          if (![z, x, y].every(Number.isInteger)) {
+            json(400, { error: 'bad_request', message: 'z / x / y 必须是整数' });
+            return;
+          }
+          const abs = resolveWorkspacePath(url.searchParams.get('root'), url.searchParams.get('path') ?? '');
+          const tile = await buildMvtTile(gdalLoc, { path: abs, z, x, y });
+          if (!tile) {
+            res.writeHead(204, corsHeaders());
+            res.end();
+            return;
+          }
+          binary(
+            200,
+            Buffer.from(tile.bytes),
+            'application/vnd.mapbox-vector-tile',
+            tile.compressed ? 'gzip' : undefined,
+          );
+        } catch (err) {
+          const bad = err instanceof PathEscapeError ? 400 : 500;
+          json(bad, { error: bad === 400 ? 'bad_request' : 'internal', message: scrub((err as Error).message) });
         }
       })();
       return;

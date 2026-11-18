@@ -31,7 +31,7 @@ import type {
   RasterGrid,
 } from './types';
 import { ENGINE_BASE } from '../engine-base';
-import { engineFetch, withEngineToken } from '../engine-auth';
+import { engineFetch, engineToken, withEngineToken } from '../engine-auth';
 
 /** 引擎健康检查的返回体：画布据此判断"引擎在不在、能不能干活" */
 export interface EngineInfo {
@@ -92,6 +92,10 @@ export interface ExtentPayload {
   readonly kind: 'raster' | 'vector';
   readonly sourceEpsg: number | null;
   readonly reprojected: boolean;
+  /** 源文件字节数（目录型数据源为 null） */
+  readonly bytes: number | null;
+  /** 矢量源的图层名（矢量才有，保持文件内顺序） */
+  readonly layerNames?: readonly string[];
 }
 
 /** 所有引擎调用统一返回这个形状：调用点不用写 try/catch，也不会漏掉错误分支 */
@@ -184,6 +188,12 @@ export interface EngineApi {
   /** 列多图层容器里的图层清单（图层选择器点开时才调；探测几百毫秒） */
   readonly fetchVectorLayers: (path: string) => Promise<Result<VectorLayersPayload>>;
   readonly fetchExtent: (path: string) => Promise<Result<ExtentPayload>>;
+  /**
+   * 拼 MVT 瓦片模板 URL（z/x/y 占位符原样保留，由 MapLibre 替换）。
+   *
+   * 令牌进查询串：瓦片是 MapLibre 自己发的 GET，加不了请求头。
+   */
+  readonly vectorTileUrl: (path: string) => string;
   readonly rasterUrl: (path: string, options: RasterUrlOptions) => string;
   readonly fetchCompatReport: (path: string) => Promise<Result<CompatReportPayload>>;
   readonly exportPdf: (payload: PdfPayload) => Promise<Result<Blob>>;
@@ -359,6 +369,24 @@ export function useEngine(root?: string | null): EngineApi {
         return requestJson<ExtentPayload>(`${ENGINE_BASE}/api/data/extent?${query.toString()}`);
       }),
     [run, root],
+  );
+
+  /**
+   * 拼 MVT 瓦片模板 URL。
+   *
+   * ⚠️ 不用 URLSearchParams / withEngineToken 拼：这两个都会把 `{z}` 编码成
+   * `%7Bz%7D`，MapLibre 就找不到占位符、发不出瓦片请求。
+   */
+  const vectorTileUrl = useCallback(
+    (path: string) => {
+      const token = engineToken();
+      const query =
+        `path=${encodeURIComponent(path)}&z={z}&x={x}&y={y}` +
+        (root ? `&root=${encodeURIComponent(root)}` : '') +
+        (token ? `&token=${encodeURIComponent(token)}` : '');
+      return `${ENGINE_BASE}/api/data/mvt?${query}`;
+    },
+    [root],
   );
 
   /**
@@ -558,6 +586,7 @@ export function useEngine(root?: string | null): EngineApi {
       fetchExtent,
       buildPyramid,
       fetchVectorLayers,
+      vectorTileUrl,
       rasterUrl,
       fetchCompatReport,
       exportPdf,
@@ -576,6 +605,7 @@ export function useEngine(root?: string | null): EngineApi {
       fetchExtent,
       buildPyramid,
       fetchVectorLayers,
+      vectorTileUrl,
       rasterUrl,
       fetchCompatReport,
       exportPdf,

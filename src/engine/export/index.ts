@@ -26,6 +26,8 @@ export type { VectorToGeoJsonOptions, VectorToGeoJsonResult } from './vector-geo
 
 export { buildVectorPyramid, findPyramid, pyramidLevelForZoom } from './vector-pyramid.ts';
 export type { PyramidBuildResult, PyramidInfo, PyramidLevel, PyramidLevelName } from './vector-pyramid.ts';
+export { buildMvtTile, tileBbox4326, lonLatToTile } from './vector-mvt.ts';
+export type { MvtTileOptions, MvtTileResult } from './vector-mvt.ts';
 
 export { datasetExtent, DatasetExtentError } from './dataset-extent.ts';
 export type { DatasetExtentOptions, DatasetExtentResult } from './dataset-extent.ts';

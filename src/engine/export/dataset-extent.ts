@@ -44,6 +44,15 @@ export interface DatasetExtentResult {
   readonly sourceEpsg: number | null;
   /** 是否真的做了重投影（false 表示源本来就是 4326，或源没有坐标系、按目标 CRS 直算） */
   readonly reprojected: boolean;
+  /**
+   * 源文件字节数（拿不到为 null）。
+   *
+   * 前端靠它判断"整层显示是否注定失败"：5 GB 的矢量直接走按需瓦片，
+   * 不做一次注定超出显示上限的全量转换。
+   */
+  readonly bytes: number | null;
+  /** 矢量源的图层名（保持文件内顺序；栅格没有） */
+  readonly layerNames?: readonly string[];
 }
 
 /**
@@ -195,12 +204,18 @@ async function rasterExtent(
 async function vectorExtent(
   gdal: GdalTools,
   path: string,
-): Promise<{ bbox: BBox4326; sourceEpsg: number | null; reprojected: boolean } | null> {
+): Promise<{
+  bbox: BBox4326;
+  sourceEpsg: number | null;
+  reprojected: boolean;
+  layerNames: readonly string[];
+} | null> {
   const res = await gdal.ogrInfo(['-json', '-al', '-so', path]);
   if (!res.ok) return null;
 
   let j: {
     layers?: {
+      name?: string;
       geometryFields?: {
         extent?: number[];
         coordinateSystem?: { wkt?: string; projjson?: unknown };
@@ -213,6 +228,9 @@ async function vectorExtent(
     return null;
   }
 
+  const layerNames = (j.layers ?? [])
+    .map((l) => l?.name)
+    .filter((name): name is string => typeof name === 'string' && name.length > 0);
   const fields = (j.layers ?? []).flatMap((l) => l.geometryFields ?? []);
   const withExtent = fields.filter((f) => Array.isArray(f.extent) && f.extent.length === 4);
   if (withExtent.length === 0) return null;
@@ -228,33 +246,73 @@ async function vectorExtent(
     });
 
   if (srcEpsg === 4326) {
-    return { bbox: unionBox(readExtents()), sourceEpsg: srcEpsg, reprojected: false };
+    return {
+      bbox: unionBox(readExtents()),
+      sourceEpsg: srcEpsg,
+      reprojected: false,
+      layerNames,
+    };
   }
 
-  const { mkdtempSync, rmSync, existsSync } = await import('node:fs');
+  /**
+   * 投影源：只把**范围角点**投到 4326，而不是把整个数据集转一遍。
+   *
+   * 原做法（整份转成 GeoJSON 再读范围）在 5 GB 的投影矢量上要全量解析，
+   * 分钟到小时级 —— 而范围只是给画布 fitBounds 用的，不值得为它转整份数据。
+   * 每层取 5×5 个格点（含四角）投过去再取包围盒：范围会比要素真实范围略大
+   * （轴对齐的投影包围盒投回经纬度后是个旋转矩形，再取轴对齐包围盒），
+   * 误差量级是「子午线收敛角 × 范围对角线」，对把视野移到数据上完全够用。
+   */
+  const { mkdtempSync, rmSync, existsSync, writeFileSync, readFileSync } = await import('node:fs');
   const { tmpdir } = await import('node:os');
   const outDir = mkdtempSync(join(tmpdir(), 'cartouche-extent-'));
-  const geojson = join(outDir, 'extent.geojson');
+  const src = join(outDir, 'corners.geojson');
+  const out = join(outDir, 'corners-4326.geojson');
   try {
-    // ⚠️ ogr2ogr 的参数顺序是 **dst 在前、src 在后**（与 ogrinfo 相反）。
-    const conv = await gdal.ogr2ogr(['-f', 'GeoJSON', '-t_srs', 'EPSG:4326', geojson, path]);
-    if (!conv.ok) throw new DatasetExtentError(`重投影失败：${path}`, conv.stderr);
-    if (!existsSync(geojson)) throw new DatasetExtentError(`重投影命令成功但没有产出文件：${path}`, conv.stderr);
+    const points: Array<[number, number]> = [];
+    for (const [minX, minY, maxX, maxY] of readExtents()) {
+      for (let i = 0; i <= 4; i += 1) {
+        for (let j = 0; j <= 4; j += 1) {
+          points.push([minX + ((maxX - minX) * i) / 4, minY + ((maxY - minY) * j) / 4]);
+        }
+      }
+    }
+    writeFileSync(
+      src,
+      JSON.stringify({
+        type: 'FeatureCollection',
+        features: points.map(([x, y]) => ({
+          type: 'Feature',
+          properties: {},
+          geometry: { type: 'Point', coordinates: [x, y] },
+        })),
+      }),
+    );
 
-    const info = await gdal.ogrInfo(['-json', '-al', '-so', geojson]);
-    if (!info.ok) throw new DatasetExtentError(`读取重投影结果失败：${path}`, info.stderr);
-    const parsed = JSON.parse(info.stdout) as {
-      layers?: { geometryFields?: { extent?: number[] }[] }[];
+    // ⚠️ ogr2ogr 的参数顺序是 **dst 在前、src 在后**（与 ogrinfo 相反）。
+    const args: string[] = ['-f', 'GeoJSON', '-t_srs', 'EPSG:4326'];
+    const srs = srcEpsg !== null ? `EPSG:${srcEpsg}` : withExtent[0]!.coordinateSystem?.wkt;
+    if (srs) args.push('-s_srs', srs);
+    args.push(out, src);
+    const conv = await gdal.ogr2ogr(args);
+    if (!conv.ok) throw new DatasetExtentError(`范围重投影失败：${path}`, conv.stderr);
+    if (!existsSync(out)) throw new DatasetExtentError(`重投影命令成功但没有产出文件：${path}`, conv.stderr);
+
+    const parsed = JSON.parse(readFileSync(out, 'utf8')) as {
+      features?: { geometry?: { coordinates?: [number, number] } }[];
     };
-    const boxes = (parsed.layers ?? [])
-      .flatMap((l) => l.geometryFields ?? [])
-      .filter((f) => Array.isArray(f.extent) && f.extent.length === 4)
-      .map((f) => {
-        const e = f.extent as number[];
-        return [e[0]!, e[1]!, e[2]!, e[3]!] as BBox4326;
-      });
-    if (boxes.length === 0) throw new DatasetExtentError('重投影结果里没有范围');
-    return { bbox: unionBox(boxes), sourceEpsg: srcEpsg, reprojected: true };
+    const coords = (parsed.features ?? [])
+      .map((f) => f.geometry?.coordinates)
+      .filter((p): p is [number, number] => Array.isArray(p) && Number.isFinite(p[0]) && Number.isFinite(p[1]));
+    if (coords.length === 0) throw new DatasetExtentError('重投影结果里没有范围');
+    const xs = coords.map((p) => p[0]);
+    const ys = coords.map((p) => p[1]);
+    return {
+      bbox: assertBox([Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)], '矢量范围（重投影后）'),
+      sourceEpsg: srcEpsg,
+      reprojected: true,
+      layerNames,
+    };
   } finally {
     rmSync(outDir, { recursive: true, force: true });
   }
@@ -270,12 +328,38 @@ export async function datasetExtent(
   options: DatasetExtentOptions,
 ): Promise<DatasetExtentResult> {
   const gdal = tools(loc);
+  const { statSync } = await import('node:fs');
+  // 目录型数据源（FileGDB）拿不到有意义的字节数 → null，由调用方按"未知"处理
+  let bytes: number | null = null;
+  try {
+    const st = statSync(options.path);
+    bytes = st.isFile() ? st.size : null;
+  } catch {
+    bytes = null;
+  }
 
   const raster = await rasterExtent(gdal, options.path);
-  if (raster) return { bbox: raster.bbox, kind: 'raster', sourceEpsg: raster.sourceEpsg, reprojected: raster.reprojected };
+  if (raster) {
+    return {
+      bbox: raster.bbox,
+      kind: 'raster',
+      sourceEpsg: raster.sourceEpsg,
+      reprojected: raster.reprojected,
+      bytes,
+    };
+  }
 
   const vector = await vectorExtent(gdal, options.path);
-  if (vector) return { bbox: vector.bbox, kind: 'vector', sourceEpsg: vector.sourceEpsg, reprojected: vector.reprojected };
+  if (vector) {
+    return {
+      bbox: vector.bbox,
+      kind: 'vector',
+      sourceEpsg: vector.sourceEpsg,
+      reprojected: vector.reprojected,
+      bytes,
+      ...(vector.layerNames.length ? { layerNames: vector.layerNames } : {}),
+    };
+  }
 
   throw new DatasetExtentError(
     `无法确定数据集的地理范围（既不是可定位的栅格，也没有矢量几何）：${options.path}`,
