@@ -34,9 +34,18 @@ const DIM = '\x1b[90m';
 const BOLD = '\x1b[1m';
 const RESET = '\x1b[0m';
 
-const server = createEngineServer();
+const SMOKE_TOKEN = 'smoke-test-token';
+const server = createEngineServer({ authToken: SMOKE_TOKEN });
 const port = await listenSafe(server);
 const BASE = `http://127.0.0.1:${port}`;
+
+/** 冒烟里绝大多数请求都要带令牌；保留一个原始 fetch 用来验证「不带令牌会被拒」 */
+const rawFetch = globalThis.fetch;
+globalThis.fetch = (url, init = {}) =>
+  rawFetch(url, {
+    ...init,
+    headers: { ...(init.headers ?? {}), 'x-cartouche-token': SMOKE_TOKEN },
+  });
 
 let failed = false;
 const check = (name, ok, detail) => {
@@ -55,6 +64,9 @@ try {
   const health = await healthRes.json();
   check('/api/health', healthRes.ok && health.ok === true, JSON.stringify(health));
   check('op 数量与 Schema 一致', health.ops === opCount(), `${health.ops} 个`);
+
+  const noToken = await rawFetch(`${BASE}/api/health`);
+  check('没有访问令牌的请求被拒绝', noToken.status === 401, `HTTP ${noToken.status}`);
 
   const schemaRes = await fetch(`${BASE}/api/ops/schema`);
   const schema = await schemaRes.json();
@@ -126,7 +138,11 @@ try {
   body.set(pathBytes, 0);
   body[pathBytes.length] = 0;
   body.set(payload, pathBytes.length + 1);
-  const w = await fetch(`${BASE}/api/fs/write`, { method: 'POST', body });
+  const w = await fetch(`${BASE}/api/fs/write`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/octet-stream' },
+    body,
+  });
   check('POST /api/fs/write', w.ok, `HTTP ${w.status}`);
 
   const r = await fetch(`${BASE}/api/fs/read?path=${encodeURIComponent(rel)}`);
@@ -160,7 +176,11 @@ try {
   absWriteBody.set(absWritePathBytes, 0);
   absWriteBody[absWritePathBytes.length] = 0;
   absWriteBody.set(Buffer.from('PROBE', 'utf8'), absWritePathBytes.length + 1);
-  const absWrite = await fetch(`${BASE}/api/fs/write`, { method: 'POST', body: absWriteBody });
+  const absWrite = await fetch(`${BASE}/api/fs/write`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/octet-stream' },
+    body: absWriteBody,
+  });
   check('POST /api/fs/write 拒绝绝对路径', absWrite.status === 400, `HTTP ${absWrite.status}`);
   check(
     '被拒的绝对路径没有在工作区外建出文件',

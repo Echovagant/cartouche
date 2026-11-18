@@ -52,7 +52,7 @@ let targetDir = '';
 before(async () => {
   targetDir = join(cfgRoot, '要登记的目录');
   await mkdir(targetDir, { recursive: true });
-  server = createEngineServer();
+  server = createEngineServer({ authToken: null });
   const port = await listenSafe(server);
   base = `http://127.0.0.1:${port}`;
 });

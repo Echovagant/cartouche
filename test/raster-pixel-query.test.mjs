@@ -158,7 +158,7 @@ before(async () => {
     srs: 'EPSG:4326',
     ullr: ULLR_4326,
   });
-  server = createEngineServer();
+  server = createEngineServer({ authToken: null });
   const port = await listenSafe(server);
   base = `http://127.0.0.1:${port}`;
 });

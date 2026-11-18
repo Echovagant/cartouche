@@ -41,7 +41,7 @@ let decoy = '';
 let real = '';
 
 before(async () => {
-  server = createEngineServer();
+  server = createEngineServer({ authToken: null });
   const port = await listenSafe(server);
   base = `http://127.0.0.1:${port}`;
 
