@@ -87,6 +87,16 @@ export function AiSidePanel({
   onExecuted,
 }: AiSidePanelProps) {
   const llm = useLlm();
+  /**
+   * 面板打开时先问一次引擎的密钥状态。
+   *
+   * 不拉这一次，界面永远停在"未配置密钥"：引擎已经由启动器注入了 key
+   * （source=env），前端却因为 status 还是 null 把输入区藏起来 ——
+   * 用户会以为密钥没生效，只能再粘一遍。
+   */
+  useEffect(() => {
+    void llm.refreshStatus();
+  }, [llm.refreshStatus]);
   const configured = llm.status?.configured ?? false;
   const effortLevels = llm.status?.effortLevels ?? [];
   const provider = llm.status?.provider ?? '';

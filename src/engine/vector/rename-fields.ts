@@ -105,6 +105,29 @@ export async function runVectorRenameFields(
   }
 
   // ── 改名（值不动） ─────────────────────────────────────────────
+  // 预演只需要探测结果：读全量要素是为了写回，不是预演。
+  // 5 GB 级图层整读一遍要几分钟（还会撞 GDAL 超时），确认卡不该等它。
+  const planText = plans
+    .map((p) => `${p.from} → ${p.requestedTo}`)
+    .join('、');
+
+  if (dryRun) {
+    return {
+      kind: 'value',
+      summary:
+        `将改名 ${plans.length} 个字段：${planText}（共 ${info.featureCount} 条要素，值不动）` +
+        '（预演：没有写盘）',
+      data: {
+        target: targetRel,
+        mapping: Object.fromEntries(plans.map((p) => [p.from, p.requestedTo])),
+        renamed: plans.map((p) => ({ from: p.from, to: p.requestedTo })),
+        featureCount: info.featureCount,
+        fieldNames: finalNames,
+        dryRun: true,
+      },
+    };
+  }
+
   const source = await readFeatures(deps.loc, { path: targetAbs });
   const renamed: FeatureRecord[] = source.features.map((f) => {
     const properties: Record<string, unknown> = {};
@@ -114,27 +137,6 @@ export async function runVectorRenameFields(
     }
     return { properties, geometry: f.geometry };
   });
-
-  const planText = plans
-    .map((p) => `${p.from} → ${p.requestedTo}`)
-    .join('、');
-
-  if (dryRun) {
-    return {
-      kind: 'value',
-      summary:
-        `将改名 ${plans.length} 个字段：${planText}（共 ${source.features.length} 条要素，值不动）` +
-        '（预演：没有写盘）',
-      data: {
-        target: targetRel,
-        mapping: Object.fromEntries(plans.map((p) => [p.from, p.requestedTo])),
-        renamed: plans.map((p) => ({ from: p.from, to: p.requestedTo })),
-        featureCount: source.features.length,
-        fieldNames: finalNames,
-        dryRun: true,
-      },
-    };
-  }
 
   // ── 写回 ───────────────────────────────────────────────────────
   const write = await writeFeatures(deps.loc, deps.store, {
