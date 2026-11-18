@@ -94,8 +94,18 @@ export class VectorConvertError extends Error {
   }
 }
 
-/** 单次加载的体积上限：2026-11-15 实测 140 MB 会把引擎压垮，闸定在它之下 */
-const MAX_LOAD_BYTES = 128 * 1024 * 1024;
+/**
+ * 浏览器单次显示的 GeoJSON 上限（默认 128 MB）。
+ *
+ * 这不是文件大小上限：重投影、裁剪、导出等文件级操作走 GDAL 流式，不受它约束。
+ * 可用 `CARTOUCHE_MAX_DISPLAY_MB` 覆盖，范围 16–512；超过这个量级应走视口分块。
+ */
+function displayCapBytes(): number {
+  const raw = Number(process.env.CARTOUCHE_MAX_DISPLAY_MB ?? '');
+  const mb = Number.isFinite(raw) && raw >= 16 && raw <= 512 ? raw : 128;
+  return mb * 1024 * 1024;
+}
+const MAX_DISPLAY_BYTES = displayCapBytes();
 
 /**
  * 把矢量转成 GeoJSON 对象。
@@ -182,7 +192,7 @@ export async function vectorToGeoJson(
       args.push(out, options.path, layer);
       const res = await gdal.ogr2ogr(args, { timeoutMs: 600_000 });
       if (!res.ok || !existsSync(out) || statSync(out).size < 64) continue; // 空图层（几十字节）直接换下一个
-      if (statSync(out).size > MAX_LOAD_BYTES) continue; // 该层超体积闸：换下一个
+      if (statSync(out).size > MAX_DISPLAY_BYTES) continue; // 该层超显示闸：换下一个
       const raw = readFileSync(out, 'utf8');
       let parsed: { features?: unknown[] };
       try {
@@ -303,16 +313,15 @@ export async function vectorToGeoJson(
       throw new VectorConvertError(`转换命令成功但没有产出文件：${options.path}`, res.stderr);
     }
 
-    // 体积闸逐层累计：任何一层让总量越过上限就停，已合并的层照常返回 ——
-    // 转换没问题就不该崩（140 MB 事故见 git 历史），把「为什么」和「怎么办」说清楚。
+    // 体积闸逐层累计：任何一层让总量越过显示上限就停。
     totalBytes += statSync(out).size;
-    if (totalBytes > MAX_LOAD_BYTES) {
+    if (totalBytes > MAX_DISPLAY_BYTES) {
       rmSync(outDir, { recursive: true, force: true });
       throw new VectorConvertError(
         `这个图层（${layer || options.path}）的几何太复杂：累计转出来 ${(totalBytes / 1048576).toFixed(0)} MB，` +
-          `超过单次加载上限（${MAX_LOAD_BYTES / 1048576} MB）—— 整份读进内存会把引擎压垮。` +
-          `请在 ArcGIS 里先简化（要素 → 简化几何）或裁剪出需要的范围再加载；` +
-          `也可以先用 limit 参数预览前几条确认内容。`,
+          `超过浏览器单次显示上限（${MAX_DISPLAY_BYTES / 1048576} MB，可用 CARTOUCHE_MAX_DISPLAY_MB 调整）。` +
+          `这是显示上限，不是文件大小上限；请按视口分块加载，或先在 ArcGIS 里简化几何。` +
+          `也可以先用 limit 参数预览前几条。`,
         res.stderr,
         'payload-too-large',
       );

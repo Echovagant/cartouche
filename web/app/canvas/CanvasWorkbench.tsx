@@ -604,10 +604,10 @@ export default function CanvasWorkbench() {
                     setBanner(
                       `${layer.name} 太大，已按当前视口分块加载 —— 缩放平移会自动补齐；整层加载请先简化数据。`,
                     );
-                    // 后台预建视口金字塔（分块工程第二阶段）：幂等、并发去重、
-                    // 有缓存直接短路 —— 建成后每次视口补数据从小缓存裁，快一到两个量级。
-                    // 失败静默：原始裁剪照常工作，金字塔只是加速器不是依赖。
-                    void engine.buildPyramid(layer.path);
+                    // 后台预建金字塔；失败不拦路。建不成的级别会在返回里说明。
+                    void engine.buildPyramid(layer.path).then((built) => {
+                      if (built.ok && built.data.note) setBanner(`${layer.name}：${built.data.note}`);
+                    });
                   } else if (retry.code !== 'aborted') {
                     setBanner(`读取 ${layer.path} 失败：${retry.error}`);
                     ok = false;

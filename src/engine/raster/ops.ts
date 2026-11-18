@@ -30,6 +30,7 @@ import {
   nodataArgument,
   sameNodata,
   writeFormatForDriver,
+  GTIFF_CREATION_OPTIONS,
   type RasterWriteFormat,
 } from './formats.ts';
 import {
@@ -1310,7 +1311,7 @@ export class RasterEditor {
   async clip(req: ClipRequest): Promise<RasterOpResult> {
     const gdal = tools(this.#loc);
     return this.#applyGdal('raster.clip', req.target, async (temp) => {
-      const args = ['-of', 'GTiff'];
+      const args = ['-of', 'GTiff', ...GTIFF_CREATION_OPTIONS];
       if (req.bbox) {
         args.push('-te', String(req.bbox.minX), String(req.bbox.minY), String(req.bbox.maxX), String(req.bbox.maxY));
       }
@@ -1329,7 +1330,7 @@ export class RasterEditor {
     if (!req.targetResolution) throw new Error('必须给出目标分辨率');
     return this.#applyGdal('raster.resample', req.target, async (temp) => {
       const res = await gdal.warp([
-        '-of', 'GTiff',
+        '-of', 'GTiff', ...GTIFF_CREATION_OPTIONS,
         '-tr', String(req.targetResolution), String(req.targetResolution),
         '-r', req.resampleMethod ?? 'nearest',
         this.#abs(req.target), temp,
@@ -1367,7 +1368,7 @@ export class RasterEditor {
     if (!built.ok) throw new Error(`拼接（建 VRT）失败：${built.stderr}`);
 
     const outAbs = this.#abs(output);
-    const tr = await gdal.translate(['-of', 'GTiff', vrt, outAbs]);
+    const tr = await gdal.translate(['-of', 'GTiff', ...GTIFF_CREATION_OPTIONS, vrt, outAbs]);
     if (!tr.ok) throw new Error(`拼接（出图）失败：${tr.stderr}`);
 
     const px = await readRasterPixels(this.#loc, outAbs);

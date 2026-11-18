@@ -79,6 +79,8 @@ export interface PyramidPayload {
   }[];
   /** levels 为空时的说明 */
   readonly note?: string;
+  /** 未建成的级别与原因 */
+  readonly skipped?: readonly string[];
   /** true = 缓存已存在，没有重新构建 */
   readonly cached?: boolean;
 }

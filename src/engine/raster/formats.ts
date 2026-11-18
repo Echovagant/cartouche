@@ -71,7 +71,7 @@ const RASTER_WRITE_FORMATS: Readonly<Record<string, RasterWriteFormat>> = Object
     supportsRotation: true,
     supportsOverviews: true,
     // Erdas 的金字塔还有旧式 .rrd/.aux，留在旁边会被当成新内容的金字塔
-    stemSuffixes: ['.rrd', '.aux'],
+    stemSuffixes: ['.ige', '.rrd', '.aux'],
     fileSuffixes: ['.aux.xml', '.ovr'],
   },
   AAIGrid: {
@@ -118,6 +118,14 @@ const RASTER_WRITE_FORMATS: Readonly<Record<string, RasterWriteFormat>> = Object
 export function writeFormatForDriver(driver: string): RasterWriteFormat | null {
   return RASTER_WRITE_FORMATS[driver] ?? null;
 }
+
+/**
+ * GeoTIFF 创建选项：超过 4 GB 自动切 BigTIFF，小文件仍是经典 TIFF。
+ *
+ * 经典 TIFF 的偏移量是 32 位，超过 4 GB 会直接写失败；BigTIFF 没有这个限制。
+ * `IF_SAFER` 只在可能超限时才切换，不会把普通文件变成 BigTIFF。
+ */
+export const GTIFF_CREATION_OPTIONS: readonly string[] = ['-co', 'BIGTIFF=IF_SAFER'];
 
 /** 扩展名是否是这个格式认可的（`.tif` / `.tiff` 都算 GeoTIFF）。 */
 export function extensionMatches(spec: RasterWriteFormat, path: string): boolean {

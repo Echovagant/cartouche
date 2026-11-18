@@ -9,7 +9,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const { resolveGdal } = await import(pathToFileURL(join(root, 'src', 'engine', 'gdal', 'env.ts')).href);
 const { tools, runTool } = await import(pathToFileURL(join(root, 'src', 'engine', 'gdal', 'runner.ts')).href);
-const { renderRasterPng, readPngSize, buildPdfFromJpeg, inspectPdf, vectorToGeoJson, PdfBuildError } =
+const { renderRasterPng, renderRasterBytes, readPngSize, buildPdfFromJpeg, inspectPdf, vectorToGeoJson, PdfBuildError } =
   await import(pathToFileURL(join(root, 'src', 'engine', 'export', 'index.ts')).href);
 
 const loc = resolveGdal();
@@ -19,6 +19,18 @@ const rasterFixture = join(fixtures, 'embedded.tff');
 const vectorFixture = join(fixtures, 'sample.shp');
 
 /* ────────── 栅格渲染成 PNG ────────── */
+
+test('GeoTIFF 导出带 BigTIFF=IF_SAFER：超过 4 GB 自动切换', async () => {
+  const res = await renderRasterBytes(
+    loc,
+    { path: rasterFixture, width: 64, height: 64 },
+    'GTiff',
+  );
+  const i = res.command.indexOf('-co');
+  assert.ok(i > 0, `应带创建选项：${res.command.join(' ')}`);
+  assert.equal(res.command[i + 1], 'BIGTIFF=IF_SAFER');
+  assert.ok(res.bytes.length > 0);
+});
 
 test('渲染栅格：产出 PNG，头里的宽高与请求一致', async () => {
   const res = await renderRasterPng(loc, {

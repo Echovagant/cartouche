@@ -67,6 +67,8 @@ export interface PyramidBuildResult {
   readonly levels: readonly PyramidLevel[];
   /** levels 为空时的说明（为什么没建成 / 建了没意义） */
   readonly note?: string;
+  /** 未建成的级别与原因（有才返回） */
+  readonly skipped?: readonly string[];
   /** true = 缓存已存在，本次没有重新构建 */
   readonly cached?: boolean;
 }
@@ -75,6 +77,8 @@ export interface PyramidInfo {
   readonly hash: string;
   readonly dir: string;
   readonly levels: readonly PyramidLevel[];
+  /** 未建成的级别与原因（有才返回） */
+  readonly skipped?: readonly string[];
 }
 
 /** 容差档位：diag 除数与适用 zoom 上限（从粗到细） */
@@ -162,12 +166,16 @@ export function findPyramid(absPath: string): PyramidInfo | null {
     const parsed = JSON.parse(readFileSync(manifestPath, 'utf8')) as {
       hash?: string;
       levels?: PyramidLevel[];
+      skipped?: unknown;
     };
     if (parsed.hash !== hash || !Array.isArray(parsed.levels)) return null;
     const levels = parsed.levels.filter(
       (l) => l != null && typeof l.name === 'string' && existsSync(join(dir, `${hash}-${l.name}.geojson`)),
     );
-    return { hash, dir, levels };
+    const skipped = Array.isArray(parsed.skipped)
+      ? parsed.skipped.filter((s): s is string => typeof s === 'string')
+      : [];
+    return { hash, dir, levels, ...(skipped.length ? { skipped } : {}) };
   } catch {
     return null;
   }
@@ -201,7 +209,13 @@ export async function buildVectorPyramid(
   const manifestPath = join(dir, `${hash}.json`);
   if (existsSync(manifestPath)) {
     const info = findPyramid(absPath);
-    if (info) return { ...info, cached: true };
+    if (info) {
+      return {
+        ...info,
+        cached: true,
+        ...(info.skipped?.length ? { note: `未建级别：${info.skipped.join('；')}` } : {}),
+      };
+    }
   }
   const pending = inFlight.get(hash);
   if (pending) return pending;
@@ -256,10 +270,8 @@ async function buildInternal(
 
   const workDir = mkdtempSync(join(tmpdir(), 'cartouche-pyramid-'));
 
-  // 顶点基线：**字节比不是可靠的减重信号** —— GeoJSON 输出器的浮点精度通常比源
-  // 文件宽（源 6 位小数、输出可能 15 位），顶点删掉一半字节也不见小（实测教训：
-  // 抖动折线 560k 顶点删到 537k，字节比仍有 0.96）。数顶点才数得清。
-  // 源太大就不整读（内存代价 > 收益），退化成只看级间对比。
+  // 顶点基线：字节比不可靠（GeoJSON 浮点精度比源宽），数顶点才准；
+  // 源太大就不整读，退化成只看级间对比。
   let rawVertices: number | null = null;
   if (rawBytes <= VERTEX_BASELINE_MAX_BYTES) {
     try {
@@ -273,6 +285,7 @@ async function buildInternal(
   try {
     mkdirSync(dir, { recursive: true });
     const levels: PyramidLevel[] = [];
+    const skipped: string[] = [];
     let prevVertices = rawVertices ?? Number.POSITIVE_INFINITY;
     for (const tier of TIERS) {
       const tolerance = diag / tier.div;
@@ -281,28 +294,41 @@ async function buildInternal(
         ['-f', 'GeoJSON', '-t_srs', 'EPSG:4326', '-simplify', String(tolerance), out, absPath],
         { timeoutMs: 600_000 },
       );
-      if (!res.ok || !existsSync(out)) continue;
+      if (!res.ok || !existsSync(out)) {
+        skipped.push(`${tier.name} 简化失败`);
+        continue;
+      }
       const bytes = statSync(out).size;
-      if (bytes > MAX_LEVEL_BYTES) continue;
+      if (bytes > MAX_LEVEL_BYTES) {
+        skipped.push(
+          `${tier.name} 简化后 ${(bytes / 1048576).toFixed(0)} MB，超过单级 ${MAX_LEVEL_BYTES / 1048576} MB 上限`,
+        );
+        continue;
+      }
       // 病态几何简化后可能产出空集：空级不进金字塔
       let parsed: { features?: unknown[] };
       try {
         parsed = JSON.parse(readFileSync(out, 'utf8')) as { features?: unknown[] };
       } catch {
+        skipped.push(`${tier.name} 产物无法解析`);
         continue;
       }
       const features = Array.isArray(parsed.features) ? parsed.features : [];
-      if (features.length === 0) continue;
+      if (features.length === 0) {
+        skipped.push(`${tier.name} 简化后为空`);
+        continue;
+      }
       const vertices = countVertices(features);
-      // 没意义的级不进金字塔：
-      //   - 与**源**比（有基线时）：顶点没少 15% → 简化没用（点层/本就稀疏的源）；
-      //   - 与**上一级**比：顶点几乎相等（±5% 内）→ 这一级没提供任何新细节，
-      //     装它只是重复磁盘。细级顶点**天然比粗级多**（更有细节），那是好事；
-      //     判据必须是「几乎没变」而不是「变多了」—— 2026-11-16 实测教训：
-      //     第一版 ≥98% 规则把大线源的 mid/fine 全误杀（62k vs 20k 也算"变多"）。
-      if (rawVertices !== null && vertices > rawVertices * LEVEL_USELESS_RATIO) continue;
+      // 与源比没减重，或与上一级几乎相同，都不进金字塔。
+      if (rawVertices !== null && vertices > rawVertices * LEVEL_USELESS_RATIO) {
+        skipped.push(`${tier.name} 顶点数没有明显减少`);
+        continue;
+      }
       const nearlySame = vertices >= prevVertices * 0.95 && vertices <= prevVertices * 1.05;
-      if (nearlySame) continue;
+      if (nearlySame) {
+        skipped.push(`${tier.name} 与上一级几乎相同`);
+        continue;
+      }
       writeFileSync(join(dir, `${hash}-${tier.name}.geojson`), readFileSync(out));
       prevVertices = vertices;
       levels.push({ name: tier.name, tolerance, bytes, vertices, zoomMax: tier.zoomMax });
@@ -312,18 +338,20 @@ async function buildInternal(
     writeFileSync(
       join(dir, `${hash}.json`),
       JSON.stringify(
-        { path: absPath, hash, rawVertices, builtAt: new Date().toISOString(), levels },
+        { path: absPath, hash, rawVertices, builtAt: new Date().toISOString(), levels, skipped },
         null,
         2,
       ),
     );
+    const notes: string[] = [];
+    if (skipped.length > 0) notes.push(`未建级别：${skipped.join('；')}`);
+    if (levels.length === 0) notes.push('简化后没有更小的层级（点层或稀疏数据），视口加载走原始裁剪');
     return {
       hash,
       dir,
       levels,
-      ...(levels.length === 0
-        ? { note: '简化后没有更小的层级（点层或稀疏数据），视口加载走原始裁剪' }
-        : {}),
+      ...(skipped.length > 0 ? { skipped } : {}),
+      ...(notes.length > 0 ? { note: notes.join('。') } : {}),
     };
   } finally {
     rmSync(workDir, { recursive: true, force: true });

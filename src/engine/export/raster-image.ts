@@ -23,6 +23,7 @@ import {
   pixelTypeFromGdal,
   type PixelType,
 } from '../raster/pixels.ts';
+import { GTIFF_CREATION_OPTIONS } from '../raster/formats.ts';
 
 /**
  * 渲染输出的像素数上限（宽 × 高）。
@@ -344,10 +345,13 @@ function renderArgs(
     }
     if (options.resample) args.push('-r', options.resample);
     for (const b of options.bands ?? []) args.push('-b', String(b));
+    if (format === 'GTiff') args.push(...GTIFF_CREATION_OPTIONS);
     args.push('-of', format, options.path, out);
   } else {
     // translate：直接按源 CRS 裁切窗口
-    args = ['-of', format, ...scaleArgs, '-outsize', String(width), String(height)];
+    args = ['-of', format];
+    if (format === 'GTiff') args.push(...GTIFF_CREATION_OPTIONS);
+    args.push(...scaleArgs, '-outsize', String(width), String(height));
     if (options.bbox) {
       const [minX, minY, maxX, maxY] = options.bbox;
       // GDAL 的 -projwin 用「左上角在前」：ulx=minX, uly=maxY, lrx=maxX, lry=minY
@@ -403,22 +407,11 @@ async function makeTile(
 /**
  * 用 gdal_translate / gdalwarp 把栅格渲染成目标格式。
  *
- * 两条路：
- *  - **源与目标同 CRS** → `gdal_translate -projwin`（直接裁切，无重采样，最精确）
- *  - **需要重投影** → `gdalwarp -t_srs -te -ts`（gdal_translate **没有 -t_srs**，
- *    投影坐标系的源必须走 warp；否则会出图错位）
+ * 同 CRS 走 translate + `-projwin`；需要重投影走 warp（translate 没有 `-t_srs`）。
+ * 显示档位只对 PNG/JPEG 有意义：`-ot Byte` 必须跟 `-scale`，
+ * 否则 65535 会被静默饱和成 255。GTiff 是数据导出，不拉伸、不降位。
  *
- * 显示档位（stretch）只对**显示**导出（PNG / JPEG）有意义：
- *  - PNG / JPEG 的通道只有 8 位，而 16 位影像是常见底图来源。GDAL 的 PNG 驱动对 16 位源
- *    **默认输出 16 位 PNG**，浏览器/纹理侧的 16→8 降位行为不可控。
- *  - 只给 `-ot Byte` 更糟：那是**静默饱和**，65535 被压成 255，退出码仍是 0、stderr 也是空的
- *    （实测 GDAL 3.13.3）。所以降位必须跟 `-scale` 一起给。
- *  - 'auto'（16 位的默认）：按**这一窗口**的实际值域拉伸到 0~255，画面能用；
- *  - 'none'：固定全量程 0~65535 → 0~255，屏幕亮度严格等于文件数值（代价是很暗）。
- *  - GTiff 是数据导出：保留源类型，不拉伸、不降位。
- *
- * ⚠️ 南向上（正 NS 分辨率）的源只在 translate 路上会被静默翻转，
- *    那条路上明确报错 —— 理由与实测数据见 assertNorthUpForRender。
+ * 南向上（正 NS 分辨率）的源只在 translate 路上会被静默翻转，那条路直接报错。
  */
 export async function renderRasterBytes(
   loc: GdalLocation,

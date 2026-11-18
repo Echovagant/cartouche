@@ -27,7 +27,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { tools, type ToolResult } from '../gdal/runner.ts';
 import type { GdalLocation } from '../gdal/env.ts';
-import { nodataArgument } from './formats.ts';
+import { nodataArgument, GTIFF_CREATION_OPTIONS } from './formats.ts';
 import { readRasterFrame } from './raw.ts';
 import type { RasterFrame } from './window.ts';
 
@@ -295,10 +295,12 @@ export async function overlayWindowOntoRaster(
     assertWindowOntoGrid(original, window);
 
     // 不加 -ot：加了会把 16 位压成 8 位（实测 UInt16 会被压成 255）。
-    const outArgs = ['-of', driver, vrt, outAbsPath];
+    const outArgs = ['-of', driver];
     if (typeof options?.nodata === 'number') {
-      outArgs.splice(2, 0, '-a_nodata', nodataArgument(options.nodata));
+      outArgs.push('-a_nodata', nodataArgument(options.nodata));
     }
+    if (driver === 'GTiff') outArgs.push(...GTIFF_CREATION_OPTIONS);
+    outArgs.push(vrt, outAbsPath);
     const outRes = await gdal.translate(outArgs);
     if (!outRes.ok) {
       throw new Error(`合成输出失败（${driver}）：${outAbsPath}\n${outRes.stderr}`);
