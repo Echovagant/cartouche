@@ -344,7 +344,9 @@ export async function vectorToGeoJson(
       // KML 的目录伪图层、空的属性图层：正常存在，静默跳过即可（没有"失败"可言）
       continue;
     }
-    features.push(...layerFeatures);
+    // 不能用 features.push(...layerFeatures)：要素数超过十万时展开参数会
+    // 直接触发 "Maximum call stack size exceeded"（2026-11-18 实测 30 万点）。
+    for (const feature of layerFeatures) features.push(feature);
     converted.push(layer);
     remaining -= layerFeatures.length;
   }
