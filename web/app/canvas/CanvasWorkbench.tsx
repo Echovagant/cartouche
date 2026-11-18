@@ -630,9 +630,16 @@ export default function CanvasWorkbench() {
             tiledMarks.set(layer.id, tileLayer);
             setBanner(
               `${layer.name}（${formatSourceSize(sourceBytes)}）太大，已按瓦片方式显示：` +
-                '缩放平移会自动加载瓦片；首次浏览低倍视图需要现场切片（可能要几十秒）。' +
+                '缩放平移会自动加载瓦片；低倍视图的瓦片正在后台预先生成，完成后低倍浏览不再等待。' +
                 '瓦片模式暂不显示标注，属性可点击查看。',
             );
+            // 低倍预热：一次任务切好 z0–z7，之后低倍直接命中缓存。
+            // 请求要跑一两分钟，fire-and-forget；失败只提示、不拦浏览。
+            void engine.warmMvtTiles(layer.path, tileLayer).then((warm) => {
+              if (!warm.ok && stillMine()) {
+                setBanner(`「${layer.name}」低倍瓦片预热失败（不影响正常浏览）：${warm.error}`);
+              }
+            });
             return true;
           };
 
@@ -754,7 +761,14 @@ export default function CanvasWorkbench() {
         if (loadingSeqRef.current === seq) setLayerLoading(null);
       }
     },
-    [engine.fetchGeoJson, engine.fetchExtent, engine.fetchVectorLayers, engine.buildPyramid, abortChunkLoad],
+    [
+      engine.fetchGeoJson,
+      engine.fetchExtent,
+      engine.fetchVectorLayers,
+      engine.buildPyramid,
+      engine.warmMvtTiles,
+      abortChunkLoad,
+    ],
   );
 
   /* ───────── 图层操作 ───────── */

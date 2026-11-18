@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const { resolveGdal } = await import(pathToFileURL(join(root, 'src', 'engine', 'gdal', 'env.ts')).href);
 const { tools } = await import(pathToFileURL(join(root, 'src', 'engine', 'gdal', 'runner.ts')).href);
-const { buildMvtTile, tileBbox4326, lonLatToTile } = await import(
+const { buildMvtTile, warmMvtTiles, tileBbox4326, lonLatToTile } = await import(
   pathToFileURL(join(root, 'src', 'engine', 'export', 'index.ts')).href
 );
 
@@ -79,6 +79,39 @@ test('数据范围外的瓦片返回空并记住空结果', { skip: loc ? false 
 
     const second = await buildMvtTile(loc, { path: src, z: 12, x: far.x, y: far.y });
     assert.equal(second, null, '第二次仍返回空');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('低倍预热：一次生成整段层级，第二次全部命中缓存', { skip: loc ? false : 'GDAL 不可用' }, async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'cartouche-mvt-warm-'));
+  try {
+    const { copyFile } = await import('node:fs/promises');
+    const src = join(dir, 'sample.shp');
+    for (const ext of ['.shp', '.shx', '.dbf', '.prj', '.cpg']) {
+      const from = join(root, 'fixtures', `sample${ext}`);
+      if (existsSync(from)) await copyFile(from, join(dir, `sample${ext}`));
+    }
+    const first = await warmMvtTiles(loc, { path: src, maxZoom: 3 });
+    assert.ok(first.tiles > 0, '应算出覆盖范围的瓦片');
+    assert.ok(first.generated > 0, '第一次应有新生成的瓦片');
+    assert.equal(first.cached, 0);
+    assert.equal(first.maxZoom, 3);
+
+    // 预热出的瓦片必须真的落在缓存里
+    const { readdirSync } = await import('node:fs');
+    const hashDir = join(dir, '.cartouche', 'mvt');
+    const hash = readdirSync(hashDir)[0];
+    const pbfCount = readdirSync(join(hashDir, hash), { recursive: true }).filter((p) =>
+      String(p).endsWith('.pbf'),
+    ).length;
+    assert.ok(pbfCount > 0, '缓存目录里应有 .pbf');
+
+    const second = await warmMvtTiles(loc, { path: src, maxZoom: 3 });
+    assert.equal(second.generated, 0, '第二次不应再生成');
+    assert.equal(second.tiles, first.tiles);
+    assert.equal(second.cached, first.tiles);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

@@ -35,6 +35,7 @@ import {
   findPyramid,
   pyramidLevelForZoom,
   buildMvtTile,
+  warmMvtTiles,
   probeLayer,
   datasetExtent,
   buildPdfFromJpeg,
@@ -1121,6 +1122,50 @@ function foldCasePath(p: string): string {
             'application/vnd.mapbox-vector-tile',
             tile.compressed ? 'gzip' : undefined,
           );
+        } catch (err) {
+          const bad = err instanceof PathEscapeError ? 400 : 500;
+          json(bad, { error: bad === 400 ? 'bad_request' : 'internal', message: scrub((err as Error).message) });
+        }
+      })();
+      return;
+    }
+
+    /* ───────── 大矢量低倍预热：z0–N 一次切好 ───────── */
+
+    if (url.pathname === '/api/data/mvt/warm' && req.method === 'POST') {
+      void (async () => {
+        try {
+          if (!gdalLoc) {
+            json(503, { error: 'gdal_unavailable', message: '未找到 GDAL 运行时，无法预热瓦片；请先运行 npm run doctor' });
+            return;
+          }
+          const body = JSON.parse((await readBody(req, res)).toString('utf8') || '{}') as {
+            path?: string;
+            root?: string;
+            maxZoom?: number;
+            layer?: string;
+          };
+          // 默认预热到 z7；CARTOUCHE_MVT_WARM_MAXZOOM=0 可整体关闭。
+          // 空字符串不能走 Number()（Number('') 是 0，会被误当成关闭）。
+          const rawWarm = (process.env.CARTOUCHE_MVT_WARM_MAXZOOM ?? '').trim();
+          const parsedWarm = rawWarm === '' ? Number.NaN : Number(rawWarm);
+          const configured = Number.isInteger(parsedWarm) && parsedWarm >= 0 ? parsedWarm : 7;
+          const maxZoom = body.maxZoom !== undefined ? Number(body.maxZoom) : configured;
+          if (!Number.isInteger(maxZoom) || maxZoom < 0 || maxZoom > 14) {
+            json(400, { error: 'bad_request', message: 'maxZoom 必须是 0–14 的整数（0 = 不预热）' });
+            return;
+          }
+          if (maxZoom === 0) {
+            json(200, { disabled: true, maxZoom: 0 });
+            return;
+          }
+          const abs = resolveWorkspacePath(body.root ?? null, body.path ?? '');
+          const warmed = await warmMvtTiles(gdalLoc, {
+            path: abs,
+            maxZoom,
+            ...(body.layer ? { layerName: body.layer } : {}),
+          });
+          json(200, warmed);
         } catch (err) {
           const bad = err instanceof PathEscapeError ? 400 : 500;
           json(bad, { error: bad === 400 ? 'bad_request' : 'internal', message: scrub((err as Error).message) });

@@ -224,6 +224,7 @@ export {
   findPyramid,
   pyramidLevelForZoom,
   buildMvtTile,
+  warmMvtTiles,
   tileBbox4326,
   lonLatToTile,
   datasetExtent,
@@ -243,6 +244,8 @@ export type {
   PyramidLevelName,
   MvtTileOptions,
   MvtTileResult,
+  MvtWarmOptions,
+  MvtWarmResult,
   DatasetExtentOptions,
   DatasetExtentResult,
 } from './export/index.ts';

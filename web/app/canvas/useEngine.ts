@@ -85,6 +85,17 @@ export interface PyramidPayload {
   readonly cached?: boolean;
 }
 
+/** 低倍瓦片预热结果（disabled = 引擎侧关闭了预热） */
+export interface MvtWarmPayload {
+  readonly disabled?: boolean;
+  readonly tiles?: number;
+  readonly generated?: number;
+  readonly cached?: number;
+  readonly bytes?: number;
+  readonly ms?: number;
+  readonly maxZoom?: number;
+}
+
 /** 数据集的地理范围（EPSG:4326，lon/lat 序） */
 export interface ExtentPayload {
   /** [minX, minY, maxX, maxY] */
@@ -194,6 +205,13 @@ export interface EngineApi {
    * 令牌进查询串：瓦片是 MapLibre 自己发的 GET，加不了请求头。
    */
   readonly vectorTileUrl: (path: string) => string;
+  /**
+   * 后台预热低倍瓦片（z0–N 一次切好）。
+   *
+   * 大源第一次看低倍视图要几十秒；预热完成后低倍直接命中缓存。
+   * 引擎按源去重、已有缓存时秒回；设 CARTOUCHE_MVT_WARM_MAXZOOM=0 可关闭。
+   */
+  readonly warmMvtTiles: (path: string, layerName?: string) => Promise<Result<MvtWarmPayload>>;
   readonly rasterUrl: (path: string, options: RasterUrlOptions) => string;
   readonly fetchCompatReport: (path: string) => Promise<Result<CompatReportPayload>>;
   readonly exportPdf: (payload: PdfPayload) => Promise<Result<Blob>>;
@@ -387,6 +405,23 @@ export function useEngine(root?: string | null): EngineApi {
       return `${ENGINE_BASE}/api/data/mvt?${query}`;
     },
     [root],
+  );
+
+  /** 后台预热低倍瓦片：请求可能持续几分钟，调用点应 fire-and-forget */
+  const warmMvtTiles = useCallback(
+    (path: string, layerName?: string) =>
+      run('mvt-warm', () =>
+        requestJson<MvtWarmPayload>(`${ENGINE_BASE}/api/data/mvt/warm`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            path,
+            ...(root ? { root } : {}),
+            ...(layerName ? { layer: layerName } : {}),
+          }),
+        }),
+      ),
+    [run, root],
   );
 
   /**
@@ -587,6 +622,7 @@ export function useEngine(root?: string | null): EngineApi {
       buildPyramid,
       fetchVectorLayers,
       vectorTileUrl,
+      warmMvtTiles,
       rasterUrl,
       fetchCompatReport,
       exportPdf,
@@ -606,6 +642,7 @@ export function useEngine(root?: string | null): EngineApi {
       buildPyramid,
       fetchVectorLayers,
       vectorTileUrl,
+      warmMvtTiles,
       rasterUrl,
       fetchCompatReport,
       exportPdf,
