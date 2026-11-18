@@ -110,16 +110,24 @@ export async function vectorToGeoJson(
 
   const outDir = mkdtempSync(join(tmpdir(), 'cartouche-geojson-'));
 
-  // 视口裁剪参数（bbox 给了就每层都带）：相交过滤 + 几何裁到范围内，
-  // 超大图层「每次一小块」的引擎侧基础（分块加载工程第一阶段）。
-  // ⚠️ 用 -clipdst（目标坐标系里裁）而不是 -clipsrc（源坐标系里裁）：
-  //    bbox 永远是 4326 经纬度，源若是投影坐标系（如 CGCS2000 高斯克吕格），
-  //    clipsrc 会拿经纬度数值去套米制坐标 → 一个要素都裁不出来
-  //    （2026-11-15 实测：CN_MountainRanges 投影源 bbox 加载 0 要素）。
-  //    clipdst 在重投影**之后**执行，任何源坐标系都正确。
+  // 视口裁剪参数（bbox 给了就每层都带）：相交过滤 + 几何裁到范围内。
+  //
+  // 两步的分工：
+  //   1. `-spat` 是**包络过滤**，会走数据的空间索引（GPKG / SpatiaLite 的 RTree）。
+  //      没有它时 `-clipdst` 仍要逐个要素算几何，5 GB 的 GPKG 一个视口要二十多秒；
+  //      加上之后同一个视口 1 秒内出结果（2026-11-18 实测）。
+  //   2. `-clipdst` 在重投影**之后**把几何真正裁到 bbox 内。
+  //
+  // ⚠️ `-clipdst` 而不是 `-clipsrc`：bbox 永远是 4326 经纬度，源若是投影坐标系
+  //    （如 CGCS2000 高斯克吕格），clipsrc 会拿经纬度数值去套米制坐标 → 一个要素
+  //    都裁不出来（2026-11-15 实测：CN_MountainRanges 投影源 bbox 加载 0 要素）。
+  //    `-spat` 同理：显式用 `-spat_srs EPSG:4326` 声明过滤范围的坐标系，
+  //    让 GDAL 自己换算到源坐标系，而不是把经纬度当米。
   const clipArgs: string[] = [];
   if (options.bbox) {
     const [minX, minY, maxX, maxY] = options.bbox;
+    clipArgs.push('-spat', String(minX), String(minY), String(maxX), String(maxY));
+    clipArgs.push('-spat_srs', 'EPSG:4326');
     clipArgs.push('-clipdst', String(minX), String(minY), String(maxX), String(maxY));
   }
 
