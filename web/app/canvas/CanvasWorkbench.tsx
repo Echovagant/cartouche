@@ -246,6 +246,21 @@ export default function CanvasWorkbench() {
   /** 视口重拉的防抖定时器 */
   const viewTimerRef = useRef<number>(0);
   /**
+   * 待预热的低倍瓦片任务（图层 id → 源路径 + source-layer）。
+   *
+   * 不在地图加载完的那一刻立刻预热：预热要整幅扫一遍源数据（5 GB 级要几分钟），
+   * 和用户首屏正在等的瓦片抢磁盘会让两边都变慢。等地图第一次 idle
+   * （这一屏瓦片都落图）后再放行；另有 15 秒兜底，避免 idle 不触发时一直不预热。
+   */
+  const pendingWarmRef = useRef(
+    new Map<
+      string,
+      { path: string; layer: string; name: string; owner: string | null }
+    >(),
+  );
+  /** 预热兜底定时器 */
+  const warmTimerRef = useRef<number>(0);
+  /**
    * layers 的 ref 镜像：视口回调在地图事件里读的是**那一刻**的清单，
    * 直接闭包 layers 会把回调绑死在旧列表上。
    */
@@ -255,7 +270,10 @@ export default function CanvasWorkbench() {
   // 卸载时把在途的分块请求全部掐掉：组件没了，回调整个作废
   useEffect(() => {
     const aborts = chunkAbortRef.current;
-    return () => aborts.forEach((controller) => controller.abort());
+    return () => {
+      aborts.forEach((controller) => controller.abort());
+      window.clearTimeout(warmTimerRef.current);
+    };
   }, []);
 
   const [dir, setDir] = useState('');
@@ -527,6 +545,45 @@ export default function CanvasWorkbench() {
   }, []);
 
   /**
+   * 把排队中的低倍预热全部放行。
+   *
+   * 触发点：地图第一次 idle（首屏瓦片已落图），或 15 秒兜底定时器。
+   * 预热请求本身要跑几分钟，fire-and-forget；失败只提示、不拦浏览。
+   */
+  const flushPendingWarm = useCallback(() => {
+    window.clearTimeout(warmTimerRef.current);
+    warmTimerRef.current = 0;
+    if (pendingWarmRef.current.size === 0) return;
+    const jobs = [...pendingWarmRef.current.values()];
+    pendingWarmRef.current.clear();
+    for (const job of jobs) {
+      void engine.warmMvtTiles(job.path, job.layer).then((warm) => {
+        if (!warm.ok && projectKeyRef.current === job.owner) {
+          setBanner(`「${job.name}」低倍瓦片预热失败（不影响正常浏览）：${warm.error}`);
+        }
+      });
+    }
+  }, [engine.warmMvtTiles]);
+
+  /** 登记一个预热任务，并安排兜底放行（正常情况下会先被地图 idle 放行） */
+  const scheduleWarm = useCallback(
+    (layerId: string, path: string, layer: string, name: string) => {
+      pendingWarmRef.current.set(layerId, {
+        path,
+        layer,
+        name,
+        owner: projectKeyRef.current,
+      });
+      if (warmTimerRef.current) return;
+      warmTimerRef.current = window.setTimeout(() => {
+        warmTimerRef.current = 0;
+        flushPendingWarm();
+      }, 15000);
+    },
+    [flushPendingWarm],
+  );
+
+  /**
    * 把图层的数据拉回来：矢量的 GeoJSON + 各自的地理范围。
    *
    * 新增图层和恢复项目**共用这一份** —— 恢复时只回填图层列表是不够的，
@@ -631,15 +688,11 @@ export default function CanvasWorkbench() {
             setBanner(
               `${layer.name}（${formatSourceSize(sourceBytes)}）太大，已按瓦片方式显示：` +
                 '缩放平移会自动加载瓦片；低倍视图的瓦片正在后台预先生成，完成后低倍浏览不再等待。' +
-                '瓦片模式暂不显示标注，属性可点击查看。',
+                '标注随当前视野绘制，属性可点击查看。',
             );
-            // 低倍预热：一次任务切好 z0–z7，之后低倍直接命中缓存。
-            // 请求要跑一两分钟，fire-and-forget；失败只提示、不拦浏览。
-            void engine.warmMvtTiles(layer.path, tileLayer).then((warm) => {
-              if (!warm.ok && stillMine()) {
-                setBanner(`「${layer.name}」低倍瓦片预热失败（不影响正常浏览）：${warm.error}`);
-              }
-            });
+            // 低倍预热：等首屏瓦片落图（地图 idle）后再放行，避免和用户正在等的
+            // 瓦片抢磁盘；兜底 15 秒后也会开始。一次任务切好 z0–z7。
+            scheduleWarm(layer.id, layer.path, tileLayer, layer.name);
             return true;
           };
 
@@ -766,7 +819,7 @@ export default function CanvasWorkbench() {
       engine.fetchExtent,
       engine.fetchVectorLayers,
       engine.buildPyramid,
-      engine.warmMvtTiles,
+      scheduleWarm,
       abortChunkLoad,
     ],
   );
@@ -821,6 +874,12 @@ export default function CanvasWorkbench() {
     chunkAbortRef.current.get(id)?.abort();
     chunkAbortRef.current.delete(id);
     chunkBBoxRef.current.delete(id);
+    // 还没放行的预热任务跟着层一起作废（已经发出的预热会在引擎侧继续跑完）
+    pendingWarmRef.current.delete(id);
+    if (pendingWarmRef.current.size === 0) {
+      window.clearTimeout(warmTimerRef.current);
+      warmTimerRef.current = 0;
+    }
     window.clearTimeout(viewTimerRef.current);
     setLayers((prev) => prev.filter((layer) => layer.id !== id));
     setVectorData((prev) => {
@@ -1096,6 +1155,10 @@ export default function CanvasWorkbench() {
     chunkAbortRef.current.clear();
     chunkBBoxRef.current.clear();
     window.clearTimeout(viewTimerRef.current);
+    // 未放行的预热任务属于旧项目，一并作废
+    pendingWarmRef.current.clear();
+    window.clearTimeout(warmTimerRef.current);
+    warmTimerRef.current = 0;
     setActiveLayerId(null);
     setSelected([]);
     setDir('');
@@ -1620,6 +1683,7 @@ export default function CanvasWorkbench() {
                       }
                       preserveViewLayerIds={manifest?.layers.map((l) => l.id)}
                       onViewportChange={handleViewportChange}
+                      onIdle={flushPendingWarm}
                       onSelectFeatures={(features) => {
                         setSelected(features);
                         setSelectedIndex(0);

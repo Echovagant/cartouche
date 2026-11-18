@@ -243,6 +243,13 @@ export interface MapCanvasProps {
    */
   onViewportChange?: (bbox: readonly [number, number, number, number]) => void;
   /**
+   * 地图空闲（这一屏瓦片都落图了）时派发。
+   *
+   * 上层用它把"低倍瓦片预热"放到首屏之后：预热要整幅扫一遍源数据，
+   * 和用户正在等的那屏瓦片抢磁盘只会让两边都变慢。
+   */
+  onIdle?: () => void;
+  /**
    * 当前编辑工具。
    *
    * 不是「查看」时，地图的拖拽手势交给工具（画笔 / 框选），
@@ -356,6 +363,7 @@ export default function MapCanvas({
   preserveViewLayerIds,
   onSelectFeatures,
   onViewportChange,
+  onIdle,
   editTool = 'view',
   onEditGesture,
   editPreview = null,
@@ -385,6 +393,15 @@ export default function MapCanvas({
   layersRef.current = layers;
   const vectorDataRef = useRef(vectorData);
   vectorDataRef.current = vectorData;
+  /**
+   * 瓦片图层的标注条目（图层 id → 文本 + 经纬度锚点）。
+   *
+   * 瓦片层没有整份 GeoJSON 在手，标注只能从 MapLibre **当前渲染出来的要素**里取；
+   * 取一次缓存起来，地图平移时按经纬度重投影，等地图空闲再刷新。
+   */
+  const tileLabelsRef = useRef<Map<string, ReadonlyArray<{ text: string; lngLat: [number, number] }>>>(
+    new Map(),
+  );
   const labelRef = useRef<HTMLCanvasElement | null>(null);
   const sheetMetaRef = useRef(sheetMeta);
   sheetMetaRef.current = sheetMeta;
@@ -393,6 +410,9 @@ export default function MapCanvas({
   /** 视口变化派发（moveend）：分块图层的父层在这里补拉数据，ref 挡住回调重建 */
   const onViewportChangeRef = useRef(onViewportChange);
   onViewportChangeRef.current = onViewportChange;
+  /** 地图空闲派发（父层用它延后低倍预热） */
+  const onIdleRef = useRef(onIdle);
+  onIdleRef.current = onIdle;
 
   /**
    * 编辑相关的最新值。
@@ -438,6 +458,56 @@ export default function MapCanvas({
       );
   }, []);
 
+  /**
+   * 从瓦片图层**当前渲染出的要素**里收集标注锚点。
+   *
+   * 为什么不用 MapLibre 的 symbol 层：它要 glyphs（SDF 字形），本工具是离线的，
+   * 自己托管中文字形是另一整套构建链。这里继续用 2D 覆盖层，样式与普通图层
+   * 完全一致，导出 PDF 也走同一套绘制逻辑。
+   *
+   * 只在**地图空闲**（瓦片都已落图）或图层样式变化时调用：
+   * queryRenderedFeatures 是同步调用，拖动过程中每帧都查会把主线程拖住。
+   */
+  const refreshTileLabels = useCallback(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const next = new Map<string, Array<{ text: string; lngLat: [number, number] }>>();
+    for (const layer of layersRef.current) {
+      if (layer.kind !== 'vector' || !layer.tiled || !layer.visible) continue;
+      const labels = layer.style?.labels;
+      if (!labels) continue;
+      const targets = [`lyr-${layer.id}`, `lyr-${layer.id}-line`, `lyr-${layer.id}-point`].filter(
+        (id) => Boolean(map.getLayer(id)),
+      );
+      if (targets.length === 0) continue;
+      let rendered: ReturnType<MlMap['queryRenderedFeatures']>;
+      try {
+        rendered = map.queryRenderedFeatures(undefined, { layers: targets });
+      } catch {
+        continue;
+      }
+      const seen = new Set<string>();
+      const entries: Array<{ text: string; lngLat: [number, number] }> = [];
+      for (const feature of rendered) {
+        if (entries.length >= 600) break;
+        const text = labelText(feature.properties ?? undefined, labels.field);
+        if (!text) continue;
+        // 同一要素被瓦片边界切成几块时 properties / id 相同 —— 只标一次，
+        // 否则交界处会出现两个一模一样的标注。
+        const key = String(
+          feature.id ?? feature.properties?.id ?? feature.properties?.mvt_id ?? text,
+        );
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const anchor = labelAnchor(feature.geometry);
+        if (!anchor) continue;
+        entries.push({ text, lngLat: anchor });
+      }
+      if (entries.length > 0) next.set(layer.id, entries);
+    }
+    tileLabelsRef.current = next;
+  }, []);
+
   /** 当前所有要画的标注（上层优先；超过 600 条就不画了，避免卡死）。 */
   const collectLabelEntries = useCallback((): Array<{
     text: string;
@@ -450,6 +520,14 @@ export default function MapCanvas({
       const layer = layersRef.current[i]!;
       const labels = layer.style?.labels;
       if (layer.kind !== 'vector' || !layer.visible || !labels) continue;
+      // 瓦片层：锚点来自当前渲染要素的缓存（refreshTileLabels 维护）
+      if (layer.tiled) {
+        for (const entry of tileLabelsRef.current.get(layer.id) ?? []) {
+          out.push({ text: entry.text, lngLat: entry.lngLat, style: labels });
+          if (out.length >= 600) return out;
+        }
+        continue;
+      }
       let scanned = 0;
       for (const feature of featuresOf(vectorDataRef.current.get(layer.id))) {
         // 单层最多扫 5000 条：标注是屏幕上的即时叠加，不能为它把主线程拖住
@@ -952,6 +1030,20 @@ export default function MapCanvas({
     };
     map.on('moveend', onMoveEnd);
 
+    /**
+     * 地图空闲（瓦片全部落图）→ 刷新瓦片图层的标注锚点并重画覆盖层。
+     *
+     * 放在 idle 而不是 move：拖动过程中查渲染要素太重；idle 时该有的瓦片
+     * 都已经在画面上，收集到的标注才对得上。
+     */
+    const onIdle = (): void => {
+      refreshTileLabels();
+      drawLabelsOverlay();
+      // 首屏瓦片落图之后，父层才允许开始低倍预热
+      onIdleRef.current?.();
+    };
+    map.on('idle', onIdle);
+
     // 拖动过程中只重画标注（不重画图框/编辑预览），用 rAF 合并高频事件
     let labelRaf = 0;
     const onMove = (): void => {
@@ -1043,6 +1135,7 @@ export default function MapCanvas({
     return () => {
       observer.disconnect();
       cancelAnimationFrame(labelRaf);
+      map.off('idle', onIdle);
       map.off('move', onMove);
       map.off('mousedown', onMouseDown);
       map.off('mousemove', onMouseMove);
@@ -1050,7 +1143,7 @@ export default function MapCanvas({
       map.remove();
       mapRef.current = null;
     };
-  }, [paintOverlay, refreshRaster, syncOverlaySize, drawLabelsOverlay]);
+  }, [paintOverlay, refreshRaster, syncOverlaySize, drawLabelsOverlay, refreshTileLabels]);
 
   // 图层变化 → 同步 source / layer
   useEffect(() => {
@@ -1058,8 +1151,10 @@ export default function MapCanvas({
     syncLayers();
     syncOverlaySize();
     paintOverlay();
+    // 样式（含标注字段）可能刚变：瓦片层的锚点要按新配置重取一次
+    refreshTileLabels();
     drawLabelsOverlay();
-  }, [styleReady, layers, syncLayers, syncOverlaySize, paintOverlay, drawLabelsOverlay]);
+  }, [styleReady, layers, syncLayers, syncOverlaySize, paintOverlay, refreshTileLabels, drawLabelsOverlay]);
 
   /**
    * 拉伸档位变了 → 重新出图。
@@ -1239,7 +1334,9 @@ export default function MapCanvas({
         ctx.fillRect(0, 0, width, height);
         ctx.drawImage(source, 0, 0);
 
-        // 标注：屏幕上是 2D 覆盖层，导出时用同一套逻辑重画到纸面上
+        // 标注：屏幕上是 2D 覆盖层，导出时用同一套逻辑重画到纸面上。
+        // 瓦片层先按当前渲染要素刷新一次锚点，保证导出这一刻的标注是全的。
+        refreshTileLabels();
         const cssWidth = map.getCanvas().clientWidth || width;
         const labelScale = width / cssWidth;
         paintLabelEntries(
@@ -1318,7 +1415,7 @@ export default function MapCanvas({
         };
       },
     }),
-    [legend, buildRasterUrl, currentBBox, rasterSize, collectLabelEntries, paintLabelEntries],
+    [legend, buildRasterUrl, currentBBox, rasterSize, collectLabelEntries, paintLabelEntries, refreshTileLabels],
   );
 
   return (

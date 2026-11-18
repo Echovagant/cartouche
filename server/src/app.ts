@@ -5,7 +5,7 @@
  */
 import { createServer, type Server } from 'node:http';
 import { timingSafeEqual } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join, dirname, resolve, isAbsolute, sep, basename, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -1200,9 +1200,10 @@ function foldCasePath(p: string): string {
           // —— 比对原始大文件裁快一到两个数量级。没有缓存就原样走原始裁剪：
           // pyramid=auto 只是"能用则用"，不改变任何行为承诺。
           const zoomParam = Number(url.searchParams.get('zoom'));
+          const pyramidRequested = url.searchParams.get('pyramid') === 'auto';
           let convertPath = resolveWorkspacePath(root, rel);
           let pyramidLevel: ReturnType<typeof pyramidLevelForZoom> = null;
-          if (url.searchParams.get('pyramid') === 'auto') {
+          if (pyramidRequested) {
             try {
               const info = findPyramid(convertPath);
               pyramidLevel = info
@@ -1213,6 +1214,34 @@ function foldCasePath(p: string): string {
               }
             } catch {
               pyramidLevel = null; // 缓存探测失败不拦路：原始裁剪照走
+            }
+          }
+          // 整层转换的体积预检：源文件超过显示上限的 2 倍时，GeoJSON 输出
+          // 不可能装得下（JSON 文本通常比源文件还大），量一下体积就能判定 ——
+          // 不必先花几分钟/几十分钟全量转换，再被自己的体积闸拦下。
+          // 只拦"整层且没走金字塔缓存"的请求；带 bbox 的视口请求输出本来就有界。
+          if (!bbox && !pyramidLevel) {
+            try {
+              const st = statSync(convertPath);
+              if (st.isFile()) {
+                const capRaw = Number(process.env.CARTOUCHE_MAX_DISPLAY_MB ?? '');
+                const capMb = Number.isFinite(capRaw) && capRaw >= 16 && capRaw <= 512 ? capRaw : 128;
+                if (st.size > capMb * 2 * 1024 * 1024) {
+                  const sizeText =
+                    st.size >= 1073741824
+                      ? `${(st.size / 1073741824).toFixed(1)} GB`
+                      : `${Math.round(st.size / 1048576)} MB`;
+                  throw new VectorConvertError(
+                    `这个文件有 ${sizeText}，整层转成 GeoJSON 会超过 ${capMb} MB 的显示上限；` +
+                      '请按视口加载或使用瓦片模式。',
+                    '',
+                    'payload-too-large',
+                  );
+                }
+              }
+            } catch (err) {
+              // 只有我们主动判定的"太大"要抛；stat 失败（目录型数据源等）不拦路
+              if (err instanceof VectorConvertError) throw err;
             }
           }
           const layerNames = url.searchParams.getAll('layer');
