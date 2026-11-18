@@ -4,6 +4,7 @@
  * 避免 Windows 上强杀子进程导致 libuv 断言。
  */
 import { createServer, type Server } from 'node:http';
+import { timingSafeEqual } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { join, dirname, resolve, isAbsolute, sep, basename, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -532,15 +533,58 @@ function statusForPlan(error: string | null): number {
 }
 
 /**
+ * 引擎服务的可选项。
+ *
+ * `authToken` 不传时读环境变量 `CARTOUCHE_ENGINE_TOKEN`；
+ * 显式传 `null` 表示关闭鉴权 —— 只给测试用，产品入口不允许这么用。
+ */
+export interface EngineServerOptions {
+  readonly authToken?: string | null;
+}
+
+/**
+ * 常量时间比较，避免按字符比较泄露令牌前缀。
+ */
+function constantTimeEqual(a: string, b: string): boolean {
+  const left = Buffer.from(a, 'utf8');
+  const right = Buffer.from(b, 'utf8');
+  if (left.length !== right.length) return false;
+  return timingSafeEqual(left, right);
+}
+
+/**
+ * Host 头是否指向本机回环地址与当前端口。
+ *
+ * 只校验 Origin/CORS 挡不住 DNS rebinding：攻击者把自己的域名解析到
+ * 127.0.0.1 后，浏览器会把请求当成同源，CORS 根本不参与。校验 Host
+ * 是这类攻击的标准防线。
+ */
+function isLoopbackRequestHost(hostHeader: string | undefined, localPort: number): boolean {
+  if (!hostHeader) return false;
+  const match = /^(\[[0-9a-fA-F:]+\]|[^:]+)(?::(\d+))?$/.exec(hostHeader.trim());
+  if (!match) return false;
+  const hostname = (match[1] ?? '').toLowerCase();
+  const port = match[2] ? Number(match[2]) : 80;
+  if (port !== localPort) return false;
+  return hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '::1' || hostname === '[::1]';
+}
+
+/**
  * 组装引擎的 HTTP 服务（Node 原生 http，不引框架）。
  *
  * 路由走一条 if 链而不是路由器：引擎只有一个消费者（本机画布），
  * 少一层依赖就少一份升级负担。跨域放行、请求体上限、错误体形状
  * 都在这里定死，前端按这套约定调用。
  */
-export function createEngineServer(): Server {
+export function createEngineServer(options: EngineServerOptions = {}): Server {
+  const authToken =
+    options.authToken === undefined
+      ? (process.env.CARTOUCHE_ENGINE_TOKEN ?? '').trim() || null
+      : options.authToken;
+
   return createServer((req, res) => {
-    const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
+    // 固定 base：不拿 Host 头拼 URL，避免把攻击者可控的字符串带进解析。
+    const url = new URL(req.url ?? '/', 'http://127.0.0.1');
 
     /**
      * 跨域策略。
@@ -584,7 +628,7 @@ export function createEngineServer(): Server {
       //    少了它，浏览器的预检会直接拦掉这个请求（请求根本到不了服务端），
       //    表现是"点保存没反应、控制台一条 CORS 报错"——很容易被误当成前端 bug。
       'access-control-allow-methods': 'GET, POST, PUT, DELETE, OPTIONS',
-      'access-control-allow-headers': 'content-type',
+      'access-control-allow-headers': 'content-type, x-cartouche-token',
       'access-control-max-age': '600',
       'x-content-type-options': 'nosniff',
     });
@@ -618,6 +662,67 @@ export function createEngineServer(): Server {
       });
       res.end(buf);
     };
+
+    /* ───────── 安全闸门 ─────────
+     *
+     * 三道闸，顺序不能反：
+     *   1. Host 必须是本机回环地址 → 挡 DNS rebinding；
+     *   2. 令牌必须对得上 → 挡同机其他用户/进程与跨站页面；
+     *   3. 写请求不能用浏览器「简单请求」的 Content-Type → 挡 CSRF 副作用。
+     *
+     * /api/ping 不要求令牌：启动器要在拿不到令牌之前判断引擎是否已经起来，
+     * 它只回 { ok: true }，不含任何用户信息。
+     */
+    const allowNonLoopback = process.env.CARTOUCHE_ALLOW_NON_LOOPBACK === '1';
+    if (!allowNonLoopback && !isLoopbackRequestHost(req.headers.host, req.socket.localPort ?? 0)) {
+      json(403, {
+        error: 'forbidden_host',
+        message: '引擎只接受本机回环地址访问。请用 127.0.0.1 或 localhost 打开画布。',
+      });
+      return;
+    }
+
+    if (authToken && url.pathname !== '/api/ping') {
+      const headerToken = req.headers['x-cartouche-token'];
+      const queryToken = req.method === 'GET' ? url.searchParams.get('token') : null;
+      const presented = Array.isArray(headerToken)
+        ? (headerToken[0] ?? '')
+        : (headerToken ?? queryToken ?? '');
+      if (!constantTimeEqual(presented, authToken)) {
+        json(401, {
+          error: 'unauthorized',
+          message: '缺少或错误的本机访问令牌。请从启动器重新打开画布（令牌每次启动都会换）。',
+        });
+        return;
+      }
+    }
+
+    const mutating =
+      req.method === 'POST' || req.method === 'PUT' || req.method === 'DELETE' || req.method === 'PATCH';
+    if (mutating) {
+      const contentType = String(req.headers['content-type'] ?? '').toLowerCase();
+      const declaredLength = Number(req.headers['content-length'] ?? '0');
+      const hasBody =
+        (Number.isFinite(declaredLength) && declaredLength > 0) ||
+        Boolean(req.headers['transfer-encoding']);
+      const simpleType =
+        contentType.startsWith('text/plain') ||
+        contentType.startsWith('application/x-www-form-urlencoded') ||
+        contentType.startsWith('multipart/form-data');
+      if (hasBody && (simpleType || !contentType)) {
+        json(415, {
+          error: 'unsupported_media_type',
+          message: '写操作必须带 application/json 或 application/octet-stream；跨站表单请求一律拒绝。',
+        });
+        return;
+      }
+    }
+
+    // 启动器用它判活；不含任何用户信息，所以不要求令牌。
+    if (url.pathname === '/api/ping') {
+      json(200, { ok: true });
+      return;
+    }
 
     /**
  * Windows 上文件系统路径不区分大小写。
@@ -717,7 +822,17 @@ function foldCasePath(p: string): string {
               providerId = parsed.providerId?.trim() || providerId;
               key = parsed.clear ? null : (parsed.apiKey?.trim() || null);
               // 自定义接入线的端点地址跟密钥一起存（换线就换地址）
-              if (parsed.baseUrl !== undefined) setCustomBaseUrl(parsed.baseUrl);
+              if (parsed.baseUrl !== undefined) {
+                try {
+                  setCustomBaseUrl(parsed.baseUrl);
+                } catch (err) {
+                  json(400, {
+                    error: 'unsafe_endpoint',
+                    message: (err as Error).message,
+                  });
+                  return;
+                }
+              }
             } catch {
               json(400, {
                 error: 'bad_request',

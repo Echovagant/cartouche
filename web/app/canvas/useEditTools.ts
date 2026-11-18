@@ -30,6 +30,7 @@ import {
   type PixelPoint,
 } from './editGeometry';
 import { ENGINE_BASE } from '../engine-base';
+import { engineFetch } from '../engine-auth';
 import type {
   BrushMask,
   EditGesture,
@@ -256,7 +257,7 @@ export function useEditTools({
       });
       const all = [...req.corners, ...req.points];
       try {
-        const res = await fetch(`${ENGINE_BASE}/api/raster/pixels`, {
+        const res = await engineFetch(`${ENGINE_BASE}/api/raster/pixels`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({

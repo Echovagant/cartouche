@@ -17,6 +17,7 @@
  */
 
 import { ENGINE_BASE } from '../../engine-base';
+import { engineFetch } from '../../engine-auth';
 
 export interface EngineSettings {
   /** 加载动画：always / first-visit / never */
@@ -67,7 +68,7 @@ export async function fetchEngineSettings(timeoutMs = 800): Promise<EngineSettin
     const controller = new AbortController();
     const timer = window.setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const res = await fetch(`${ENGINE_BASE}/api/settings`, { signal: controller.signal });
+      const res = await engineFetch(`${ENGINE_BASE}/api/settings`, { signal: controller.signal });
       if (!res.ok) return null;
       const body = (await res.json()) as EngineSettings;
       cache = body;
@@ -86,7 +87,7 @@ export async function fetchEngineSettings(timeoutMs = 800): Promise<EngineSettin
 export async function saveEngineSettings(patch: Partial<EngineSettings>): Promise<boolean> {
   if (typeof window === 'undefined') return false;
   try {
-    const res = await fetch(`${ENGINE_BASE}/api/settings`, {
+    const res = await engineFetch(`${ENGINE_BASE}/api/settings`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(patch),

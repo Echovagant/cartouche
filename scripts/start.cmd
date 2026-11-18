@@ -60,12 +60,19 @@ echo   [4/5] GDAL: 已就绪
 
 REM ── 5. 起服务 ──────────────────────────────────────────────────────────
 echo   [5/5] 启动引擎与画布...
+REM 本机访问令牌：每次启动随机生成，只经环境变量传给引擎与浏览器地址，不落盘。
+for /f "usebackq delims=" %%T in (`powershell -NoProfile -Command "[guid]::NewGuid().ToString('N')"`) do set "CARTOUCHE_ENGINE_TOKEN=%%T"
+if not defined CARTOUCHE_ENGINE_TOKEN (
+  echo   没能生成本机访问令牌（PowerShell 不可用），已停止启动。
+  pause
+  exit /b 1
+)
 start "Cartouche Engine" cmd /k "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run-engine.ps1"
 start "Cartouche Web" cmd /k "node scripts\serve-static.mjs --port 8080"
 
 REM 等引擎与静态站把端口占上再开浏览器，否则第一次打开会看到"连不上"
 timeout /t 4 /nobreak >nul
-start "" http://127.0.0.1:8080/
+start "" "http://127.0.0.1:8080/canvas.html#t=%CARTOUCHE_ENGINE_TOKEN%"
 
 echo.
 echo   ------------------------------------------------------------

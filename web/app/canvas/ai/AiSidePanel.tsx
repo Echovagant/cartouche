@@ -38,6 +38,7 @@ import {
 } from '../../ai/failures';
 import { useLlm, type PlanPayload } from '../../ai/useLlm';
 import { ENGINE_BASE } from '../../engine-base';
+import { engineFetch } from '../../engine-auth';
 
 /** 引擎执行操作的返回体（逐条结果） */
 interface ExecResultPayload {
@@ -142,7 +143,7 @@ export function AiSidePanel({
     const key = apiKey.trim();
     if (!key || llm.isBusy('key')) return;
     try {
-      const res = await fetch(`${ENGINE_BASE}/api/llm/persist-key`, {
+      const res = await engineFetch(`${ENGINE_BASE}/api/llm/persist-key`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ providerId: llm.status?.provider, apiKey: key }),
@@ -163,7 +164,7 @@ export function AiSidePanel({
     const provider = llm.status?.provider;
     if (provider) await llm.clearKey(provider);
     try {
-      await fetch(`${ENGINE_BASE}/api/llm/persist-key`, {
+      await engineFetch(`${ENGINE_BASE}/api/llm/persist-key`, {
         method: 'DELETE',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ providerId: provider }),
@@ -183,7 +184,7 @@ export function AiSidePanel({
     const list: PlanGatePreview[] = [];
     for (const [index, op] of ops.entries()) {
       try {
-        const res = await fetch(`${ENGINE_BASE}/api/op/preview`, {
+        const res = await engineFetch(`${ENGINE_BASE}/api/op/preview`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
@@ -287,7 +288,7 @@ export function AiSidePanel({
     if (!doc) return;
     setExecuting(true);
     try {
-      const res = await fetch(`${ENGINE_BASE}/api/op/execute`, {
+      const res = await engineFetch(`${ENGINE_BASE}/api/op/execute`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({

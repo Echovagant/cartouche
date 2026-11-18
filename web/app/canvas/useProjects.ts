@@ -21,6 +21,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { ENGINE_BASE } from '../engine-base';
+import { engineFetch } from '../engine-auth';
 import type { ProjectManifest, ProjectOutput, ProjectRef, ProjectSummary } from './types';
 
 /**
@@ -75,7 +76,7 @@ async function readErrorMessage(res: Response): Promise<string> {
 /** 统一的请求入口：把"连不上"翻译成能照着做的话 */
 async function request(url: string, init?: RequestInit): Promise<Response> {
   try {
-    return await fetch(url, init);
+    return await engineFetch(url, init);
   } catch (err) {
     throw new Error(
       `无法连接引擎服务 ${ENGINE_BASE}（请确认引擎已经启动）：${(err as Error).message}`,

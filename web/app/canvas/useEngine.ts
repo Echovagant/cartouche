@@ -31,6 +31,7 @@ import type {
   RasterGrid,
 } from './types';
 import { ENGINE_BASE } from '../engine-base';
+import { engineFetch, withEngineToken } from '../engine-auth';
 
 /** 引擎健康检查的返回体：画布据此判断"引擎在不在、能不能干活" */
 export interface EngineInfo {
@@ -196,7 +197,7 @@ export interface EngineApi {
 async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
   let res: Response;
   try {
-    res = await fetch(url, init);
+    res = await engineFetch(url, init);
   } catch (err) {
     throw new Error(
       `无法连接引擎服务 ${ENGINE_BASE}（请确认已运行 npm run dev:server）：${(err as Error).message}`,
@@ -378,7 +379,7 @@ export function useEngine(root?: string | null): EngineApi {
       if (options.stretch) params.set('stretch', options.stretch);
       // root 必须进查询串（不是 body）：这张图是 MapLibre 用 <img> 直接拉的
       if (root) params.set('root', root);
-      return `${ENGINE_BASE}/api/render/raster.png?${params.toString()}`;
+      return withEngineToken(`${ENGINE_BASE}/api/render/raster.png?${params.toString()}`);
     },
     [root],
   );
@@ -386,7 +387,7 @@ export function useEngine(root?: string | null): EngineApi {
   const fetchCompatReport = useCallback(
     (path: string) =>
       run('report', async () => {
-        const res = await fetch(`${ENGINE_BASE}/api/report/compat`, {
+        const res = await engineFetch(`${ENGINE_BASE}/api/report/compat`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           // root 为空时**不要**带这个键：不带才是"相对默认根"的语义
@@ -410,7 +411,7 @@ export function useEngine(root?: string | null): EngineApi {
   const exportPdf = useCallback(
     (payload: PdfPayload) =>
       run('export', async () => {
-        const res = await fetch(`${ENGINE_BASE}/api/export/pdf`, {
+        const res = await engineFetch(`${ENGINE_BASE}/api/export/pdf`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify(payload),
@@ -479,7 +480,7 @@ export function useEngine(root?: string | null): EngineApi {
   const previewOp = useCallback(
     (op: EditOp) =>
       run('preview', async () => {
-        const res = await fetch(`${ENGINE_BASE}/api/op/preview`, {
+        const res = await engineFetch(`${ENGINE_BASE}/api/op/preview`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ op: op.op, params: op.params, ...(root ? { root } : {}) }),
@@ -514,7 +515,7 @@ export function useEngine(root?: string | null): EngineApi {
   const executeOp = useCallback(
     (op: EditOp) =>
       run('execute', async () => {
-        const res = await fetch(`${ENGINE_BASE}/api/op/execute`, {
+        const res = await engineFetch(`${ENGINE_BASE}/api/op/execute`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({

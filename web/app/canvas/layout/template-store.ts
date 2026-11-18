@@ -15,6 +15,7 @@ import {
   type SheetLayout,
 } from './types.ts';
 import { ENGINE_BASE } from '../../engine-base.ts';
+import { engineFetch } from '../../engine-auth.ts';
 
 /** 模板目录（相对项目根） */
 export const TEMPLATE_DIR = '.cartouche/templates';
@@ -71,7 +72,7 @@ function requester(options: TemplateStoreOptions | undefined): {
 } {
   return {
     base: options?.base ?? ENGINE_BASE,
-    fetchImpl: options?.fetchImpl ?? globalThis.fetch,
+    fetchImpl: options?.fetchImpl ?? engineFetch,
   };
 }
 

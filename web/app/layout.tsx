@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from 'next';
 import localFont from 'next/font/local';
 import './globals.css';
+import { TokenBoot } from './TokenBoot';
 
 /**
  * 字体自托管（next/font/local）。
@@ -151,7 +152,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <style>{'.reveal{opacity:1 !important}'}</style>
         </noscript>
       </head>
-      <body className="grain min-h-[100dvh] bg-paper font-sans text-ink antialiased">{children}</body>
+      <body className="grain min-h-[100dvh] bg-paper font-sans text-ink antialiased">
+        <TokenBoot />
+        {children}
+      </body>
     </html>
   );
 }

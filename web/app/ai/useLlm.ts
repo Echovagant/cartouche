@@ -16,6 +16,7 @@
 import { useCallback, useState } from 'react';
 import { classifyPlanFailure, type PlanFailure } from './failures';
 import { ENGINE_BASE } from '../engine-base';
+import { engineFetch } from '../engine-auth';
 
 /** 密钥来源：none = 还没配；env = 启动脚本注入；session = 这次会话里粘贴的 */
 export type LlmSource = 'none' | 'env' | 'session';
@@ -95,7 +96,7 @@ export type LlmResult<T> =
 async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
   let res: Response;
   try {
-    res = await fetch(url, init);
+    res = await engineFetch(url, init);
   } catch (err) {
     throw new Error(
       `无法连接引擎服务 ${ENGINE_BASE}（请确认已运行 npm run dev:server）：${(err as Error).message}`,
@@ -199,7 +200,7 @@ export interface PlanPayload {
 async function postJson<T>(url: string, body: unknown): Promise<{ status: number; body: T | null }> {
   let res: Response;
   try {
-    res = await fetch(url, {
+    res = await engineFetch(url, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),

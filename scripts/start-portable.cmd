@@ -40,6 +40,14 @@ set "PATH=%GDAL_BIN%;%PATH%"
 set "ENGINE_PORT=8787"
 set "ENGINE_HOST=127.0.0.1"
 
+REM 本机访问令牌：每次启动随机生成，只经环境变量传给引擎与浏览器地址，不落盘。
+for /f "usebackq delims=" %%T in (`powershell -NoProfile -Command "[guid]::NewGuid().ToString('N')"`) do set "CARTOUCHE_ENGINE_TOKEN=%%T"
+if not defined CARTOUCHE_ENGINE_TOKEN (
+  echo   [无法启动] 没能生成本机访问令牌（PowerShell 不可用）。
+  pause
+  exit /b 1
+)
+
 REM ── 2. 端口占用检查 ─────────────────────────────────────────────────────
 REM 端口被占时静默失败是最糟的：用户看到的是"打不开"，不知道该怎么办。
 call :port_busy 8787
@@ -72,7 +80,7 @@ start "Cartouche 画布" /D "%CD%" cmd /k ""%NODE%" "%CD%\scripts\serve-static.m
 REM ── 6. 等引擎真正就绪，再开浏览器 ─────────────────────────────────────
 REM 立刻开浏览器的话，第一次打开会看到"连不上引擎" —— 那是"还没起来"，
 REM 不是"坏了"。所以先等健康检查通过。
-"%NODE%" -e "const u='http://127.0.0.1:8787/api/health';const t=Date.now();(async()=>{for(;;){try{const r=await fetch(u);if(r.ok)return 0}catch(e){}if(Date.now()-t>30000)return 1;await new Promise(r=>setTimeout(r,300))}})().then(c=>process.exit(c))"
+"%NODE%" -e "const u='http://127.0.0.1:8787/api/ping';const t=Date.now();(async()=>{for(;;){try{const r=await fetch(u);if(r.ok)return 0}catch(e){}if(Date.now()-t>30000)return 1;await new Promise(r=>setTimeout(r,300))}})().then(c=>process.exit(c))"
 if errorlevel 1 goto :engine_timeout
 
 echo.
@@ -91,7 +99,7 @@ echo   关掉：在弹出的两个命令行窗口里按 Ctrl+C，或直接关掉
 echo   ------------------------------------------------------------
 echo.
 
-start "" "http://127.0.0.1:8080/canvas.html"
+start "" "http://127.0.0.1:8080/canvas.html#t=%CARTOUCHE_ENGINE_TOKEN%"
 pause
 exit /b 0
 

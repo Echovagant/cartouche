@@ -6,6 +6,7 @@
  * `roots.ts` 就得 `from './index.ts'` 引入，形成循环依赖。
  */
 import { promises as fs } from 'node:fs';
+import { realpathSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, normalize, resolve, sep } from 'node:path';
 import { NotFoundError, OccupiedError, PathEscapeError, existsFromErrorCode } from './errors.ts';
 import type { FileStat, WorkspaceAdapter } from './types.ts';
@@ -42,6 +43,29 @@ function insideRoot(root: string, candidate: string): boolean {
 }
 
 /**
+ * 取路径的**真实**位置；路径不存在时，逐级向上找到最近的已存在祖先。
+ *
+ * 为什么需要：字符串前缀比较挡不住 junction / 符号链接。
+ * 工作区里放一个指向 C:\ 的 junction，`insideRoot` 会认为它在根内，
+ * 实际读写却落在工作区外。这里把两边都换成真实路径再比。
+ */
+function realpathNearest(input: string): string {
+  let current = input;
+  const tail: string[] = [];
+  for (;;) {
+    try {
+      const real = realpathSync.native(current);
+      return tail.length > 0 ? join(real, ...[...tail].reverse()) : real;
+    } catch {
+      const parent = dirname(current);
+      if (parent === current) return input;
+      tail.push(basename(current));
+      current = parent;
+    }
+  }
+}
+
+/**
  * 本地文件夹工作区：单机版的主用实现。
  *
  * 所有路径都先过 resolve()：不在根下的一律 PathEscapeError。
@@ -53,7 +77,7 @@ export class LocalFolderStore implements WorkspaceAdapter {
   readonly root: string;
 
   constructor(root: string) {
-    this.root = resolve(root);
+    this.root = realpathNearest(resolve(root));
   }
 
 /**
@@ -71,6 +95,14 @@ export class LocalFolderStore implements WorkspaceAdapter {
     if (!insideRoot(this.root, full)) {
       const err = new PathEscapeError(path);
       err.message = `路径越界：${path}（不在已登记的工作区根之下：${this.root}）`;
+      throw err;
+    }
+    // 字符串在根内还不够：junction / 符号链接可能指向根外。
+    // 换成真实路径再判一次；不存在的新文件按最近已存在祖先解析。
+    const real = realpathNearest(full);
+    if (!insideRoot(this.root, real)) {
+      const err = new PathEscapeError(path);
+      err.message = `路径越界：${path}（实际位置 ${real} 不在已登记的工作区根之下：${this.root}）`;
       throw err;
     }
     return full;

@@ -36,6 +36,7 @@ import {
   type PlanDocument,
 } from '@cartouche/engine';
 import { currentProviderId, resolveCredentials, scrub } from './llm.ts';
+import { assertSafeLlmBaseUrl } from './llm-endpoint.ts';
 
 /* ────────────────────────────────────────────────────────────
  * §1 上下文裁剪：白名单
@@ -1268,7 +1269,8 @@ export interface ChatJsonResult {
  */
 export async function chatJson(options: ChatJsonOptions): Promise<ChatJsonResult> {
   const doFetch = options.fetchImpl ?? defaultFetch;
-  const url = `${options.baseUrl.replace(/\/+$/, '')}/chat/completions`;
+  // 发送前再校验一次：就算调用方绕过了保存时的检查，也不让 http:// 外网地址拿到密钥。
+  const url = `${assertSafeLlmBaseUrl(options.baseUrl).replace(/\/+$/, '')}/chat/completions`;
   const payload: Record<string, unknown> = {
     model: options.model,
     messages: [{ role: 'user', content: options.prompt }],

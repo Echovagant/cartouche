@@ -24,6 +24,7 @@
 import { mkdirSync, existsSync, rmSync, statSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
+import { assertSafeLlmBaseUrl } from './llm-endpoint.ts';
 import {
   redactSecrets,
   MINIMAX_MODELS,
@@ -245,7 +246,7 @@ export function setActiveProvider(providerId: string): void {
 
 /** 设置自定义端点 */
 export function setCustomBaseUrl(url: string): void {
-  customBaseUrl = url.trim();
+  customBaseUrl = assertSafeLlmBaseUrl(url);
 }
 
 /** 记下用户在界面上选的模型 */
