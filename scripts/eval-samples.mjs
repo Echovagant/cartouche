@@ -193,10 +193,14 @@ function redactPaths(value) {
 /** 建临时目录（落在 D 盘，不用系统临时目录）。 */
 function mkdtemp(prefix) {
   mkdirSync(TMP_ROOT, { recursive: true });
-  return join(
+  const dir = join(
     TMP_ROOT,
     `${prefix}${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
   );
+  // 目录本身必须真的建出来：引擎的 writeRasterPixels 不代建父目录，
+  // 不建的话 gdal_translate 建输出文件时直接 ENOENT（roundtrip 假红的根因）。
+  mkdirSync(dir, { recursive: true });
+  return dir;
 }
 
 /**
