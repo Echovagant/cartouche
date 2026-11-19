@@ -5,6 +5,14 @@
  * 依赖 `index.ts`，否则 re-export 链条会绕成循环依赖。
  */
 
+/**
+ * 文件被占用，无法写入。
+ *
+ * 单独一个错误类型：Windows 上杀软实时扫描、索引器或其它 GIS 软件短暂独占
+ * 目标文件时（EPERM / EBUSY / EACCES），上层要把它当"这会儿改不了"而不是
+ * "文件坏了"来提示——等占用解除后重试即可。写回前的占用检测
+ * （assertWritable）与写回时的 rename 都可能抛它；cause 带原始错误供排查。
+ */
 export class OccupiedError extends Error {
   readonly path: string;
   constructor(path: string, cause?: unknown) {

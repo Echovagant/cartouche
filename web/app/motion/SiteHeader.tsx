@@ -23,6 +23,7 @@ export interface NavItem {
   readonly label: string;
 }
 
+/** 顶部导航本体：滚过 16px 获得实体底色，< 900px 时链接收进汉堡菜单；菜单打开时锁住背景滚动。 */
 export function SiteHeader({ items }: { items: readonly NavItem[] }) {
   const [open, setOpen] = useState(false);
   /**

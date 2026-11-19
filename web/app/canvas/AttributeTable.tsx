@@ -30,6 +30,7 @@ function formatValue(value: unknown): string {
   }
 }
 
+/** 属性表面板：列出选中要素的每个字段与值，多要素命中时可以切换，无选中时给引导文案。 */
 export default function AttributeTable({
   features,
   activeIndex,

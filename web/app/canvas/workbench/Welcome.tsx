@@ -23,6 +23,7 @@ export interface WelcomeProps {
   readonly onCreateFromPath: (path: string) => void;
 }
 
+/** 欢迎页本体：主行动只有一个「选一个文件夹打开」按钮，最近项目列在下面；引擎离线时给出对应的提示。 */
 export function Welcome({
   recent,
   engineOffline,

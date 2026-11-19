@@ -252,6 +252,10 @@ function is16Bit(bandTypes: readonly string[] | undefined): boolean {
 
 /**
  * 生成兼容性自检报告（Markdown）。
+ *
+ * 纯函数：输入探查结果 + 体检结果 + 操作记录，输出 Markdown；
+ * 不读文件、不联网、不抛异常——材料不全的部分降级为"未检查"，不编造。
+ * 返回的 hasBlocker 与 manualChecks 给界面用：前者拦"交差"，后者列人工确认项。
  */
 export function renderCompatReport(input: CompatReportInput): CompatReport {
   const { dataset, health } = input;

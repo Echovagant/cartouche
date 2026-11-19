@@ -30,6 +30,7 @@ export interface Gate {
   readonly body: string;
 }
 
+/** 闸门一节的本体：左边标题 sticky、右边四张卡依次叠上来；文案由 gates 传入，窄屏（<768px）退化为普通纵向列表。 */
 export function GateStack({ gates }: { gates: readonly Gate[] }) {
   const wrapRef = useRef<HTMLDivElement | null>(null);
 

@@ -44,6 +44,7 @@ const VIEWS: readonly {
   { id: 'layout', label: '出图', icon: PrinterIcon },
 ];
 
+/** 活动栏本体：项目 / 图层 / 出图三个视图的竖排开关（没打开项目时后两个点不了），底部另有 AI 工作台入口与设置。 */
 export function ActivityBar({
   activeView,
   onViewChange,

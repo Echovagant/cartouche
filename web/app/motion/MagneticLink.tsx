@@ -133,6 +133,7 @@ function useMagnetic<T extends HTMLElement>(strength: number) {
   return ref;
 }
 
+/** 磁性链接本体：鼠标靠近时被轻轻吸过去，离开即归位；只用于 <a>，吸力强度固定为 1。 */
 export function MagneticLink({
   href,
   className = '',

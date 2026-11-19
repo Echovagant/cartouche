@@ -54,6 +54,10 @@ const LABEL_SIZES = [10, 12, 14, 16, 18, 22];
 const SELECT_CLASS =
   'h-9 rounded-md border border-studio-line bg-studio-3 px-2 text-[12.5px] text-studio-ink outline-none focus:border-accent';
 
+/**
+ * 符号化面板本体：三种着色方式与标注的表单都在这里，open=false 时整个不渲染。
+ * 打开的那一刻按当前样式回填表单；此后改字段 / 色带 / 方法会即时重算颜色与断点。
+ */
 export default function SymbologyPanel({
   open,
   layerName,

@@ -83,6 +83,7 @@ const STRETCH_OPTIONS: readonly {
   },
 ];
 
+/** 工具栏本体：导出 PDF、兼容性报告、AI 工作台三个动作按钮 + 「栅格显示」分段控件；各按钮能不能点由上层算好的状态决定。 */
 export default function Toolbar({
   onExportPdf,
   onCompatReport,

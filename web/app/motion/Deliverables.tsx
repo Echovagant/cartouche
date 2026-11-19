@@ -75,6 +75,7 @@ const ITEMS: readonly Deliverable[] = [
   },
 ];
 
+/** 交付物一节的本体：三张实拍卡片；滚到视口时逐张淡入上移，系统开了减弱动效就不播。 */
 export function Deliverables() {
   const gridRef = useRef<HTMLDivElement | null>(null);
 

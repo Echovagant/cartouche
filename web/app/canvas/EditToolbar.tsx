@@ -92,6 +92,11 @@ const METHOD_LABEL: Record<LevelsParams['method'], string> = {
   manual: '手动',
 };
 
+/**
+ * 工具条本体：四个互斥工具按钮 + 当前工具的参数区（颜色 / 笔宽 / 框选动作 / 调色参数）。
+ *
+ * 按钮置灰与否由 blockedByTool 逐工具判定；状态全部由上层持有，这里只发意图。
+ */
 export default function EditToolbar({
   tool,
   onToolChange,

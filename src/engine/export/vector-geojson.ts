@@ -108,7 +108,12 @@ function displayCapBytes(): number {
 const MAX_DISPLAY_BYTES = displayCapBytes();
 
 /**
- * 把矢量转成 GeoJSON 对象。
+ * 把矢量转成 GeoJSON FeatureCollection。
+ *
+ * 单图层一次转换；多图层容器先落中间 GPKG 再逐层转出合并，
+ * 超过 20 层只装第一个有内容的图层（说明写进 note）。
+ * 体积闸按层累计：越过 MAX_DISPLAY_BYTES 就抛 VectorConvertError
+ * （code='payload-too-large'）；指定的 layers 一个都对应不上时整体报错，不静默跳过。
  */
 export async function vectorToGeoJson(
   loc: GdalLocation,

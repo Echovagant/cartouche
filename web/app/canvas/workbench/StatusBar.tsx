@@ -18,6 +18,7 @@ export interface StatusBarProps {
   readonly selectedCount: number;
 }
 
+/** 状态栏本体：引擎连接、当前项目、图层数与选中数都在这一条上；没有项目时显示「还没打开项目」。 */
 export function StatusBar({
   engineOffline,
   engineError,

@@ -36,6 +36,7 @@ export interface SettingsModalProps {
 
 const BOOT_MODES: readonly BootAnimationMode[] = ['always', 'first-visit', 'never'];
 
+/** 设置弹窗本体：四项偏好在这里读写；打开时先向引擎核对当前生效值再回填，保存后立即生效并同步到引擎。 */
 export function SettingsModal({ open, onClose }: SettingsModalProps) {
   const [engineBase, setEngineBase] = useState('');
   const [reduceMotion, setReduceMotion] = useState(false);

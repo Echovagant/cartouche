@@ -24,6 +24,7 @@ export interface ProjectSidebarProps {
   readonly onCreateFromPath: (path: string) => void;
 }
 
+/** 项目视图本体：主行动是弹系统文件夹选择框，手粘路径是退路；选完由上层决定「有清单就打开、没清单就新建」。 */
 export function ProjectSidebar({
   recent,
   busy,
