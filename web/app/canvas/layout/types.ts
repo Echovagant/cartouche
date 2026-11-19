@@ -195,16 +195,6 @@ export function pageSizeMm(page: SheetPage): { readonly width: number; readonly 
     : { width: short, height: long };
 }
 
-/** 纸张在给定 DPI 下的像素尺寸 */
-export function pageSizePx(
-  page: SheetPage,
-  dpi: number,
-): { readonly width: number; readonly height: number } {
-  const mm = pageSizeMm(page);
-  const px = (v: number): number => Math.round((v / 25.4) * dpi);
-  return { width: px(mm.width), height: px(mm.height) };
-}
-
 /** 版式的字段顺序：标题栏单元格按这个顺序排 */
 export const TITLE_FIELD_ORDER = [
   'unit',
