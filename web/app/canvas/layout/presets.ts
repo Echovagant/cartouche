@@ -114,3 +114,8 @@ export const BUILTIN_TEMPLATES: readonly BuiltinTemplate[] = [
     layout: TEMPLATE_A4_SIMPLE,
   },
 ];
+
+/** 按名字取内置模板；没有就返回 null */
+export function findBuiltinTemplate(name: string): BuiltinTemplate | null {
+  return BUILTIN_TEMPLATES.find((t) => t.name === name) ?? null;
+}

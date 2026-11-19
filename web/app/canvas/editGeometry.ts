@@ -35,6 +35,52 @@ export function isWgs84Grid(grid: {
 }
 
 /**
+ * 经纬度 → 原生像元（仿射反算）。
+ *
+ * ⚠️ 这条公式现在只是**参照实现**：真正的换算由引擎做
+ * （`POST /api/raster/pixels`），因为浏览器里没有投影能力，
+ * 非 4326 的栅格必须由引擎把经纬度投影到原生坐标系再反算。
+ *
+ * 保留它有两个用处：
+ *   1. 引擎那份（`src/engine/raster/pixel-query.ts` 的 `pixelFromNative`）
+ *      与它**逐字一致** —— 4326 的栅格两边必须给出同一个像元坐标；
+ *   2. 单测拿它当"旧算法"的对照物（见 test/raster-pixel-query.test.mjs）。
+ *
+ * geotransform = [originX, pixelWidth, rotX, originY, rotY, pixelHeight]，GDAL 的行列序：
+ *   x = originX + col*pixelWidth + row*rotX
+ *   y = originY + col*rotY   + row*pixelHeight
+ * 反解用行列式。北-up 的栅格（rotX = rotY = 0）退化成
+ *   col = (x - originX) / pixelWidth
+ *   row = (y - originY) / pixelHeight
+ * 行号向下增长（pixelHeight 通常是负的），与"左上原点"的约定一致。
+ */
+export function pixelFromLngLat(
+  grid: { readonly geotransform: readonly number[] },
+  lng: number,
+  lat: number,
+): PixelPoint | null {
+  const [ox, pw, rx, oy, ry, ph] = grid.geotransform;
+  if (
+    ox === undefined ||
+    pw === undefined ||
+    rx === undefined ||
+    oy === undefined ||
+    ry === undefined ||
+    ph === undefined
+  ) {
+    return null;
+  }
+  const det = pw * ph - rx * ry;
+  if (!Number.isFinite(det) || Math.abs(det) < 1e-15) return null;
+  const dx = lng - ox;
+  const dy = lat - oy;
+  const col = (ph * dx - rx * dy) / det;
+  const row = (-ry * dx + pw * dy) / det;
+  if (!Number.isFinite(col) || !Number.isFinite(row)) return null;
+  return { col, row };
+}
+
+/**
  * 视窗四角的经纬度（左下、右下、右上、左上）。
  *
  * 顺序与屏幕位置一一对应：

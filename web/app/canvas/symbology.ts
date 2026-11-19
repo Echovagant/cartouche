@@ -84,6 +84,11 @@ export const COLOR_RAMPS: readonly { readonly id: string; readonly label: string
 /** 默认色带 */
 export const DEFAULT_RAMP = COLOR_RAMPS[0]!;
 
+/** 配色方案的中文名 */
+export function rampLabel(id: string): string {
+  return COLOR_RAMPS.find((r) => r.id === id)?.label ?? id;
+}
+
 /**
  * 按类别数从色带里等比取色。
  *
