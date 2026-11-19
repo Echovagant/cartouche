@@ -374,6 +374,53 @@ function toCrlf(text) {
 }
 
 /**
+ * UTF-8 文本 → GBK（CP936）字节。
+ *
+ * 为什么出包要转：cmd.exe 在中文 Windows 的默认控制台（CP936）下读
+ * 「UTF-8 + 中途 chcp 65001」的长批处理会分块读取错位，注释碎片被当成
+ * 命令执行（2026-11-20 便携包冒烟实测：引擎窗口因此起不来，与 2026-10-24
+ * 那次 LF 错位是同一类病，这次在编码维度）。仓库里的 .cmd 保持 UTF-8
+ * （过 scan:encoding 的 U+FFFD 扫描），GBK 转码只发生在出包这一步。
+ *
+ * 编码用反查表：TextDecoder('gbk') 遍历全部合法双字节组合建「字符 → 字节」
+ * 映射，与引擎 vector/encoding.ts 的解码表同一技法；建表几毫秒，懒加载一次。
+ * 映射不到的字符直接抛错 —— 宁可出包失败，不出一份乱码启动器。
+ */
+let gbkReverse = null;
+function toGbk(text) {
+  if (!gbkReverse) {
+    gbkReverse = new Map();
+    const dec = new TextDecoder('gbk');
+    // 单字节区从 0x00 建到 0x7E：除了可见 ASCII，还要覆盖 CRLF/TAB 这些控制符
+    //（文本进来前已 toCrlf，\r \n 必须能映射，否则出包直接炸）
+    for (let b = 0x00; b < 0x7f; b++) gbkReverse.set(String.fromCharCode(b), Uint8Array.of(b));
+    const pair = new Uint8Array(2);
+    for (let lead = 0x81; lead <= 0xfe; lead++) {
+      for (let trail = 0x40; trail <= 0xfe; trail++) {
+        if (trail === 0x7f) continue;
+        pair[0] = lead;
+        pair[1] = trail;
+        const s = dec.decode(pair);
+        if (s.length === 1 && s !== '\uFFFD' && !gbkReverse.has(s)) {
+          gbkReverse.set(s, Uint8Array.of(lead, trail));
+        }
+      }
+    }
+  }
+  const chunks = [];
+  for (const ch of text) {
+    const bytes = gbkReverse.get(ch);
+    if (!bytes) {
+      throw new Error(
+        `[pack] 字符 ${JSON.stringify(ch)} 映射不到 GBK，.cmd 出不了包（请改写该字符）`,
+      );
+    }
+    chunks.push(bytes);
+  }
+  return Buffer.concat(chunks);
+}
+
+/**
  * 塞到 README / QUICKSTART 开头的「便携包用法」。
  *
  * 为什么要在包里的文档上加这一段：仓库里的 README 讲的是开发流程
@@ -396,7 +443,6 @@ const PORTABLE_DOC_HEADER = `> **这是便携包**：不用装 Node、不用装 
 
 /** 包根目录那个双击入口：只做转发，逻辑都在 scripts\\start-portable.cmd 里 */
 const ROOT_LAUNCHER = `@echo off
-chcp 65001 >nul
 call "%~dp0scripts\\start-portable.cmd" %*
 `;
 
@@ -555,9 +601,10 @@ async function main() {
       return;
     }
     let data = await readFile(abs);
-    // .cmd / .ps1 必须是 CRLF（见 toCrlf 的说明）
+    // .cmd / .ps1 必须是 CRLF（见 toCrlf 的说明）；.cmd 还要转 GBK（见 toGbk 的说明）
     if (rel.endsWith('.cmd') || rel.endsWith('.ps1')) {
-      data = Buffer.from(toCrlf(data.toString('utf8')), 'utf8');
+      const text = toCrlf(data.toString('utf8'));
+      data = rel.endsWith('.cmd') ? toGbk(text) : Buffer.from(text, 'utf8');
     }
     entries.push({ name: `${TOP}/${rel}`, data });
     bump('脚本', data.length);
