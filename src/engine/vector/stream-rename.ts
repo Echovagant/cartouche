@@ -19,7 +19,14 @@ import type { WorkspaceAdapter } from '../workspace/index.ts';
 import { tools } from '../gdal/runner.ts';
 import { VectorError } from './types.ts';
 import { probeLayer } from './read.ts';
-import { normalizeEncoding, readCpgEncoding, type SupportedEncoding } from './encoding.ts';
+import {
+  decodeText,
+  encodeText,
+  encodingFromLdid,
+  normalizeEncoding,
+  readCpgEncoding,
+  type SupportedEncoding,
+} from './encoding.ts';
 import { backupGpkg, gpkgCheckpoint, quoteIdent, quoteLiteral } from './gpkg-native.ts';
 
 export type StreamRenameKind = 'gpkg' | 'shp';
@@ -135,82 +142,6 @@ async function renameGpkg(
 
 /* ── Shapefile：字段名所在的 .dbf 头 ─────────────────────────── */
 
-/** GBK 反查表（字符 → 双字节）；首次用到时才建，一次解码约 1ms */
-let gbkEncodeMapCache: Map<string, readonly [number, number]> | null = null;
-
-function gbkEncodeMap(): Map<string, readonly [number, number]> {
-  if (gbkEncodeMapCache) return gbkEncodeMapCache;
-  const leads: number[] = [];
-  for (let b = 0x81; b <= 0xfe; b += 1) leads.push(b);
-  const trails: number[] = [];
-  for (let b = 0x40; b <= 0xfe; b += 1) if (b !== 0x7f) trails.push(b);
-  const bytes = Buffer.alloc(leads.length * trails.length * 2);
-  let i = 0;
-  for (const lead of leads) {
-    for (const trail of trails) {
-      bytes[i] = lead;
-      bytes[i + 1] = trail;
-      i += 2;
-    }
-  }
-  // 一段连续的 GBK 双字节序列：每个双字节恰好解出一个 BMP 字符
-  const text = new TextDecoder('gbk').decode(bytes);
-  const map = new Map<string, readonly [number, number]>();
-  if (text.length === leads.length * trails.length) {
-    let p = 0;
-    for (const ch of text) {
-      if (ch !== '\uFFFD' && !map.has(ch)) map.set(ch, [bytes[p]!, bytes[p + 1]!]);
-      p += 2;
-    }
-  }
-  gbkEncodeMapCache = map;
-  return map;
-}
-
-/** 按文件编码把字段名写成字节（字段名必须能在这个编码里表示） */
-function encodeFieldName(name: string, encoding: SupportedEncoding): Buffer {
-  if (encoding === 'UTF-8') return Buffer.from(name, 'utf8');
-  if (encoding === 'LATIN1') {
-    for (const ch of name) {
-      if ((ch.codePointAt(0) ?? 0) > 0xff) {
-        throw new VectorError(`「${ch}」不能在 LATIN1 编码的字段名里表示`);
-      }
-    }
-    return Buffer.from(name, 'latin1');
-  }
-  const map = gbkEncodeMap();
-  const out: number[] = [];
-  for (const ch of name) {
-    const code = ch.codePointAt(0) ?? 0;
-    if (code < 0x80) out.push(code);
-    else if (ch === '€') out.push(0x80);
-    else {
-      const pair = map.get(ch);
-      if (!pair) throw new VectorError(`「${ch}」不能在 GBK 编码的字段名里表示`);
-      out.push(pair[0], pair[1]);
-    }
-  }
-  return Buffer.from(out);
-}
-
-/** 严格解码字段名；解不开返回 null */
-function decodeFieldName(bytes: Buffer, encoding: SupportedEncoding): string | null {
-  const label = encoding === 'GBK' ? 'gbk' : encoding === 'LATIN1' ? 'latin1' : 'utf-8';
-  try {
-    return new TextDecoder(label, { fatal: true }).decode(bytes);
-  } catch {
-    return null;
-  }
-}
-
-/** .cpg 缺失时按 DBF 头的语言驱动字节（第 29 字节）猜编码 */
-function encodingFromLdid(head: Buffer): SupportedEncoding {
-  const ldid = head.length > 29 ? head[29]! : 0;
-  if (ldid === 0x4d || ldid === 0x7a) return 'GBK';
-  if (ldid === 0x03 || ldid === 0x57 || ldid === 0x58 || ldid === 0x59) return 'LATIN1';
-  return 'UTF-8';
-}
-
 /**
  * 认字段名的编码：先看 .cpg，再看 LDID；最后用真实字节验证一遍。
  *
@@ -223,13 +154,15 @@ function pickNameEncoding(
   head: Buffer,
   rawNames: readonly Buffer[],
 ): { encoding: SupportedEncoding; names: readonly string[] } {
-  const preferred = normalizeEncoding(readCpgEncoding(shpAbs)) ?? encodingFromLdid(head);
+  const preferred =
+    normalizeEncoding(readCpgEncoding(shpAbs)) ??
+    encodingFromLdid(head.length > 29 ? head[29]! : 0);
   const order: SupportedEncoding[] = [preferred];
   for (const enc of ['UTF-8', 'GBK', 'LATIN1'] as const) {
     if (!order.includes(enc)) order.push(enc);
   }
   for (const encoding of order) {
-    const names = rawNames.map((raw) => decodeFieldName(raw, encoding));
+    const names = rawNames.map((raw) => decodeText(raw, encoding, true));
     if (names.every((n): n is string => n !== null)) {
       return { encoding, names };
     }
@@ -242,7 +175,7 @@ function truncateFieldName(name: string, encoding: SupportedEncoding): string {
   let used = 0;
   let out = '';
   for (const ch of name) {
-    const size = encodeFieldName(ch, encoding).length;
+    const size = encodeText(ch, encoding).length;
     if (used + size > DBF_NAME_BYTES) break;
     out += ch;
     used += size;
@@ -303,7 +236,7 @@ async function renameShapefile(
       finalNames[index] = expected;
       // 11 字节的槽要整体覆盖：旧名字更长时，残留字节会被当成名字的一部分
       const slot = Buffer.alloc(11);
-      encodeFieldName(expected, encoding).copy(slot);
+      encodeText(expected, encoding).copy(slot);
       slot.copy(descriptors, index * 32);
     }
 

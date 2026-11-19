@@ -25,6 +25,8 @@ import type { VectorOpDeps } from '../vector/query.ts';
 import { layerSizeBytes, rewriteSizeError } from '../vector/limits.ts';
 import { nativeSqlKind } from '../vector/gpkg-native.ts';
 import { gpkgStreamDelete } from '../vector/stream-gpkg-edit.ts';
+import { isShapefilePath } from '../vector/dbf.ts';
+import { shpStreamDelete } from '../vector/stream-shp-edit.ts';
 import {
   columnTypeChanges,
   compileWhere,
@@ -79,13 +81,27 @@ export async function runFeatureDelete(
   const info = await probeLayer(deps.loc, abs);
   const size = layerSizeBytes(abs);
   const oversize = size === null ? null : rewriteSizeError(size);
-  const streamed = oversize !== null && nativeSqlKind(abs) === 'gpkg';
-  if (oversize && !streamed) throw new VectorError(oversize);
+  const gpkgStreamed = oversize !== null && nativeSqlKind(abs) === 'gpkg';
+  const shpStreamed = oversize !== null && isShapefilePath(abs);
+  if (oversize && !gpkgStreamed && !shpStreamed) throw new VectorError(oversize);
   const whereNode = compileWhere(where, info.fields);
 
   // 超大 GeoPackage：走原生 SQL（按条件 DELETE，不读全量要素）
-  if (streamed) {
+  if (gpkgStreamed) {
     return gpkgStreamDelete(deps.loc, deps.store, {
+      targetRel,
+      absPath: abs,
+      info,
+      whereSource: where,
+      whereNode,
+      keep,
+      dryRun,
+    });
+  }
+
+  // 超大 Shapefile：按 DBF 删除标记（不读几何）
+  if (shpStreamed) {
+    return shpStreamDelete(deps.loc, deps.store, {
       targetRel,
       absPath: abs,
       info,

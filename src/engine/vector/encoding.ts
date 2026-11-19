@@ -278,3 +278,84 @@ export function encodingForWriteback(shpPath: string): SupportedEncoding {
   }
   return 'UTF-8';
 }
+
+/* ── 文本编码 / 解码（DBF 字段名与属性值共用） ───────────────── */
+
+/** GBK 反查表（字符 → 双字节）；首次用到时才建，一次解码约 1ms */
+let gbkEncodeMapCache: Map<string, readonly [number, number]> | null = null;
+
+function gbkEncodeMap(): Map<string, readonly [number, number]> {
+  if (gbkEncodeMapCache) return gbkEncodeMapCache;
+  const leads: number[] = [];
+  for (let b = 0x81; b <= 0xfe; b += 1) leads.push(b);
+  const trails: number[] = [];
+  for (let b = 0x40; b <= 0xfe; b += 1) if (b !== 0x7f) trails.push(b);
+  const bytes = Buffer.alloc(leads.length * trails.length * 2);
+  let i = 0;
+  for (const lead of leads) {
+    for (const trail of trails) {
+      bytes[i] = lead;
+      bytes[i + 1] = trail;
+      i += 2;
+    }
+  }
+  // 一段连续的 GBK 双字节序列：每个双字节恰好解出一个 BMP 字符
+  const text = new TextDecoder('gbk').decode(bytes);
+  const map = new Map<string, readonly [number, number]>();
+  if (text.length === leads.length * trails.length) {
+    let p = 0;
+    for (const ch of text) {
+      if (ch !== '\uFFFD' && !map.has(ch)) map.set(ch, [bytes[p]!, bytes[p + 1]!]);
+      p += 2;
+    }
+  }
+  gbkEncodeMapCache = map;
+  return map;
+}
+
+/** 按 DBF 头的语言驱动字节（第 29 字节）猜编码 */
+export function encodingFromLdid(ldid: number): SupportedEncoding {
+  if (ldid === 0x4d || ldid === 0x7a) return 'GBK';
+  if (ldid === 0x03 || ldid === 0x57 || ldid === 0x58 || ldid === 0x59) return 'LATIN1';
+  return 'UTF-8';
+}
+
+/** 按图层的属性表编码把文字写成字节。 */
+export function encodeText(text: string, encoding: SupportedEncoding): Buffer {
+  if (encoding === 'UTF-8') return Buffer.from(text, 'utf8');
+  if (encoding === 'LATIN1') {
+    for (const ch of text) {
+      if ((ch.codePointAt(0) ?? 0) > 0xff) {
+        throw new VectorError(`「${ch}」不能在 LATIN1 编码里表示`);
+      }
+    }
+    return Buffer.from(text, 'latin1');
+  }
+  const map = gbkEncodeMap();
+  const out: number[] = [];
+  for (const ch of text) {
+    const code = ch.codePointAt(0) ?? 0;
+    if (code < 0x80) out.push(code);
+    else if (ch === '€') out.push(0x80);
+    else {
+      const pair = map.get(ch);
+      if (!pair) throw new VectorError(`「${ch}」不能在 GBK 编码里表示`);
+      out.push(pair[0], pair[1]);
+    }
+  }
+  return Buffer.from(out);
+}
+
+/** 按图层的属性表编码解码一段字节；fatal 时解不开就返回 null */
+export function decodeText(
+  bytes: Buffer,
+  encoding: SupportedEncoding,
+  fatal = false,
+): string | null {
+  const label = encoding === 'GBK' ? 'gbk' : encoding === 'LATIN1' ? 'latin1' : 'utf-8';
+  try {
+    return new TextDecoder(label, { fatal }).decode(bytes);
+  } catch {
+    return null;
+  }
+}

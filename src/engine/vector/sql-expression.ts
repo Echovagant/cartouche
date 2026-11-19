@@ -12,6 +12,19 @@
  *  - 除法强制转成浮点（SQLite 的 `5 / 2` 是整数除法，和引擎的 2.5 不一样）；
  *  - 除法分母为 0、函数参数为空值，也在写盘前数一遍，和普通路径一样报错。
  *
+ * ## 求值守卫（guard）
+ *
+ * 引擎的 AND / OR 是短路的：左边为假时右边根本不求值。条件里带函数时，
+ * 这个差别会变成"普通路径报错、数据库静默跳过"。所以编译每个节点时都带着
+ * 一条 SQL 守卫，表示"这一节点在什么情况下会真的被求值"：
+ *
+ *  - AND 的右边：`左边 IS NOT FALSE`（真或未知才继续算）；
+ *  - OR 的右边：`左边 IS NOT TRUE`（假或未知才继续算）；
+ *  - 其它节点：沿用当前守卫。
+ *
+ * 类型异常、空参数、除数为 0 的检查项都带着这条守卫，调用方按守卫 COUNT，
+ * 就能做到与逐行求值同一套口径，不会误伤被短路掉的行。
+ *
  * 支持的范围与限制写在各分支的注释里。超出范围的写法会明确报错，
  * 不会退化成一条"看着能跑"的 SQL。
  */
@@ -28,12 +41,21 @@ export interface SqlFieldCheck {
   readonly name: string;
   readonly sql: string;
   readonly kind: 'number' | 'text';
+  /** 这一列在什么情况下会被求值（短路守卫） */
+  readonly guard: string;
 }
 
 /** 函数参数为空值的检查（普通路径会在第一条空值上抛错，这里提前数清楚） */
 export interface SqlNullCheck {
   readonly fn: string;
   readonly sql: string;
+  readonly guard: string;
+}
+
+/** 除法分母的检查（为 0 时普通路径会抛错） */
+export interface SqlDivisor {
+  readonly sql: string;
+  readonly guard: string;
 }
 
 /** 一次编译的上下文：列定义、AREA 伪列、检查项收集 */
@@ -41,12 +63,10 @@ export interface SqlCompileContext {
   readonly fields: readonly LayerField[];
   /** AREA 伪列的 SQL（已含平方米换算）；不启用时为 null */
   readonly areaSql: string | null;
-  /** 是否允许函数调用；超大文件的 WHERE 里不允许（避免与逐行求值的短路口径打架） */
-  readonly allowFunctions: boolean;
   readonly fieldChecks: Map<string, SqlFieldCheck>;
   readonly nullArgChecks: SqlNullCheck[];
-  /** 除法分母的 SQL（写盘前检查 0） */
-  readonly divisors: string[];
+  /** 除法分母（写盘前检查 0） */
+  readonly divisors: SqlDivisor[];
 }
 
 /** 值表达式 */
@@ -63,12 +83,10 @@ interface SqlValue {
 export function makeSqlContext(
   fields: readonly LayerField[],
   areaSql: string | null,
-  allowFunctions: boolean,
 ): SqlCompileContext {
   return {
     fields,
     areaSql,
-    allowFunctions,
     fieldChecks: new Map(),
     nullArgChecks: [],
     divisors: [],
@@ -104,6 +122,12 @@ function caseWhen(guards: readonly string[], thenSql: string): string {
   return `(CASE WHEN ${guards.join(' AND ')} THEN ${thenSql} ELSE NULL END)`;
 }
 
+/** 把两层守卫拼起来：先满足外层（这一节点被求值），再满足内层（短路） */
+function combineGuard(base: string, extra: string): string {
+  if (base === '1=1') return extra;
+  return `(${base}) AND (${extra})`;
+}
+
 function typeMismatch(left: SqlValue, right: SqlValue): VectorError {
   return new VectorError(
     `两边的类型对不上：${left.origin}是${kindName(left.kind)}，${right.origin}是${kindName(right.kind)}` +
@@ -120,7 +144,11 @@ function numberSql(value: number): string {
 }
 
 /** 引用一个真实列，并记下类型检查 */
-function fieldValue(node: Extract<ExprNode, { kind: 'field' }>, ctx: SqlCompileContext): SqlValue {
+function fieldValue(
+  node: Extract<ExprNode, { kind: 'field' }>,
+  ctx: SqlCompileContext,
+  guard: string,
+): SqlValue {
   const real = ctx.fields.find((f) => f.name.toLowerCase() === node.name.toLowerCase());
   if (!real) {
     if (ctx.areaSql !== null && node.name.toUpperCase() === 'AREA') {
@@ -136,18 +164,20 @@ function fieldValue(node: Extract<ExprNode, { kind: 'field' }>, ctx: SqlCompileC
   const kind = columnKindOf(real.type);
   const sql = quoteIdent(real.name);
   if (kind === 'integer' || kind === 'real') {
-    ctx.fieldChecks.set(real.name.toLowerCase(), {
+    ctx.fieldChecks.set(`${guard}\u0000${real.name.toLowerCase()}`, {
       name: real.name,
       sql,
       kind: 'number',
+      guard,
     });
     return { sql, kind: 'number', origin: `「${real.name}」这一列`, nullable: true };
   }
   if (kind === 'string' || kind === 'date') {
-    ctx.fieldChecks.set(real.name.toLowerCase(), {
+    ctx.fieldChecks.set(`${guard}\u0000${real.name.toLowerCase()}`, {
       name: real.name,
       sql,
       kind: 'text',
+      guard,
     });
     return { sql, kind: 'text', origin: `「${real.name}」这一列`, nullable: true };
   }
@@ -157,8 +187,8 @@ function fieldValue(node: Extract<ExprNode, { kind: 'field' }>, ctx: SqlCompileC
   );
 }
 
-/** 编译一个值节点 */
-function compileValue(node: ExprNode, ctx: SqlCompileContext): SqlValue {
+/** 编译一个值节点；guard 表示"这一节点在什么情况下会被求值" */
+function compileValue(node: ExprNode, ctx: SqlCompileContext, guard: string): SqlValue {
   switch (node.kind) {
     case 'literal': {
       const value = node.value;
@@ -190,11 +220,11 @@ function compileValue(node: ExprNode, ctx: SqlCompileContext): SqlValue {
     }
 
     case 'field':
-      return fieldValue(node, ctx);
+      return fieldValue(node, ctx, guard);
 
     case 'unary': {
       if (node.op === 'NOT') {
-        const inner = compileValue(node.operand, ctx);
+        const inner = compileValue(node.operand, ctx, guard);
         if (inner.kind !== 'bool' && inner.kind !== 'null') {
           throw new VectorError(
             `NOT 只能用在"是/不是"这种判断上：${inner.origin}是${kindName(inner.kind)}`,
@@ -210,7 +240,7 @@ function compileValue(node: ExprNode, ctx: SqlCompileContext): SqlValue {
           nullable: true,
         };
       }
-      const inner = compileValue(node.operand, ctx);
+      const inner = compileValue(node.operand, ctx, guard);
       if (inner.kind === 'null') {
         return { sql: 'NULL', kind: 'null', origin: inner.origin, nullable: true };
       }
@@ -228,22 +258,22 @@ function compileValue(node: ExprNode, ctx: SqlCompileContext): SqlValue {
     }
 
     case 'binary':
-      return compileBinary(node, ctx);
+      return compileBinary(node, ctx, guard);
 
     case 'call':
-      return compileCall(node, ctx);
+      return compileCall(node, ctx, guard);
 
     case 'in':
-      return compileIn(node, ctx);
+      return compileIn(node, ctx, guard);
 
     case 'between':
-      return compileBetween(node, ctx);
+      return compileBetween(node, ctx, guard);
 
     case 'like':
-      return compileLike(node, ctx);
+      return compileLike(node, ctx, guard);
 
     case 'isnull': {
-      const inner = compileValue(node.operand, ctx);
+      const inner = compileValue(node.operand, ctx, guard);
       return {
         sql: `((${inner.sql}) IS ${node.negated ? 'NOT ' : ''}NULL)`,
         kind: 'bool',
@@ -263,20 +293,28 @@ function compileValue(node: ExprNode, ctx: SqlCompileContext): SqlValue {
 function compileBinary(
   node: Extract<ExprNode, { kind: 'binary' }>,
   ctx: SqlCompileContext,
+  guard: string,
 ): SqlValue {
   const op = node.op;
   if (op === 'AND' || op === 'OR') {
-    const left = compileValue(node.left, ctx);
-    const right = compileValue(node.right, ctx);
-    for (const side of [left, right]) {
+    const left = compileValue(node.left, ctx, guard);
+    for (const side of [left]) {
       if (side.kind !== 'bool' && side.kind !== 'null') {
         throw new VectorError(
           `AND / OR 只能用在"是/不是"这种判断上：${side.origin}是${kindName(side.kind)}`,
         );
       }
     }
-    if (left.kind === 'null' || right.kind === 'null') {
-      // 与引擎一致：另一边若能否定结果，仍要按三值逻辑收口；交给 SQL 的 AND/OR 即可
+    // 引擎短路：AND 左边为假时不算右边；OR 左边为真时不算右边
+    const rightGuard = combineGuard(
+      guard,
+      `((${left.sql}) IS ${op === 'AND' ? 'NOT FALSE' : 'NOT TRUE'})`,
+    );
+    const right = compileValue(node.right, ctx, rightGuard);
+    if (right.kind !== 'bool' && right.kind !== 'null') {
+      throw new VectorError(
+        `AND / OR 只能用在"是/不是"这种判断上：${right.origin}是${kindName(right.kind)}`,
+      );
     }
     return {
       sql: `((${left.sql}) ${op} (${right.sql}))`,
@@ -286,8 +324,8 @@ function compileBinary(
     };
   }
 
-  const left = compileValue(node.left, ctx);
-  const right = compileValue(node.right, ctx);
+  const left = compileValue(node.left, ctx, guard);
+  const right = compileValue(node.right, ctx, guard);
   if (op === '+' || op === '-' || op === '*' || op === '/') {
     if (left.kind === 'null' || right.kind === 'null') {
       return { sql: 'NULL', kind: 'null', origin: left.origin, nullable: true };
@@ -299,7 +337,7 @@ function compileBinary(
     }
     if (op === '/') {
       // SQLite 的整数相除会截断；强制转成浮点，和引擎的除法一致
-      ctx.divisors.push(right.sql);
+      ctx.divisors.push({ sql: right.sql, guard });
     }
     const body =
       op === '/'
@@ -338,15 +376,10 @@ function compileBinary(
 function compileCall(
   node: Extract<ExprNode, { kind: 'call' }>,
   ctx: SqlCompileContext,
+  guard: string,
 ): SqlValue {
-  if (!ctx.allowFunctions) {
-    throw new VectorError(
-      `超大文件的条件里暂不支持函数 ${node.name}（逐行求值与数据库短路顺序可能不一致）。` +
-        '请把条件改写成不带动函数的比较，或把文件拆小后再处理。',
-    );
-  }
   const name = node.name;
-  const args = node.args.map((arg) => compileValue(arg, ctx));
+  const args = node.args.map((arg) => compileValue(arg, ctx, guard));
   const arity = (min: number, max: number): void => {
     if (args.length < min || (max >= 0 && args.length > max)) {
       const range = max < 0 ? `至少 ${min} 个` : min === max ? `${min} 个` : `${min}~${max} 个`;
@@ -362,7 +395,7 @@ function compileCall(
         `${name} 只能处理文字：${arg.origin}是${kindName(arg.kind)}，不是文字`,
       );
     }
-    if (arg.nullable) ctx.nullArgChecks.push({ fn: name, sql: arg.sql });
+    if (arg.nullable) ctx.nullArgChecks.push({ fn: name, sql: arg.sql, guard });
     return arg.sql;
   };
   const requireNumber = (arg: SqlValue): string => {
@@ -374,7 +407,7 @@ function compileCall(
         `${name} 只能处理数字：${arg.origin}是${kindName(arg.kind)}，不是数字`,
       );
     }
-    if (arg.nullable) ctx.nullArgChecks.push({ fn: name, sql: arg.sql });
+    if (arg.nullable) ctx.nullArgChecks.push({ fn: name, sql: arg.sql, guard });
     return arg.sql;
   };
 
@@ -477,12 +510,13 @@ function compileCall(
 function compileIn(
   node: Extract<ExprNode, { kind: 'in' }>,
   ctx: SqlCompileContext,
+  guard: string,
 ): SqlValue {
-  const operand = compileValue(node.operand, ctx);
+  const operand = compileValue(node.operand, ctx, guard);
   if (operand.kind === 'null') {
     return { sql: 'NULL', kind: 'null', origin: operand.origin, nullable: true };
   }
-  const items = node.list.map((item) => compileValue(item, ctx));
+  const items = node.list.map((item) => compileValue(item, ctx, guard));
   for (const item of items) {
     if (item.kind === 'null') continue;
     if (item.kind !== operand.kind) throw typeMismatch(operand, item);
@@ -504,10 +538,11 @@ function compileIn(
 function compileBetween(
   node: Extract<ExprNode, { kind: 'between' }>,
   ctx: SqlCompileContext,
+  guard: string,
 ): SqlValue {
-  const operand = compileValue(node.operand, ctx);
-  const low = compileValue(node.low, ctx);
-  const high = compileValue(node.high, ctx);
+  const operand = compileValue(node.operand, ctx, guard);
+  const low = compileValue(node.low, ctx, guard);
+  const high = compileValue(node.high, ctx, guard);
   if (operand.kind === 'null' || low.kind === 'null' || high.kind === 'null') {
     return { sql: 'NULL', kind: 'null', origin: operand.origin, nullable: true };
   }
@@ -531,9 +566,10 @@ function compileBetween(
 function compileLike(
   node: Extract<ExprNode, { kind: 'like' }>,
   ctx: SqlCompileContext,
+  guard: string,
 ): SqlValue {
-  const operand = compileValue(node.operand, ctx);
-  const pattern = compileValue(node.pattern, ctx);
+  const operand = compileValue(node.operand, ctx, guard);
+  const pattern = compileValue(node.pattern, ctx, guard);
   if (operand.kind === 'null' || pattern.kind === 'null') {
     return { sql: 'NULL', kind: 'null', origin: operand.origin, nullable: true };
   }
@@ -562,7 +598,7 @@ function compileLike(
 
 /** 编译一个条件（WHERE）：必须是能分出真假的表达式 */
 export function compileWhereSql(node: ExprNode, ctx: SqlCompileContext): string {
-  const value = compileValue(node, ctx);
+  const value = compileValue(node, ctx, '1=1');
   if (value.kind !== 'bool' && value.kind !== 'null') {
     throw new VectorError(
       `条件要能分出真假（写成「大于」「并且」这类判断），不能只是一个值：算出来是${kindName(value.kind)}`,
@@ -574,6 +610,9 @@ export function compileWhereSql(node: ExprNode, ctx: SqlCompileContext): string 
 /**
  * 编译一个要写进某一列的值表达式。
  *
+ * `baseGuard` 是"这一表达式在什么情况下会被求值"：改属性 / 加字段时传 WHERE，
+ * 表示只对命中的行求值；没有 WHERE 就传 `1=1`。
+ *
  * 按目标列的类别做与普通路径一致的收口：
  *  - 整数列：四舍五入（用 floor(x + 0.5)，和 JS 的 Math.round 一致）；
  *  - 小数列：转成浮点；
@@ -584,8 +623,9 @@ export function compileAssignmentSql(
   ctx: SqlCompileContext,
   targetKind: ReturnType<typeof columnKindOf>,
   column: string,
+  baseGuard = '1=1',
 ): string {
-  const value = compileValue(node, ctx);
+  const value = compileValue(node, ctx, baseGuard);
   if (value.kind === 'null') return 'NULL';
   if (targetKind === 'integer') {
     if (value.kind !== 'number') {
@@ -622,8 +662,9 @@ export function compileNewColumnSql(
   node: ExprNode,
   ctx: SqlCompileContext,
   column: string,
+  baseGuard = '1=1',
 ): { sql: string; columnType: 'REAL' | 'TEXT' | 'INTEGER'; resultKind: SqlKind } {
-  const value = compileValue(node, ctx);
+  const value = compileValue(node, ctx, baseGuard);
   if (value.kind === 'number') {
     return { sql: `CAST((${value.sql}) AS REAL)`, columnType: 'REAL', resultKind: 'number' };
   }

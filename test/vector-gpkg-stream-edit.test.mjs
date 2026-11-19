@@ -119,7 +119,7 @@ test('条件编译：SQL 命中的主键与 matchesWhere 完全一致', async ()
 
   for (const src of cases) {
     const node = parseExpression(src);
-    const ctx = makeSqlContext(info.fields, null, false);
+    const ctx = makeSqlContext(info.fields, null);
     const whereSql = compileWhereSql(node, ctx);
     const rows = await gpkgQuery(
       loc,
@@ -132,16 +132,29 @@ test('条件编译：SQL 命中的主键与 matchesWhere 完全一致', async ()
   }
 });
 
-test('条件里的函数在超大文件模式被明确拒绝', async () => {
+test('条件里的函数：SQL 命中集合与 matchesWhere 一致', async () => {
   const info = await probeLayer(loc, gpkg);
-  const node = parseExpression("UPPER(名称) = 'ABC'");
-  const ctx = makeSqlContext(info.fields, null, false);
-  assert.throws(() => compileWhereSql(node, ctx), /暂不支持函数/);
+  const read = await readFeatures(loc, { path: gpkg });
+  for (const src of ["UPPER(名称) = 'ABC'", 'LENGTH(名称) = 1', 'COALESCE(面积, 0) > 200']) {
+    const node = parseExpression(src);
+    const ctx = makeSqlContext(info.fields, null);
+    const whereSql = compileWhereSql(node, ctx);
+    const rows = await gpkgQuery(
+      loc,
+      gpkg,
+      `SELECT fid FROM ${quoteIdent('parcels')} WHERE ${whereSql} ORDER BY fid`,
+    );
+    const sqlFids = rows.map((r) => Number(r['__fid']));
+    const jsFids = read.features
+      .map((_, i) => i + 1)
+      .filter((i) => matchesWhere(node, read.features[i - 1].properties));
+    assert.deepEqual(sqlFids, jsFids, `条件「${src}」的命中集合不一致`);
+  }
 });
 
 test('CONCAT 接数字参数时明确拒绝（两边转文字的位数口径不同）', async () => {
   const info = await probeLayer(loc, gpkg);
-  const ctx = makeSqlContext(info.fields, null, true);
+  const ctx = makeSqlContext(info.fields, null);
   assert.throws(
     () => compileNewColumnSql(parseExpression("CONCAT(名称, '-', 编码)"), ctx, '__probe'),
     /CONCAT 只接文字参数/,
@@ -171,7 +184,7 @@ test('表达式编译：SQL 值与 evaluate 一致', async () => {
   ];
   for (const src of cases) {
     const node = parseExpression(src);
-    const ctx = makeSqlContext(info.fields, null, true);
+    const ctx = makeSqlContext(info.fields, null);
     const { sql } = compileNewColumnSql(node, ctx, '__probe');
     const rows = await gpkgQuery(
       loc,
@@ -201,6 +214,72 @@ test('表达式编译：SQL 值与 evaluate 一致', async () => {
       }
     }
   }
+});
+
+test('条件里的函数：空参数按短路口径检查', async () => {
+  const target = join(dir, 'nullname.gpkg');
+  writeFileSync(
+    join(dir, 'nullname.geojson'),
+    JSON.stringify({
+      type: 'FeatureCollection',
+      features: [
+        { type: 'Feature', properties: { 名称: 'abc', 编码: 1 }, geometry: { type: 'Point', coordinates: [0, 0] } },
+        { type: 'Feature', properties: { 名称: null, 编码: 2 }, geometry: { type: 'Point', coordinates: [1, 1] } },
+      ],
+    }),
+    'utf8',
+  );
+  const made = await tools(loc).ogr2ogr([
+    '-f', 'GPKG', '-a_srs', 'EPSG:3857', '-nln', 'names', target, join(dir, 'nullname.geojson'),
+  ]);
+  assert.ok(made.ok, `造空值样本失败：${made.stderr}`);
+  const store = new LocalFolderStore(dir);
+  const info = await probeLayer(loc, target);
+
+  // 没有先判空：普通路径会在空名字那一行报错，这里也要拒绝，不能静默跳过
+  await assert.rejects(
+    () =>
+      gpkgStreamSetAttributes(loc, store, {
+        targetRel: 'nullname.gpkg',
+        absPath: target,
+        info,
+        whereSource: "UPPER(名称) = 'ABC'",
+        whereNode: parseExpression("UPPER(名称) = 'ABC'"),
+        targets: [
+          {
+            name: '编码',
+            requested: '编码',
+            kind: fieldKind(info, '编码'),
+            value: { kind: 'literal', value: 9 },
+          },
+        ],
+        dryRun: false,
+      }),
+    /空值/,
+  );
+  let read = await readFeatures(loc, { path: target });
+  assert.deepEqual(read.features.map((f) => f.properties['编码']), [1, 2], '被拒绝时不能写盘');
+
+  // 先判空再 UPPER：空名字那一行被短路，不报错
+  const res = await gpkgStreamSetAttributes(loc, store, {
+    targetRel: 'nullname.gpkg',
+    absPath: target,
+    info,
+    whereSource: "名称 IS NOT NULL AND UPPER(名称) = 'ABC'",
+    whereNode: parseExpression("名称 IS NOT NULL AND UPPER(名称) = 'ABC'"),
+    targets: [
+      {
+        name: '编码',
+        requested: '编码',
+        kind: fieldKind(info, '编码'),
+        value: { kind: 'literal', value: 9 },
+      },
+    ],
+    dryRun: false,
+  });
+  assert.match(res.summary, /已改 1 条要素/);
+  read = await readFeatures(loc, { path: target });
+  assert.deepEqual(read.features.map((f) => f.properties['编码']), [9, 2]);
 });
 
 /* ── 加字段：原生路径 ────────────────────────────────────────── */
@@ -540,6 +619,16 @@ test('超过 512 MB 的 GPKG：预演走原生路径，非 GPKG 仍被拒绝', a
   );
   assert.equal(delPreview.ok, true, delPreview.error ?? '删除预演应当成功');
   assert.match(delPreview.value?.summary ?? '', /原生删除/);
+
+  const sumPreview = await previewOp(
+    { loc, store },
+    {
+      op: 'feature.summarize',
+      params: { target: 'dataset://big.gpkg', groupBy: ['名称'], aggregates: ['count', 'sum'] },
+    },
+  );
+  assert.equal(sumPreview.ok, true, sumPreview.error ?? '汇总预演应当成功');
+  assert.match(sumPreview.value?.summary ?? '', /数据库原生汇总/);
 
   // 同样内容的文件换个非 GPKG 扩展名：仍然被 512 MB 闸门拒绝
   const other = join(dir, 'big.sqlite');

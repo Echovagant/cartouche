@@ -26,6 +26,8 @@ import type { VectorOpDeps } from './query.ts';
 import { layerSizeBytes, rewriteSizeError } from './limits.ts';
 import { nativeSqlKind } from './gpkg-native.ts';
 import { gpkgStreamAddField } from './stream-gpkg-edit.ts';
+import { isShapefilePath } from './dbf.ts';
+import { shpStreamAddField } from './stream-shp-edit.ts';
 
 /**
  * 面积伪列。
@@ -106,8 +108,9 @@ export async function runVectorAddField(
   const info = await probeLayer(deps.loc, abs);
   const size = layerSizeBytes(abs);
   const oversize = size === null ? null : rewriteSizeError(size);
-  const streamed = oversize !== null && nativeSqlKind(abs) === 'gpkg';
-  if (oversize && !streamed) throw new VectorError(oversize);
+  const gpkgStreamed = oversize !== null && nativeSqlKind(abs) === 'gpkg';
+  const shpStreamed = oversize !== null && isShapefilePath(abs);
+  if (oversize && !gpkgStreamed && !shpStreamed) throw new VectorError(oversize);
 
   if (info.fields.some((f) => f.name.toLowerCase() === fieldName.toLowerCase())) {
     throw new VectorError(
@@ -155,7 +158,7 @@ export async function runVectorAddField(
   }
 
   // 超大 GeoPackage：走原生 SQL（不改几何、不读全量要素）
-  if (streamed) {
+  if (gpkgStreamed) {
     return gpkgStreamAddField(deps.loc, deps.store, {
       targetRel,
       absPath: abs,
@@ -165,6 +168,25 @@ export async function runVectorAddField(
       whereNode,
       areaPseudo,
       metersPerUnit,
+      dryRun,
+    });
+  }
+
+  // 超大 Shapefile：按 DBF 流式改写（只动属性表，读不了几何）
+  if (shpStreamed) {
+    if (areaPseudo) {
+      throw new VectorError(
+        '超大 Shapefile 暂不支持 AREA（面积要读 .shp 里的几何）。' +
+          '请先把图层转成 GeoPackage，或把文件拆小后再算。',
+      );
+    }
+    return shpStreamAddField(deps.loc, deps.store, {
+      targetRel,
+      absPath: abs,
+      info,
+      fieldName,
+      exprNode,
+      whereNode,
       dryRun,
     });
   }

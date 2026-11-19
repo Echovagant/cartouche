@@ -34,7 +34,9 @@ import { probeLayer, readFeatures } from '../vector/read.ts';
 import { toRelPathChecked } from '../vector/paths.ts';
 import { VectorError, type LayerField } from '../vector/types.ts';
 import type { VectorOpDeps } from '../vector/query.ts';
-import { assertRewriteSize } from '../vector/limits.ts';
+import { layerSizeBytes, rewriteSizeError } from '../vector/limits.ts';
+import { nativeSqlKind } from '../vector/gpkg-native.ts';
+import { gpkgStreamSummarize } from '../vector/stream-gpkg-summary.ts';
 import {
   columnKindOf,
   fieldNamesHint,
@@ -128,9 +130,11 @@ export async function runFeatureSummarize(
   }
 
   const abs = deps.store.resolve(targetRel);
-  // 汇总要逐要素过一遍；GB 级图层会跑成分钟级并撞超时，提前说清楚
-  assertRewriteSize(abs, '统计汇总');
   const info = await probeLayer(deps.loc, abs);
+  const size = layerSizeBytes(abs);
+  const oversize = size === null ? null : rewriteSizeError(size, '统计汇总');
+  const streamed = oversize !== null && nativeSqlKind(abs) === 'gpkg';
+  if (oversize && !streamed) throw new VectorError(oversize);
 
   /* ── 分组列：定位到图层里真实的列 ───────────────────────────── */
   const groupFields: LayerField[] = [];
@@ -177,6 +181,11 @@ export async function runFeatureSummarize(
   if (wantsArea) {
     requireAreaCapable(measure, info.epsg);
   }
+  // 面积换算：坐标单位² → m² → 目标单位（普通路径与原生路径共用）
+  const areaFactor =
+    wantsArea && rawAreaUnit !== undefined
+      ? ((measure.metersPerUnit ?? 1) ** 2) / areaUnitSquareMeters(rawAreaUnit)
+      : 1;
 
   /* ── 要逐列统计的列 ─────────────────────────────────────────── */
   const numericFields = info.fields.filter(
@@ -197,6 +206,27 @@ export async function runFeatureSummarize(
     throw new VectorError(
       `distinct 需要有列可去重，但这一层除了分组字段（${groupNames.join('、')}）没有别的列。`,
     );
+  }
+
+  // 超大 GeoPackage：用原生 SQL GROUP BY 汇总（不读全量要素）
+  if (streamed) {
+    return gpkgStreamSummarize(deps.loc, {
+      targetRel,
+      absPath: abs,
+      info,
+      groupFields,
+      groupNames,
+      aggregates,
+      numericFields,
+      distinctFields,
+      wantsArea,
+      wantsLength,
+      ...(rawAreaUnit !== undefined ? { rawAreaUnit } : {}),
+      areaFactor,
+      lengthUnit: measure.unitLabel,
+      measureKind: measure.kind,
+      dryRun,
+    });
   }
 
   /* ── 读要素、分组、累计 ─────────────────────────────────────── */
@@ -254,11 +284,6 @@ export async function runFeatureSummarize(
   }
 
   /* ── 出表 ───────────────────────────────────────────────────── */
-  // 面积换算：坐标单位² → m² → 目标单位
-  const areaFactor =
-    wantsArea && rawAreaUnit !== undefined
-      ? ((measure.metersPerUnit ?? 1) ** 2) / areaUnitSquareMeters(rawAreaUnit)
-      : 1;
 
   const columns: string[] = [...groupNames];
   if (aggregates.includes('count')) columns.push('count');

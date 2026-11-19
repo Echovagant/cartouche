@@ -18,12 +18,12 @@ import type { OpValueResult } from '../ops/executor.ts';
 import { evaluate, type ExprNode } from '../expression/index.ts';
 import {
   coerceForColumn,
-  type ColumnKind,
 } from '../feature/common.ts';
 import { backupGpkg } from './gpkg-native.ts';
 import type { GdalLocation } from '../gdal/env.ts';
 import type { WorkspaceAdapter } from '../workspace/index.ts';
 import { probeLayer, referencedFields } from './read.ts';
+import type { StreamSetTarget } from './stream-types.ts';
 import { VectorError, type LayerInfo } from './types.ts';
 import {
   gpkgCheckpoint,
@@ -43,18 +43,6 @@ import {
   sqlLiteral,
   type SqlCompileContext,
 } from './sql-expression.ts';
-
-/** 一条要写进去的 set 项（值或表达式） */
-export type StreamSetValue =
-  | { readonly kind: 'literal'; readonly value: string | number | boolean | null }
-  | { readonly kind: 'expression'; readonly node: ExprNode; readonly source: string };
-
-export interface StreamSetTarget {
-  readonly name: string;
-  readonly requested: string;
-  readonly kind: ColumnKind;
-  readonly value: StreamSetValue;
-}
 
 /** 抽样的条数：预览与写后核对都看这几条 */
 const SAMPLE_LIMIT = 3;
@@ -89,7 +77,7 @@ async function runWriteSteps<T>(
 
 /** 把多个编译上下文里的检查项合起来（WHERE 与各个表达式各有一份） */
 function mergeContexts(contexts: readonly SqlCompileContext[]): SqlCompileContext {
-  const merged = makeSqlContext([], null, true);
+  const merged = makeSqlContext([], null);
   for (const ctx of contexts) {
     for (const [key, check] of ctx.fieldChecks) merged.fieldChecks.set(key, check);
     merged.nullArgChecks.push(...ctx.nullArgChecks);
@@ -117,10 +105,8 @@ async function runPreflights(
   loc: GdalLocation,
   absPath: string,
   table: GpkgTableContext,
-  whereSql: string | null,
   contexts: readonly SqlCompileContext[],
 ): Promise<void> {
-  if (whereSql === 'NULL') return;
   const merged = mergeContexts(contexts);
 
   for (const check of merged.fieldChecks.values()) {
@@ -132,7 +118,7 @@ async function runPreflights(
       loc,
       absPath,
       table.layerName,
-      whereParts([whereSql, `${check.sql} IS NOT NULL`, bad]),
+      whereParts([check.guard, `${check.sql} IS NOT NULL`, bad]),
     );
     if (n > 0) {
       throw new VectorError(
@@ -144,14 +130,14 @@ async function runPreflights(
 
   const seenNull = new Set<string>();
   for (const check of merged.nullArgChecks) {
-    const key = check.sql;
+    const key = `${check.guard}\u0000${check.sql}`;
     if (seenNull.has(key)) continue;
     seenNull.add(key);
     const n = await gpkgCount(
       loc,
       absPath,
       table.layerName,
-      whereParts([whereSql, `${check.sql} IS NULL`]),
+      whereParts([check.guard, `${check.sql} IS NULL`]),
     );
     if (n > 0) {
       throw new VectorError(
@@ -163,13 +149,18 @@ async function runPreflights(
 
   const seenDiv = new Set<string>();
   for (const divisor of merged.divisors) {
-    if (seenDiv.has(divisor)) continue;
-    seenDiv.add(divisor);
+    const key = `${divisor.guard}\u0000${divisor.sql}`;
+    if (seenDiv.has(key)) continue;
+    seenDiv.add(key);
     const n = await gpkgCount(
       loc,
       absPath,
       table.layerName,
-      whereParts([whereSql, `${divisor} IS NOT NULL`, `${divisor} = 0`]),
+      whereParts([
+        divisor.guard,
+        `${divisor.sql} IS NOT NULL`,
+        `${divisor.sql} = 0`,
+      ]),
     );
     if (n > 0) {
       throw new VectorError(
@@ -275,13 +266,18 @@ export async function gpkgStreamAddField(
     ? areaSqlFor(table, input.metersPerUnit)
     : null;
 
-  const exprCtx = makeSqlContext(input.info.fields, areaSql, true);
-  const compiled = compileNewColumnSql(input.exprNode, exprCtx, input.fieldName);
-
-  const whereCtx = makeSqlContext(input.info.fields, areaSql, false);
+  const whereCtx = makeSqlContext(input.info.fields, areaSql);
   const whereSql = input.whereNode ? compileWhereSql(input.whereNode, whereCtx) : null;
 
-  await runPreflights(loc, input.absPath, table, whereSql, [exprCtx, whereCtx]);
+  const exprCtx = makeSqlContext(input.info.fields, areaSql);
+  const compiled = compileNewColumnSql(
+    input.exprNode,
+    exprCtx,
+    input.fieldName,
+    whereSql ?? '1=1',
+  );
+
+  await runPreflights(loc, input.absPath, table, [exprCtx, whereCtx]);
 
   const total = await gpkgCount(loc, input.absPath, table.layerName);
   const updated = await gpkgCount(loc, input.absPath, table.layerName, whereSql ?? undefined);
@@ -445,7 +441,7 @@ export async function gpkgStreamSetAttributes(
   input: StreamSetAttributesInput,
 ): Promise<OpValueResult> {
   const table = await gpkgTableContext(loc, input.absPath, input.info.layerName);
-  const whereCtx = makeSqlContext(input.info.fields, null, false);
+  const whereCtx = makeSqlContext(input.info.fields, null);
   const whereSql = compileWhereSql(input.whereNode, whereCtx);
 
   const exprContexts: SqlCompileContext[] = [];
@@ -476,15 +472,21 @@ export async function gpkgStreamSetAttributes(
           '请拆成两次操作。',
       );
     }
-    const ctx = makeSqlContext(input.info.fields, null, true);
-    const sql = compileAssignmentSql(target.value.node, ctx, target.kind, target.name);
+    const ctx = makeSqlContext(input.info.fields, null);
+    const sql = compileAssignmentSql(
+      target.value.node,
+      ctx,
+      target.kind,
+      target.name,
+      whereSql,
+    );
     exprContexts.push(ctx);
     const exprIndex = exprSqls.length;
     exprSqls.push(sql);
     assignments.push({ target, sql, expression: true, exprIndex });
   }
 
-  await runPreflights(loc, input.absPath, table, whereSql, [whereCtx, ...exprContexts]);
+  await runPreflights(loc, input.absPath, table, [whereCtx, ...exprContexts]);
 
   const total = await gpkgCount(loc, input.absPath, table.layerName);
   const hits = await gpkgCount(loc, input.absPath, table.layerName, whereSql);
@@ -697,9 +699,9 @@ export async function gpkgStreamDelete(
   input: StreamDeleteInput,
 ): Promise<OpValueResult> {
   const table = await gpkgTableContext(loc, input.absPath, input.info.layerName);
-  const whereCtx = makeSqlContext(input.info.fields, null, false);
+  const whereCtx = makeSqlContext(input.info.fields, null);
   const whereSql = compileWhereSql(input.whereNode, whereCtx);
-  await runPreflights(loc, input.absPath, table, whereSql, [whereCtx]);
+  await runPreflights(loc, input.absPath, table, [whereCtx]);
 
   const total = await gpkgCount(loc, input.absPath, table.layerName);
   const matched = await gpkgCount(loc, input.absPath, table.layerName, whereSql);
