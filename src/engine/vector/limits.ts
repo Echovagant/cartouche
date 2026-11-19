@@ -18,15 +18,15 @@ import { VectorError } from './types.ts';
 export const MAX_REWRITE_BYTES = 512 * 1024 * 1024;
 
 /** 体积超限时的说明；没超返回 null（纯函数，便于测试） */
-export function rewriteSizeError(size: number): string | null {
+export function rewriteSizeError(size: number, action = '整层重写'): string | null {
   if (!Number.isFinite(size) || size <= MAX_REWRITE_BYTES) return null;
   const sizeText =
     size >= 1073741824 ? `${(size / 1073741824).toFixed(1)} GB` : `${Math.round(size / 1048576)} MB`;
-  return `图层有 ${sizeText}，超过 512 MB 的整层重写暂不支持；请先拆分或导出后再改。`;
+  return `图层有 ${sizeText}，超过 512 MB 的${action}暂不支持；请先拆分或导出后再处理。`;
 }
 
 /** 体积超限就抛错；拿不到体积（目录型数据源等）不拦 */
-export function assertRewriteSize(absPath: string): void {
+export function assertRewriteSize(absPath: string, action = '整层重写'): void {
   let size: number;
   try {
     const st = statSync(absPath);
@@ -35,6 +35,6 @@ export function assertRewriteSize(absPath: string): void {
   } catch {
     return;
   }
-  const error = rewriteSizeError(size);
+  const error = rewriteSizeError(size, action);
   if (error) throw new VectorError(error);
 }

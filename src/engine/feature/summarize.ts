@@ -34,6 +34,7 @@ import { probeLayer, readFeatures } from '../vector/read.ts';
 import { toRelPathChecked } from '../vector/paths.ts';
 import { VectorError, type LayerField } from '../vector/types.ts';
 import type { VectorOpDeps } from '../vector/query.ts';
+import { assertRewriteSize } from '../vector/limits.ts';
 import {
   columnKindOf,
   fieldNamesHint,
@@ -127,6 +128,8 @@ export async function runFeatureSummarize(
   }
 
   const abs = deps.store.resolve(targetRel);
+  // 汇总要逐要素过一遍；GB 级图层会跑成分钟级并撞超时，提前说清楚
+  assertRewriteSize(abs, '统计汇总');
   const info = await probeLayer(deps.loc, abs);
 
   /* ── 分组列：定位到图层里真实的列 ───────────────────────────── */

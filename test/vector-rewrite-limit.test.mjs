@@ -27,3 +27,10 @@ test('整层重写保护：超过 512 MB 明确拒绝并给出下一步', () => 
   assert.ok(gb5);
   assert.match(gb5, /5\.0 GB/);
 });
+
+test('整层重写保护：统计汇总用同一阈值但有对应措辞', () => {
+  const msg = rewriteSizeError(5.04 * 1024 * 1024 * 1024, '统计汇总');
+  assert.ok(msg);
+  assert.match(msg, /统计汇总/);
+  assert.match(msg, /拆分或导出/);
+});
