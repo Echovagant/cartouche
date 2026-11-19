@@ -20,6 +20,7 @@ import { encodingForWriteback } from './encoding.ts';
 import { VectorError, type FeatureRecord } from './types.ts';
 import type { OpValueResult } from '../ops/executor.ts';
 import type { VectorOpDeps } from './query.ts';
+import { assertRewriteSize } from './limits.ts';
 
 /** 一条改名：请求的名字与文件里实际存在的名字。 */
 interface RenamePlan {
@@ -64,6 +65,7 @@ export async function runVectorRenameFields(
     throw new Error(`目标不存在，无法改字段名：${targetRel}`);
   }
   const targetAbs = deps.store.resolve(targetRel);
+  assertRewriteSize(targetAbs);
   const info = await probeLayer(deps.loc, targetAbs);
   const existing = info.fields.map((f) => f.name);
 

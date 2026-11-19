@@ -16,6 +16,7 @@ import { toRelPathChecked } from './paths.ts';
 import type { FeatureRecord } from './types.ts';
 import type { OpValueResult } from '../ops/executor.ts';
 import type { VectorOpDeps } from './query.ts';
+import { assertRewriteSize } from './limits.ts';
 
 const RELATIONS: readonly SpatialRelation[] = ['within', 'intersects', 'contains'];
 const AGGREGATES: readonly JoinAggregate[] = ['first', 'count', 'sum', 'mean'];
@@ -83,6 +84,8 @@ export async function runVectorSpatialJoin(
 
   const targetAbs = deps.store.resolve(targetRel);
   const sourceAbs = deps.store.resolve(sourceRel);
+  assertRewriteSize(targetAbs);
+  assertRewriteSize(sourceAbs);
 
   // 坐标系必须对得上。
   //

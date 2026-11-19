@@ -22,6 +22,7 @@ import { writeFeatures } from '../vector/write.ts';
 import { toRelPathChecked } from '../vector/paths.ts';
 import { VectorError, type FeatureRecord } from '../vector/types.ts';
 import type { VectorOpDeps } from '../vector/query.ts';
+import { assertRewriteSize } from '../vector/limits.ts';
 import {
   coerceForColumn,
   columnKindOf,
@@ -125,6 +126,7 @@ export async function runFeatureSetAttributes(
   }
 
   const abs = deps.store.resolve(targetRel);
+  assertRewriteSize(abs);
   // 探图层：文件不存在 / 打不开在这里就报出来（probeLayer 会说清"文件不存在"）
   const info = await probeLayer(deps.loc, abs);
 

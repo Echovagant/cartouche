@@ -23,6 +23,7 @@ import { toRelPathChecked } from './paths.ts';
 import { findWrittenField } from './field-names.ts';
 import { VectorError, type FeatureRecord } from './types.ts';
 import type { VectorOpDeps } from './query.ts';
+import { assertRewriteSize } from './limits.ts';
 
 /**
  * 面积伪列。
@@ -100,6 +101,7 @@ export async function runVectorAddField(
   }
 
   const abs = deps.store.resolve(targetRel);
+  assertRewriteSize(abs);
   const info = await probeLayer(deps.loc, abs);
 
   if (info.fields.some((f) => f.name.toLowerCase() === fieldName.toLowerCase())) {

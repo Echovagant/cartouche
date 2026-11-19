@@ -53,6 +53,7 @@ import {
 import { VectorError, type FeatureRecord } from './types.ts';
 import type { OpValueResult } from '../ops/executor.ts';
 import type { VectorOpDeps } from './query.ts';
+import { assertRewriteSize } from './limits.ts';
 
 /** 契约里 resample 的取值全集。 */
 const RESAMPLE_METHODS = ['nearest', 'bilinear', 'cubic'] as const;
@@ -283,6 +284,7 @@ export async function runVectorReproject(
     throw new Error(`目标不存在，无法重投影：${targetRel}`);
   }
   const targetAbs = deps.store.resolve(targetRel);
+  assertRewriteSize(targetAbs);
 
   const sourceInfo = await probeLayer(deps.loc, targetAbs);
   if (!sourceInfo.srsWkt) {

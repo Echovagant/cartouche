@@ -22,6 +22,7 @@ import { writeFeatures } from '../vector/write.ts';
 import { toRelPathChecked } from '../vector/paths.ts';
 import { VectorError, type FeatureRecord } from '../vector/types.ts';
 import type { VectorOpDeps } from '../vector/query.ts';
+import { assertRewriteSize } from '../vector/limits.ts';
 import {
   columnTypeChanges,
   compileWhere,
@@ -73,6 +74,7 @@ export async function runFeatureDelete(
   }
 
   const abs = deps.store.resolve(targetRel);
+  assertRewriteSize(abs);
   const info = await probeLayer(deps.loc, abs);
   const whereNode = compileWhere(where, info.fields);
 

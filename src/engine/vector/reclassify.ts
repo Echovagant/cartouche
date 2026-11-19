@@ -31,6 +31,7 @@ import { findWrittenField } from './field-names.ts';
 import { VectorError, type FeatureRecord, type LayerField } from './types.ts';
 import type { OpValueResult } from '../ops/executor.ts';
 import type { VectorOpDeps } from './query.ts';
+import { assertRewriteSize } from './limits.ts';
 import {
   coerceForColumn,
   columnKindOf,
@@ -261,6 +262,7 @@ export async function runVectorReclassify(
   const outputField = outputFieldRaw?.trim();
 
   const abs = deps.store.resolve(targetRel);
+  assertRewriteSize(abs);
   const info = await probeLayer(deps.loc, abs);
 
   const resolved = resolveFieldName(requestedField, info.fields);

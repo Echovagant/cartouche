@@ -34,6 +34,7 @@ import { valuesMatch } from './field-names.ts';
 import { VectorError } from './types.ts';
 import type { OpValueResult } from '../ops/executor.ts';
 import type { VectorOpDeps } from './query.ts';
+import { assertRewriteSize } from './limits.ts';
 
 /** 解出来的文本里混进了替换字符 —— 说明这一串字节不是按这个编码写的。 */
 function hasMojibake(values: readonly unknown[]): boolean {
@@ -88,6 +89,7 @@ export async function runVectorRecode(
     );
   }
   const targetAbs = deps.store.resolve(targetRel);
+  assertRewriteSize(targetAbs);
 
   // ── 源编码 ─────────────────────────────────────────────────────
   let from: SupportedEncoding;
