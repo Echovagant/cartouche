@@ -22,7 +22,9 @@ import { writeFeatures } from '../vector/write.ts';
 import { toRelPathChecked } from '../vector/paths.ts';
 import { VectorError, type FeatureRecord } from '../vector/types.ts';
 import type { VectorOpDeps } from '../vector/query.ts';
-import { assertRewriteSize } from '../vector/limits.ts';
+import { layerSizeBytes, rewriteSizeError } from '../vector/limits.ts';
+import { nativeSqlKind } from '../vector/gpkg-native.ts';
+import { gpkgStreamDelete } from '../vector/stream-gpkg-edit.ts';
 import {
   columnTypeChanges,
   compileWhere,
@@ -74,9 +76,25 @@ export async function runFeatureDelete(
   }
 
   const abs = deps.store.resolve(targetRel);
-  assertRewriteSize(abs);
   const info = await probeLayer(deps.loc, abs);
+  const size = layerSizeBytes(abs);
+  const oversize = size === null ? null : rewriteSizeError(size);
+  const streamed = oversize !== null && nativeSqlKind(abs) === 'gpkg';
+  if (oversize && !streamed) throw new VectorError(oversize);
   const whereNode = compileWhere(where, info.fields);
+
+  // 超大 GeoPackage：走原生 SQL（按条件 DELETE，不读全量要素）
+  if (streamed) {
+    return gpkgStreamDelete(deps.loc, deps.store, {
+      targetRel,
+      absPath: abs,
+      info,
+      whereSource: where,
+      whereNode,
+      keep,
+      dryRun,
+    });
+  }
 
   const read = await readFeatures(deps.loc, { path: abs });
   const hits = matchIndexes(read.features, whereNode);

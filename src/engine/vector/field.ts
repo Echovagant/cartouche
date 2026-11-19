@@ -23,7 +23,9 @@ import { toRelPathChecked } from './paths.ts';
 import { findWrittenField } from './field-names.ts';
 import { VectorError, type FeatureRecord } from './types.ts';
 import type { VectorOpDeps } from './query.ts';
-import { assertRewriteSize } from './limits.ts';
+import { layerSizeBytes, rewriteSizeError } from './limits.ts';
+import { nativeSqlKind } from './gpkg-native.ts';
+import { gpkgStreamAddField } from './stream-gpkg-edit.ts';
 
 /**
  * 面积伪列。
@@ -101,8 +103,11 @@ export async function runVectorAddField(
   }
 
   const abs = deps.store.resolve(targetRel);
-  assertRewriteSize(abs);
   const info = await probeLayer(deps.loc, abs);
+  const size = layerSizeBytes(abs);
+  const oversize = size === null ? null : rewriteSizeError(size);
+  const streamed = oversize !== null && nativeSqlKind(abs) === 'gpkg';
+  if (oversize && !streamed) throw new VectorError(oversize);
 
   if (info.fields.some((f) => f.name.toLowerCase() === fieldName.toLowerCase())) {
     throw new VectorError(
@@ -147,6 +152,21 @@ export async function runVectorAddField(
       const have = info.fields.map((f) => f.name).slice(0, 12).join('、');
       throw new VectorError(`这一层没有「${field}」这一列（这一层的列有：${have}）`);
     }
+  }
+
+  // 超大 GeoPackage：走原生 SQL（不改几何、不读全量要素）
+  if (streamed) {
+    return gpkgStreamAddField(deps.loc, deps.store, {
+      targetRel,
+      absPath: abs,
+      info,
+      fieldName,
+      exprNode,
+      whereNode,
+      areaPseudo,
+      metersPerUnit,
+      dryRun,
+    });
   }
 
   // 读出全部要素：写回时要把整层数据都写出去（不写的那部分等于删了）

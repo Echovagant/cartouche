@@ -61,3 +61,25 @@ test('Shapefile 的体量取 .shp / .dbf 的较大者', () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('GeoPackage 的 -wal 也计入体量', () => {
+  mkdirSync(TMP_BASE, { recursive: true });
+  const dir = mkdtempSync(join(TMP_BASE, 'cartouche-size-wal-'));
+  try {
+    const gpkg = join(dir, 'big.gpkg');
+    writeFileSync(gpkg, Buffer.alloc(16));
+    const wal = `${gpkg}-wal`;
+    writeFileSync(wal, Buffer.alloc(16));
+    const fd = openSync(wal, 'r+');
+    try {
+      ftruncateSync(fd, 600 * 1024 * 1024);
+    } finally {
+      closeSync(fd);
+    }
+
+    assert.equal(layerSizeBytes(gpkg), 16 + 600 * 1024 * 1024);
+    assert.throws(() => assertRewriteSize(gpkg), /512 MB/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

@@ -22,7 +22,9 @@ import { writeFeatures } from '../vector/write.ts';
 import { toRelPathChecked } from '../vector/paths.ts';
 import { VectorError, type FeatureRecord } from '../vector/types.ts';
 import type { VectorOpDeps } from '../vector/query.ts';
-import { assertRewriteSize } from '../vector/limits.ts';
+import { layerSizeBytes, rewriteSizeError } from '../vector/limits.ts';
+import { nativeSqlKind } from '../vector/gpkg-native.ts';
+import { gpkgStreamSetAttributes } from '../vector/stream-gpkg-edit.ts';
 import {
   coerceForColumn,
   columnKindOf,
@@ -126,9 +128,11 @@ export async function runFeatureSetAttributes(
   }
 
   const abs = deps.store.resolve(targetRel);
-  assertRewriteSize(abs);
-  // 探图层：文件不存在 / 打不开在这里就报出来（probeLayer 会说清"文件不存在"）
   const info = await probeLayer(deps.loc, abs);
+  const size = layerSizeBytes(abs);
+  const oversize = size === null ? null : rewriteSizeError(size);
+  const streamed = oversize !== null && nativeSqlKind(abs) === 'gpkg';
+  if (oversize && !streamed) throw new VectorError(oversize);
 
   /* ── 列名定位：用户写的列名 → 文件里真实的列 ─────────────────── */
   const targets: SetTarget[] = [];
@@ -164,6 +168,19 @@ export async function runFeatureSetAttributes(
           `（这一层的列有：${fieldNamesHint(info.fields)}）`,
       );
     }
+  }
+
+  // 超大 GeoPackage：走原生 SQL（按条件 UPDATE，不读全量要素）
+  if (streamed) {
+    return gpkgStreamSetAttributes(deps.loc, deps.store, {
+      targetRel,
+      absPath: abs,
+      info,
+      whereSource: where,
+      whereNode,
+      targets,
+      dryRun,
+    });
   }
 
   /* ── 读要素、筛出命中的 ─────────────────────────────────────── */

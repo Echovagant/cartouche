@@ -43,14 +43,23 @@ export function fileSizeBytes(absPath: string): number | null {
  *
  * Shapefile 的几何与属性分在 .shp / .dbf 两个文件里：只看 .shp 会漏掉
  * 「几何不大、属性表巨大」的图层，而整层读写恰恰会被这种图层拖垮。
+ * GeoPackage 的 -wal 里也可能压着大量还没并回主库的页，一并算进去。
  */
 export function layerSizeBytes(absPath: string): number | null {
   const own = fileSizeBytes(absPath);
-  if (!/\.shp$/i.test(absPath)) return own;
-  const dbf = fileSizeBytes(absPath.replace(/\.shp$/i, '.dbf'));
-  if (own === null) return dbf;
-  if (dbf === null) return own;
-  return Math.max(own, dbf);
+  if (/\.shp$/i.test(absPath)) {
+    const dbf = fileSizeBytes(absPath.replace(/\.shp$/i, '.dbf'));
+    if (own === null) return dbf;
+    if (dbf === null) return own;
+    return Math.max(own, dbf);
+  }
+  if (/\.gpkg$/i.test(absPath)) {
+    const wal = fileSizeBytes(`${absPath}-wal`);
+    if (own === null) return wal;
+    if (wal === null) return own;
+    return own + wal;
+  }
+  return own;
 }
 
 /** 体积超限就抛错；拿不到体积（目录型数据源等）不拦 */

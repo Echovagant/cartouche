@@ -20,6 +20,7 @@ import { tools } from '../gdal/runner.ts';
 import { VectorError } from './types.ts';
 import { probeLayer } from './read.ts';
 import { normalizeEncoding, readCpgEncoding, type SupportedEncoding } from './encoding.ts';
+import { backupGpkg, gpkgCheckpoint, quoteIdent, quoteLiteral } from './gpkg-native.ts';
 
 export type StreamRenameKind = 'gpkg' | 'shp';
 
@@ -47,16 +48,6 @@ export interface StreamRenameResult {
   readonly note?: string;
 }
 
-/** SQL 标识符引用：双引号加倍 */
-function quoteIdent(value: string): string {
-  return `"${value.replace(/"/g, '""')}"`;
-}
-
-/** SQL 字符串字面量：单引号加倍 */
-function quoteLiteral(value: string): string {
-  return `'${value.replace(/'/g, "''")}'`;
-}
-
 /**
  * 执行改名（会写盘）。
  *
@@ -78,17 +69,6 @@ export async function executeStreamRename(
   return renameShapefile(loc, store, targetRel, absPath, plans);
 }
 
-/**
- * 把 GPKG 的 -wal 并回主库。
- *
- * 备份只拷主库：若 -wal 里还有没并回的页，备份就是一份缺数据的旧库。
- * 改完也并一次，让原文件保持"没有 -wal 也能读"的自包含状态。
- * 不是 WAL 模式时这条语句无害；失败也不影响改名本身。
- */
-async function checkpointGpkg(gdal: ReturnType<typeof tools>, absPath: string): Promise<void> {
-  await gdal.ogrInfo(['-sql', 'PRAGMA wal_checkpoint(TRUNCATE)', '-dialect', 'SQLITE', absPath]);
-}
-
 async function renameGpkg(
   loc: GdalLocation,
   store: WorkspaceAdapter,
@@ -98,11 +78,7 @@ async function renameGpkg(
   plans: readonly StreamRenamePlan[],
 ): Promise<StreamRenameResult> {
   const gdal = tools(loc);
-  await checkpointGpkg(gdal, absPath);
-  const backupPath = await createBackup(store, targetRel, 'rename');
-  if (!backupPath) {
-    throw new VectorError('改名之前没能建立备份，已停止（不会在没有备份的情况下改原文件）');
-  }
+  const backupPath = await backupGpkg(loc, store, targetRel, absPath, 'rename');
   // 两段式改列：先把每个旧列名改成临时名，再改成目标名。
   // 一段式会在接力/互换改名（A→B、B→A）上撞名 —— 目标名此刻还被另一个列占着。
   // 临时名带随机后缀，不会与文件里原有的列撞车。
@@ -147,7 +123,7 @@ async function renameGpkg(
     }
   }
 
-  await checkpointGpkg(gdal, absPath);
+  await gpkgCheckpoint(loc, absPath);
   const actualTo = await verifyRenamed(
     loc,
     absPath,
