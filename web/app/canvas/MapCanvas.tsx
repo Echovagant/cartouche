@@ -36,6 +36,7 @@ import {
 } from 'maplibre-gl';
 import { drawSheet, metersPerPixelAt, pdfScaleDenominator, type SheetLegendItem } from './sheet';
 import { LegendPanel } from './LegendPanel';
+import { placeLabelBoxes, type LabelBox } from './label-layout';
 import {
   featuresOf,
   labelAnchor,
@@ -402,6 +403,15 @@ export default function MapCanvas({
   const tileLabelsRef = useRef<Map<string, ReadonlyArray<{ text: string; lngLat: [number, number] }>>>(
     new Map(),
   );
+  /**
+   * 标注文本的宽度缓存（键 = 字号|文本）。
+   *
+   * 平移时每帧都要重画标注，measureText 是其中最贵的一步；
+   * 文本与字号不变时直接复用，600 条标注的平移重绘不再反复量字。
+   */
+  const labelWidthCacheRef = useRef<Map<string, number>>(new Map());
+  /** 瓦片标注的延迟刷新定时器：idle 常成串出现，合并成一次查询 */
+  const labelRefreshTimerRef = useRef<number>(0);
   const labelRef = useRef<HTMLCanvasElement | null>(null);
   const sheetMetaRef = useRef(sheetMeta);
   sheetMetaRef.current = sheetMeta;
@@ -471,6 +481,14 @@ export default function MapCanvas({
   const refreshTileLabels = useCallback(() => {
     const map = mapRef.current;
     if (!map) return;
+    // 没有任何带标注的瓦片层时直接清空，省掉一次全屏要素查询
+    const hasTiledLabels = layersRef.current.some(
+      (layer) => layer.kind === 'vector' && layer.tiled && layer.visible && layer.style?.labels,
+    );
+    if (!hasTiledLabels) {
+      if (tileLabelsRef.current.size > 0) tileLabelsRef.current = new Map();
+      return;
+    }
     const next = new Map<string, Array<{ text: string; lngLat: [number, number] }>>();
     for (const layer of layersRef.current) {
       if (layer.kind !== 'vector' || !layer.tiled || !layer.visible) continue;
@@ -488,7 +506,10 @@ export default function MapCanvas({
       }
       const seen = new Set<string>();
       const entries: Array<{ text: string; lngLat: [number, number] }> = [];
+      let scanned = 0;
       for (const feature of rendered) {
+        // 单层最多扫 4000 条、留 600 条：查询本身已是同步的，别为标注拖住主线程
+        if ((scanned += 1) > 4000) break;
         if (entries.length >= 600) break;
         const text = labelText(feature.properties ?? undefined, labels.field);
         if (!text) continue;
@@ -561,34 +582,73 @@ export default function MapCanvas({
       cssWidth: number,
       cssHeight: number,
     ) => {
-      const boxes: Array<{ x1: number; y1: number; x2: number; y2: number }> = [];
       ctx.save();
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.lineJoin = 'round';
+
+      // 第一遍：投影、视口裁剪、量字（带缓存），得到候选框
+      const candidates: Array<{
+        text: string;
+        x: number;
+        y: number;
+        size: number;
+        style: LabelStyle;
+        box: LabelBox;
+      }> = [];
+      const cache = labelWidthCacheRef.current;
       for (const entry of entries) {
         const p = project(entry.lngLat);
         const x = p.x * scale;
         const y = p.y * scale;
-        if (x < -80 * scale || y < -80 * scale || x > cssWidth * scale + 80 * scale || y > cssHeight * scale + 80 * scale) {
+        if (
+          x < -80 * scale ||
+          y < -80 * scale ||
+          x > cssWidth * scale + 80 * scale ||
+          y > cssHeight * scale + 80 * scale
+        ) {
           continue;
         }
         const size = entry.style.size * scale;
-        ctx.font = `600 ${size}px "Noto Sans SC","Microsoft YaHei",sans-serif`;
-        const width = ctx.measureText(entry.text).width;
+        const key = `${size}|${entry.text}`;
+        let width = cache.get(key);
+        if (width === undefined) {
+          ctx.font = `600 ${size}px "Noto Sans SC","Microsoft YaHei",sans-serif`;
+          width = ctx.measureText(entry.text).width;
+          // 样式换来换去时别让缓存无限长
+          if (cache.size > 4000) cache.clear();
+          cache.set(key, width);
+        }
         const height = size * 1.2;
         const pad = 2 * scale;
-        const box = { x1: x - width / 2 - pad, y1: y - height / 2 - pad, x2: x + width / 2 + pad, y2: y + height / 2 + pad };
-        // 简单占位避让：先画的优先，后面重叠的不画
-        if (boxes.some((b) => box.x1 < b.x2 && box.x2 > b.x1 && box.y1 < b.y2 && box.y2 > b.y1)) {
-          continue;
-        }
-        boxes.push(box);
-        ctx.lineWidth = Math.max(2 * scale, size / 5);
-        ctx.strokeStyle = entry.style.halo;
-        ctx.strokeText(entry.text, x, y);
-        ctx.fillStyle = entry.style.color;
-        ctx.fillText(entry.text, x, y);
+        candidates.push({
+          text: entry.text,
+          x,
+          y,
+          size,
+          style: entry.style,
+          box: {
+            x1: x - width / 2 - pad,
+            y1: y - height / 2 - pad,
+            x2: x + width / 2 + pad,
+            y2: y + height / 2 + pad,
+          },
+        });
+      }
+
+      // 第二遍：网格索引避让（先到先得，上层图层排在前面）
+      const accepted = placeLabelBoxes(candidates.map((c) => c.box));
+
+      // 第三遍：只画放得下的
+      for (let i = 0; i < candidates.length; i += 1) {
+        if (!accepted[i]) continue;
+        const c = candidates[i]!;
+        ctx.font = `600 ${c.size}px "Noto Sans SC","Microsoft YaHei",sans-serif`;
+        ctx.lineWidth = Math.max(2 * scale, c.size / 5);
+        ctx.strokeStyle = c.style.halo;
+        ctx.strokeText(c.text, c.x, c.y);
+        ctx.fillStyle = c.style.color;
+        ctx.fillText(c.text, c.x, c.y);
       }
       ctx.restore();
     },
@@ -1037,8 +1097,13 @@ export default function MapCanvas({
      * 都已经在画面上，收集到的标注才对得上。
      */
     const onIdle = (): void => {
-      refreshTileLabels();
-      drawLabelsOverlay();
+      // 成串出现的 idle 合并成一次：120ms 内只查一次渲染要素
+      window.clearTimeout(labelRefreshTimerRef.current);
+      labelRefreshTimerRef.current = window.setTimeout(() => {
+        labelRefreshTimerRef.current = 0;
+        refreshTileLabels();
+        drawLabelsOverlay();
+      }, 120);
       // 首屏瓦片落图之后，父层才允许开始低倍预热
       onIdleRef.current?.();
     };
@@ -1135,6 +1200,7 @@ export default function MapCanvas({
     return () => {
       observer.disconnect();
       cancelAnimationFrame(labelRaf);
+      window.clearTimeout(labelRefreshTimerRef.current);
       map.off('idle', onIdle);
       map.off('move', onMove);
       map.off('mousedown', onMouseDown);
