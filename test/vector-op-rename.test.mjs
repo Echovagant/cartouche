@@ -176,6 +176,27 @@ test('vector.renameFields：两个字段改成同一个名字时报错', async (
   }
 });
 
+test('vector.renameFields：两个键指向同一列时报错', async () => {
+  const dir = workspaceWith('cartouche-vrn4b-');
+  try {
+    const store = new LocalFolderStore(dir);
+    const res = await executePlan(
+      { loc, store },
+      {
+        op: 'vector.renameFields',
+        params: { target: 'dataset://sample.shp', mapping: { 名称: 'A', ' 名称': 'B' } },
+      },
+    );
+    assert.equal(res.ok, false, '同一列被改两次时应当失败');
+    assert.match(res.results[0].error ?? '', /两个键|指向/);
+
+    const info = await probeLayer(loc, join(dir, 'sample.shp'));
+    assert.ok(info.fields.some((f) => f.name === '名称'), '原列名应当还在');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 /* ── 5. 非法列名被挡 ─────────────────────────────────────────── */
 
 test('vector.renameFields：非法的列名（空串 / 路径分隔符 / 换行）被挡下', async () => {

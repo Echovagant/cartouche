@@ -20,7 +20,8 @@ import { encodingForWriteback } from './encoding.ts';
 import { VectorError, type FeatureRecord } from './types.ts';
 import type { OpValueResult } from '../ops/executor.ts';
 import type { VectorOpDeps } from './query.ts';
-import { assertRewriteSize } from './limits.ts';
+import { layerSizeBytes, rewriteSizeError } from './limits.ts';
+import { executeStreamRename, streamRenameKind } from './stream-rename.ts';
 
 /** 一条改名：请求的名字与文件里实际存在的名字。 */
 interface RenamePlan {
@@ -65,7 +66,6 @@ export async function runVectorRenameFields(
     throw new Error(`目标不存在，无法改字段名：${targetRel}`);
   }
   const targetAbs = deps.store.resolve(targetRel);
-  assertRewriteSize(targetAbs);
   const info = await probeLayer(deps.loc, targetAbs);
   const existing = info.fields.map((f) => f.name);
 
@@ -82,6 +82,11 @@ export async function runVectorRenameFields(
       );
     }
     assertValidFieldName(rawTo);
+    if (plans.some((p) => p.from.toLowerCase() === from.toLowerCase())) {
+      throw new VectorError(
+        `参数 mapping 里有两个键都指向「${from}」这一列：一列只能改成一个新名字，请只保留一个。`,
+      );
+    }
     plans.push({ requestedFrom: rawFrom, from, requestedTo: rawTo });
   }
 
@@ -106,6 +111,15 @@ export async function runVectorRenameFields(
     seen.set(key, name);
   }
 
+  // ── 超大图层的流式路径 ─────────────────────────────────────────
+  // 512 MB 以上整层读写会把内存和 GDAL 超时都拖垮。
+  // GPKG / SHP 的字段名只是元数据：前者走 SQLite 的 RENAME COLUMN，
+  // 后者只改 .dbf 头的几十个字节 —— 两条路都不读要素。
+  const size = layerSizeBytes(targetAbs);
+  const oversize = size === null ? null : rewriteSizeError(size);
+  const streamKind = oversize ? streamRenameKind(targetAbs) : null;
+  if (oversize && !streamKind) throw new VectorError(oversize);
+
   // ── 改名（值不动） ─────────────────────────────────────────────
   // 预演只需要探测结果：读全量要素是为了写回，不是预演。
   // 5 GB 级图层整读一遍要几分钟（还会撞 GDAL 超时），确认卡不该等它。
@@ -118,7 +132,9 @@ export async function runVectorRenameFields(
       kind: 'value',
       summary:
         `将改名 ${plans.length} 个字段：${planText}（共 ${info.featureCount} 条要素，值不动）` +
-        '（预演：没有写盘）',
+        (streamKind
+          ? '（预演：没有写盘；超大图层走原生改列，不整层重写）'
+          : '（预演：没有写盘）'),
       data: {
         target: targetRel,
         mapping: Object.fromEntries(plans.map((p) => [p.from, p.requestedTo])),
@@ -126,6 +142,62 @@ export async function runVectorRenameFields(
         featureCount: info.featureCount,
         fieldNames: finalNames,
         dryRun: true,
+        ...(streamKind ? { streamed: true } : {}),
+      },
+    };
+  }
+
+  if (streamKind) {
+    const streamed = await executeStreamRename(
+      deps.loc,
+      deps.store,
+      targetRel,
+      targetAbs,
+      info.layerName,
+      plans.map((p) => ({ from: p.from, requestedTo: p.requestedTo })),
+    );
+    plans.forEach((p, i) => {
+      p.actualTo = streamed.actualTo[i]!;
+    });
+
+    const caveats: string[] = [];
+    if (streamed.note) caveats.push(streamed.note);
+    for (const plan of plans) {
+      if (plan.actualTo !== plan.requestedTo) {
+        caveats.push(
+          `「${plan.requestedTo}」在文件里实际是「${displayFieldName(plan.actualTo as string)}」` +
+            '（Shapefile 的列名最多 10 字节，超出的部分被截断了）',
+        );
+      }
+    }
+
+    return {
+      kind: 'value',
+      summary:
+        `已改名 ${plans.length} 个字段：${plans
+          .map((p) => `${p.from} → ${displayFieldName(p.actualTo ?? p.requestedTo)}`)
+          .join('、')}` +
+        `（${info.featureCount} 条要素，值未变；按原生改列，未整层重写）` +
+        (caveats.length > 0 ? `（${caveats.join('；')}）` : ''),
+      data: {
+        target: targetRel,
+        mapping: Object.fromEntries(
+          plans.map((p) => [p.from, displayFieldName(p.actualTo ?? p.requestedTo)]),
+        ),
+        renamed: plans.map((p) => ({
+          from: p.from,
+          requestedTo: p.requestedTo,
+          to: displayFieldName(p.actualTo ?? p.requestedTo),
+          truncated: p.actualTo !== p.requestedTo,
+        })),
+        featureCount: info.featureCount,
+        fieldNames: [
+          ...existing.filter((n) => !renamedFrom.has(n.toLowerCase())),
+          ...plans.map((p) => displayFieldName(p.actualTo ?? p.requestedTo)),
+        ],
+        ...(caveats.length > 0 ? { caveats } : {}),
+        backupPath: streamed.backupPath,
+        streamed: true,
       },
     };
   }

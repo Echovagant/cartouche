@@ -3,13 +3,17 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { closeSync, ftruncateSync, mkdirSync, mkdtempSync, openSync, rmSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const { rewriteSizeError, MAX_REWRITE_BYTES } = await import(
+const { rewriteSizeError, MAX_REWRITE_BYTES, layerSizeBytes, assertRewriteSize } = await import(
   pathToFileURL(join(root, 'src', 'engine', 'vector', 'limits.ts')).href
 );
+
+/** 临时目录：默认落在仓库里的 .tmp-test（已 gitignore） */
+const TMP_BASE = process.env.CARTOUCHE_TEST_TMP || join(root, '.tmp-test');
 
 test('整层重写保护：512 MB 及以下放行', () => {
   assert.equal(rewriteSizeError(10 * 1024 * 1024), null);
@@ -33,4 +37,27 @@ test('整层重写保护：统计汇总用同一阈值但有对应措辞', () =>
   assert.ok(msg);
   assert.match(msg, /统计汇总/);
   assert.match(msg, /拆分或导出/);
+});
+
+test('Shapefile 的体量取 .shp / .dbf 的较大者', () => {
+  mkdirSync(TMP_BASE, { recursive: true });
+  const dir = mkdtempSync(join(TMP_BASE, 'cartouche-size-'));
+  try {
+    const shp = join(dir, 'big.shp');
+    writeFileSync(shp, Buffer.alloc(16));
+    const dbf = join(dir, 'big.dbf');
+    writeFileSync(dbf, Buffer.alloc(16));
+    // 几何很小、属性表很大：只看 .shp 会漏掉这种图层
+    const fd = openSync(dbf, 'r+');
+    try {
+      ftruncateSync(fd, 600 * 1024 * 1024);
+    } finally {
+      closeSync(fd);
+    }
+
+    assert.equal(layerSizeBytes(shp), 600 * 1024 * 1024);
+    assert.throws(() => assertRewriteSize(shp), /600 MB/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
