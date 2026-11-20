@@ -15,6 +15,7 @@
  *  - 写完重新探测，并用样例核对（普通路径是逐条核对，这里如实写明"抽样"）。
  */
 import type { OpValueResult } from '../ops/executor.ts';
+import { randomBytes } from 'node:crypto';
 import { evaluate, type ExprNode } from '../expression/index.ts';
 import {
   coerceForColumn,
@@ -445,6 +446,10 @@ export async function gpkgStreamSetAttributes(
   const whereSql = compileWhereSql(input.whereNode, whereCtx);
 
   const exprContexts: SqlCompileContext[] = [];
+  // 有表达式引用了同一次要改的其它列 → 写盘改走顺序逐列更新（见下方写盘分支）：
+  // 单条 UPDATE 里所有 RHS 都看改动前的值，而普通路径（JS 逐条顺序求值）
+  // 能看到前面刚改的值 —— 两种语义对不上就宁可不写。
+  let sequential = false;
   interface Assignment {
     readonly target: StreamSetTarget;
     readonly sql: string;
@@ -466,12 +471,7 @@ export async function gpkgStreamSetAttributes(
         other !== target &&
         refs.some((name) => name.toLowerCase() === other.name.toLowerCase()),
     );
-    if (clash) {
-      throw new VectorError(
-        `超大文件里，一个表达式不能引用同一次要改的其它列（「${target.name}」引用了「${clash.name}」）；` +
-          '请拆成两次操作。',
-      );
-    }
+    if (clash) sequential = true;
     const ctx = makeSqlContext(input.info.fields, null);
     const sql = compileAssignmentSql(
       target.value.node,
@@ -540,9 +540,13 @@ export async function gpkgStreamSetAttributes(
     evaluated.push({ fid: sample.fid, values });
   }
 
-  // 写盘之前核对：SQL 算出来的值与 JS 算出来的值必须一致
-  for (const assignment of assignments) {
+  // 写盘之前核对：SQL 算出来的值与 JS 算出来的值必须一致。
+  // 顺序逐列更新时只核对第一列：只有它的 SQL 值是按改动前的数据算的，
+  // 与 JS 顺序求值的第一步同口径；后面的列在 SQL 里也按顺序生效，
+  // 与"改动前数据"必然对不上 —— 它们由写后的抽样核对兜底（见下方）。
+  for (const [assignmentIdx, assignment] of assignments.entries()) {
     if (assignment.exprIndex === undefined) continue;
+    if (sequential && assignmentIdx !== 0) continue;
     for (let i = 0; i < samples.length; i += 1) {
       const sqlValue = samples[i]!.sqlValues[assignment.exprIndex] ?? null;
       const jsValue = evaluated[i]?.values[assignment.target.name] ?? null;
@@ -589,11 +593,55 @@ export async function gpkgStreamSetAttributes(
     .map((a) => `${quoteIdent(a.target.name)} = ${a.sql}`)
     .join(', ');
   await runWriteSteps(backupPath, async () => {
-    await gpkgExec(
-      loc,
-      input.absPath,
-      `UPDATE ${quoteIdent(table.layerName)} SET ${setSql} WHERE ${whereSql}`,
-    );
+    if (!sequential) {
+      await gpkgExec(
+        loc,
+        input.absPath,
+        `UPDATE ${quoteIdent(table.layerName)} SET ${setSql} WHERE ${whereSql}`,
+      );
+    } else {
+      // 顺序逐列更新：先用标记列把命中行冻结（条件只按改动前的值算一次），
+      // 再按声明顺序逐列赋值 —— 后面的表达式能看到前面刚改的值，与普通路径一致。
+      // 标记列带随机后缀：表达式引擎只认图层字段，不会撞名；用完即删。
+      const marker = `__cartouche_hit_${randomBytes(3).toString('hex')}`;
+      await gpkgExec(
+        loc,
+        input.absPath,
+        `ALTER TABLE ${quoteIdent(table.layerName)} ADD COLUMN ${quoteIdent(marker)} INTEGER`,
+      );
+      try {
+        await gpkgExec(
+          loc,
+          input.absPath,
+          `UPDATE ${quoteIdent(table.layerName)} SET ${quoteIdent(marker)} = 1 WHERE ${whereSql}`,
+        );
+        for (const a of assignments) {
+          await gpkgExec(
+            loc,
+            input.absPath,
+            `UPDATE ${quoteIdent(table.layerName)} ` +
+              `SET ${quoteIdent(a.target.name)} = ${a.sql} WHERE ${quoteIdent(marker)} = 1`,
+          );
+        }
+        await gpkgExec(
+          loc,
+          input.absPath,
+          `ALTER TABLE ${quoteIdent(table.layerName)} DROP COLUMN ${quoteIdent(marker)}`,
+        );
+      } catch (err) {
+        // 中途失败也要把标记列清掉：留着它会把图层结构弄脏
+        try {
+          await gpkgExec(
+            loc,
+            input.absPath,
+            `ALTER TABLE ${quoteIdent(table.layerName)} DROP COLUMN ${quoteIdent(marker)}`,
+          );
+        } catch {
+          /* 清不掉就随错误一起暴露给上层 */
+        }
+        throw err;
+      }
+    }
     await touchGpkgLastChange(loc, input.absPath, table.layerName);
     await gpkgCheckpoint(loc, input.absPath);
   });
@@ -631,6 +679,9 @@ export async function gpkgStreamSetAttributes(
   }
 
   const caveats: string[] = [];
+  if (sequential) {
+    caveats.push('跨列引用按声明顺序逐列更新：后面的表达式能看到前面刚改的值（与普通路径一致）');
+  }
   const rounded = assignments.reduce((count, a) => {
     if (
       a.target.value.kind === 'literal' &&
@@ -745,10 +796,59 @@ export async function gpkgStreamDelete(
       );
     }
   } else if (input.keep === 'largest') {
-    throw new VectorError(
-      '超大文件暂不支持 keep=largest（要逐条算面积来比大小，等于把几何全过一遍）。' +
-        '请改用 keep=first / keep=last，或先把范围拆小再删。',
+    // 与普通路径同一套口径：有面按面积比（线、点算 0），没面只有线按长度比。
+    // 量算交给 SpatiaLite（ST_Area / ST_Length 与普通路径实测一致），SQL 内流式排序，
+    // 内存与命中行数无关。
+    const type = (table.geometryType ?? '').toUpperCase();
+    const polygon =
+      type.includes('POLYGON') || type.includes('SURFACE') || type === 'GEOMETRY';
+    const line = type.includes('LINESTRING') || type.includes('CURVE');
+    if (!table.geometryColumn || (!polygon && !line)) {
+      throw new VectorError(
+        `这一层的几何类型是 ${table.geometryType ?? '未知'}（没有几何列或全是点要素），` +
+          '没有大小之分，keep=largest 判不出来。' +
+          '改用 keep=first / keep=last，或 keep=none 全删。',
+      );
+    }
+    const geom = quoteIdent(table.geometryColumn);
+    const metricSql = polygon
+      ? `COALESCE(ST_Area(${geom}), 0)`
+      : `COALESCE(ST_Length(${geom}), 0)`;
+    const metricName = polygon ? '面积' : '长度';
+    const rows = await gpkgQuery(
+      loc,
+      input.absPath,
+      `SELECT ${quoteIdent(table.fidColumn)} AS ${quoteIdent('__fid')}, ` +
+        `(${metricSql}) AS ${quoteIdent('__m')} ` +
+        `FROM ${quoteIdent(table.layerName)} WHERE ${whereSql} ` +
+        `ORDER BY ${quoteIdent('__m')} DESC, ${quoteIdent(table.fidColumn)} ASC LIMIT 1`,
     );
+    const fid = Number(rows[0]?.['__fid']);
+    const bestSize = Number(rows[0]?.['__m']);
+    if (!Number.isFinite(fid)) {
+      throw new VectorError('没能找到要保留的那一条要素（主键读不出来），这次没有删。');
+    }
+    if (!(bestSize > 0)) {
+      // 与普通路径一致：面面积全是 0（退化面）或全是点时比不出大小
+      throw new VectorError(
+        polygon
+          ? `条件命中的 ${matched} 条要素里，${metricName}都是 0，比不出哪条最大。` +
+            '换用 keep=first / keep=last，或 keep=none 全删。'
+          : `条件命中的 ${matched} 条要素全是点要素或没有几何，没有大小之分，keep=largest 判不出来。` +
+            '改用 keep=first / keep=last，或 keep=none 全删。',
+      );
+    }
+    keepFid = fid;
+    deleted = matched - 1;
+    kept = {
+      fid,
+      reason: `keep=largest：保留最大的那条（${metricName} 最大 ${bestSize}，fid=${fid}）`,
+    };
+    if (deleted === 0) {
+      throw new VectorError(
+        `条件命中 ${matched} 条，但按 keep=${input.keep} 的规则要留下 1 条 —— 实际一条也删不掉。`,
+      );
+    }
   }
 
   if (deleted === total) {

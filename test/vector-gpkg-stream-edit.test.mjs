@@ -438,39 +438,45 @@ test('原生改属性：0 条命中明确报错', async () => {
   );
 });
 
-test('原生改属性：表达式引用同一次要改的其它列时明确拒绝', async () => {
-  const info = await probeLayer(loc, gpkg);
+test('原生改属性：跨列引用走顺序逐列更新（与普通路径同语义）', async () => {
+  // 2026-11-21 起：跨列引用不再拒收 —— 用「标记列冻结命中行 + 按声明顺序
+  // 逐列 UPDATE」实现，后面的表达式能看到前面刚改的值。
+  const target = await freshGpkg('cross.gpkg');
+  const info = await probeLayer(loc, target);
   const store = new LocalFolderStore(dir);
-  await assert.rejects(
-    () =>
-      gpkgStreamSetAttributes(loc, store, {
-        targetRel: 'base.gpkg',
-        absPath: gpkg,
-        info,
-        whereSource: '编码 >= 1',
-        whereNode: parseExpression('编码 >= 1'),
-        targets: [
-          {
-            name: '编码',
-            requested: '编码',
-            kind: fieldKind(info, '编码'),
-            value: { kind: 'literal', value: 9 },
-          },
-          {
-            name: '面积',
-            requested: '面积',
-            kind: fieldKind(info, '面积'),
-            value: {
-              kind: 'expression',
-              node: parseExpression('编码 + 1'),
-              source: '编码 + 1',
-            },
-          },
-        ],
-        dryRun: false,
-      }),
-    /不能引用同一次要改的其它列/,
-  );
+  const res = await gpkgStreamSetAttributes(loc, store, {
+    targetRel: 'cross.gpkg',
+    absPath: target,
+    info,
+    whereSource: '编码 >= 1',
+    whereNode: parseExpression('编码 >= 1'),
+    targets: [
+      {
+        name: '编码',
+        requested: '编码',
+        kind: fieldKind(info, '编码'),
+        value: { kind: 'literal', value: 9 },
+      },
+      {
+        name: '面积',
+        requested: '面积',
+        kind: fieldKind(info, '面积'),
+        value: {
+          kind: 'expression',
+          node: parseExpression('编码 + 1'),
+          source: '编码 + 1',
+        },
+      },
+    ],
+    dryRun: false,
+  });
+  assert.match(res.summary, /跨列引用按声明顺序逐列更新/);
+  // 顺序语义：面积 = 编码（刚改成 9）+ 1 = 10。若是一次性 SET，面积会按旧编码（1/2/3）各算各的。
+  const after = await readFeatures(loc, { path: target });
+  for (const f of after.features) {
+    assert.equal(f.properties['编码'], 9, '编码统一改成 9');
+    assert.equal(f.properties['面积'], 10, '面积按顺序语义 = 9 + 1 = 10');
+  }
 });
 
 test('原生改属性：整数列的小数按四舍五入写入', async () => {
@@ -543,28 +549,32 @@ test('原生删要素：keep=first 保留第一条', async () => {
   assert.deepEqual(read.features.map((f) => f.properties['编码']), [1, 2]);
 });
 
-test('原生删要素：keep=largest 与删空图层都明确拒绝', async () => {
-  const info = await probeLayer(loc, gpkg);
+test('原生删要素：keep=largest 留最大面；删空图层仍明确拒绝', async () => {
+  // 2026-11-21 起：keep=largest 用 ST_Area 在 SQL 里排序实现（面按面积，线按长度）。
+  // 夹具三块面的几何面积是 100 / 400 / 900 —— 应留下丙（900），删掉甲与乙。
+  const target = await freshGpkg('largest.gpkg');
+  const info = await probeLayer(loc, target);
   const store = new LocalFolderStore(dir);
+  const res = await gpkgStreamDelete(loc, store, {
+    targetRel: 'largest.gpkg',
+    absPath: target,
+    info,
+    whereSource: '编码 >= 1',
+    whereNode: parseExpression('编码 >= 1'),
+    keep: 'largest',
+    dryRun: false,
+  });
+  assert.equal(res.data.deleted, 2);
+  assert.match(res.data.kept.reason, /面积/);
+  const after = await readFeatures(loc, { path: target });
+  assert.equal(after.features.length, 1);
+  assert.equal(after.features[0].properties['名称'], 'abc', '应保留几何面积最大的那块（丙，900 m²）');
   await assert.rejects(
-    () =>
+    async () =>
       gpkgStreamDelete(loc, store, {
-        targetRel: 'base.gpkg',
-        absPath: gpkg,
-        info,
-        whereSource: '编码 >= 1',
-        whereNode: parseExpression('编码 >= 1'),
-        keep: 'largest',
-        dryRun: false,
-      }),
-    /暂不支持 keep=largest/,
-  );
-  await assert.rejects(
-    () =>
-      gpkgStreamDelete(loc, store, {
-        targetRel: 'base.gpkg',
-        absPath: gpkg,
-        info,
+        targetRel: 'largest.gpkg',
+        absPath: target,
+        info: await probeLayer(loc, target),
         whereSource: '编码 >= 1',
         whereNode: parseExpression('编码 >= 1'),
         keep: 'none',
