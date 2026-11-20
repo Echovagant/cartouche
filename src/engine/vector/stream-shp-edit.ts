@@ -48,7 +48,7 @@ const SAMPLE_LIMIT = 3;
 /** DBF 字段名的字节上限（描述符里 11 字节，留一个 NUL） */
 const DBF_NAME_BYTES = 10;
 
-interface ShpContext {
+export interface ShpContext {
   readonly targetRel: string;
   readonly shpAbs: string;
   readonly dbfRel: string;
@@ -57,7 +57,7 @@ interface ShpContext {
   readonly info: LayerInfo;
 }
 
-function shpContext(targetRel: string, shpAbs: string, info: LayerInfo): ShpContext {
+export function shpContext(targetRel: string, shpAbs: string, info: LayerInfo): ShpContext {
   const dbfRel = targetRel.replace(/\.shp$/i, '.dbf');
   const dbfAbs = dbfPathOf(shpAbs);
   const header = readDbfHeader(shpAbs, dbfAbs);
@@ -77,7 +77,7 @@ interface RecordRef {
 }
 
 /** 按块遍历记录；record 是块里的子视图，回调内可以直接改（块的副本） */
-function forEachRecord(
+export function forEachRecord(
   ctx: ShpContext,
   onRecord: (record: RecordRef) => void,
 ): void {

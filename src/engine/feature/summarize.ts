@@ -37,6 +37,8 @@ import type { VectorOpDeps } from '../vector/query.ts';
 import { layerSizeBytes, rewriteSizeError } from '../vector/limits.ts';
 import { nativeSqlKind } from '../vector/gpkg-native.ts';
 import { gpkgStreamSummarize } from '../vector/stream-gpkg-summary.ts';
+import { isShapefilePath } from '../vector/dbf.ts';
+import { shpStreamSummarize } from '../vector/stream-shp-summary.ts';
 import {
   columnKindOf,
   fieldNamesHint,
@@ -134,7 +136,9 @@ export async function runFeatureSummarize(
   const size = layerSizeBytes(abs);
   const oversize = size === null ? null : rewriteSizeError(size, '统计汇总');
   const streamed = oversize !== null && nativeSqlKind(abs) === 'gpkg';
-  if (oversize && !streamed) throw new VectorError(oversize);
+  // 超大 Shapefile 的汇总也能流式：属性全在 .dbf，按块遍历不读几何
+  const shpStreamed = oversize !== null && isShapefilePath(abs);
+  if (oversize && !streamed && !shpStreamed) throw new VectorError(oversize);
 
   /* ── 分组列：定位到图层里真实的列 ───────────────────────────── */
   const groupFields: LayerField[] = [];
@@ -155,6 +159,14 @@ export async function runFeatureSummarize(
   /* ── 面积单位 ───────────────────────────────────────────────── */
   const wantsArea = aggregates.includes('area');
   const wantsLength = aggregates.includes('length');
+  if (shpStreamed && (wantsArea || wantsLength)) {
+    // area / length 要读 .shp 几何；流式路径只看 .dbf，读几何等于整层读进内存
+    throw new VectorError(
+      '超大 Shapefile 的流式汇总不支持 area / length（要逐条读几何，等于把整层读进内存）。' +
+        '属性类的 count / sum / mean / min / max / distinct 都可用；' +
+        '要算面积与长度，请先把文件拆小，或转成 GeoPackage 后用数据库原生汇总。',
+    );
+  }
   const rawAreaUnitRaw = params['areaUnit'];
   if (rawAreaUnitRaw !== undefined && rawAreaUnitRaw !== null && typeof rawAreaUnitRaw !== 'string') {
     throw new VectorError(
@@ -225,6 +237,23 @@ export async function runFeatureSummarize(
       areaFactor,
       lengthUnit: measure.unitLabel,
       measureKind: measure.kind,
+      dryRun,
+    });
+  }
+
+  // 超大 Shapefile：按 .dbf 块遍历汇总（不读几何；area / length 已在入口拒收）
+  if (shpStreamed) {
+    return shpStreamSummarize(deps.loc, {
+      targetRel,
+      absPath: abs,
+      info,
+      groupFields,
+      groupNames,
+      aggregates,
+      numericFields,
+      distinctFields,
+      wantsArea,
+      wantsLength,
       dryRun,
     });
   }
