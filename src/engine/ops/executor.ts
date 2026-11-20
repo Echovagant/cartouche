@@ -36,6 +36,7 @@ import { runVectorReproject } from '../vector/reproject.ts';
 import { runVectorRenameFields } from '../vector/rename-fields.ts';
 import { runVectorRecode } from '../vector/recode.ts';
 import { runVectorReclassify } from '../vector/reclassify.ts';
+import { runVectorCompact } from '../vector/compact.ts';
 import {
   runFeatureSetAttributes,
   runFeatureDelete,
@@ -705,6 +706,13 @@ const IMPLEMENTED: Readonly<Record<string, OpHandler>> = {
     countsChangedPixels: false,
     run: async (_editor, params, dryRun, deps) =>
       runFeatureSummarize(params, { loc: deps.loc, store: deps.store }, dryRun),
+  },
+  'vector.compact': {
+    label: '压缩瘦身',
+    previewable: true,
+    countsChangedPixels: false,
+    run: async (_editor, params, dryRun, deps) =>
+      runVectorCompact(params, { loc: deps.loc, store: deps.store }, dryRun),
   },
   'raster.paint': {
     label: '涂色',

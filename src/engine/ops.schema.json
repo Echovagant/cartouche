@@ -116,6 +116,7 @@
             "vector.query",
             "vector.addField",
             "vector.spatialJoin",
+            "vector.compact",
             "export.image",
             "export.report"
           ]
@@ -535,6 +536,14 @@
         "fieldPrefix": { "type": "string", "maxLength": 32, "description": "汇总字段名前缀。Shapefile 下「前缀 + 字段名」合计限 10 字节（UTF-8 下最多 3 个汉字），超了会明确报错；不给就用源字段名 —— 此时写回目标图层若已存在同名字段会明确报错，不会静默覆盖" }
       }
     },
+    "params.vector.compact": {
+      "type": "object",
+      "required": ["target"],
+      "additionalProperties": false,
+      "properties": {
+        "target": { "$ref": "#/$defs/layerRef", "description": "要压缩的图层：清掉删除标记（Shapefile）或把空闲页还给操作系统（GeoPackage）" }
+      }
+    },
     "params.export.image": {
       "type": "object",
       "required": ["target", "format"],
@@ -566,7 +575,7 @@
             ]
           }
         },
-        "format": { "enum": ["csv", "html", "pdf", "json"], "default": "html" }
+        "format": { "enum": ["csv", "html", "json"], "default": "html" }
       }
     }
   }

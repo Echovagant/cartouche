@@ -129,7 +129,7 @@ export function featuresToGeoJson(features: readonly FeatureRecord[]): string {
  * GPKG 的"一套"是：主库 + SQLite 伴随文件（-wal/-journal/-shm）。
  * 它们是同一个数据库的组成部分，备份与回滚必须一起算进去。
  */
-async function existingDataFiles(
+export async function existingDataFiles(
   store: WorkspaceAdapter,
   targetRel: string,
   format: VectorWriteFormat,

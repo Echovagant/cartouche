@@ -827,6 +827,7 @@ const OP_LABELS: Readonly<Record<string, string>> = {
   'vector.recode': '重编码',
   'vector.reclassify': '值重编码',
   'feature.summarize': '分组汇总',
+  'vector.compact': '压缩瘦身',
 };
 
 /**
@@ -853,6 +854,7 @@ const OP_USAGE: Readonly<Record<string, string>> = {
   'vector.recode': '字段内容乱码时换字符编码（GBK/UTF-8），不改字段名',
   'vector.reclassify': '按对照表把一列里的旧值换成新值（如 耕地→01）',
   'feature.summarize': '按字段分组汇总（计数、面积、求和等），只出结果表',
+  'vector.compact': '压缩瘦身：把删除要素留下的残留真正从文件里清掉（Shapefile 重写干净副本，GeoPackage 做 VACUUM）',
 };
 
 /**
@@ -916,6 +918,7 @@ const OP_EXAMPLES: Readonly<Record<string, Readonly<Record<string, unknown>>>> =
     aggregates: ['count', 'area'],
     areaUnit: 'ha',
   },
+  'vector.compact': { target: 'dataset://图层.shp' },
 };
 
 /**
