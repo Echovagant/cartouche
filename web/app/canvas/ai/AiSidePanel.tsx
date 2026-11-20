@@ -642,7 +642,7 @@ export function AiSidePanel({
         proposal.unsupported.length === 0 ? (
           <div className="mt-3 rounded-lg border border-warn/45 bg-warn/12 px-3 py-2.5 text-[12.5px] leading-relaxed">
             <strong className="text-warn">
-              {proposal.error === 'plan_needs_clarification' ? '需要你说清楚一点：' : '这次没出计划：'}
+              {proposal.error === 'plan_needs_clarification' ? '模型回复：' : '这次没出计划：'}
             </strong>
             <span className="mt-0.5 block text-studio-ink-2">{proposal.message}</span>
           </div>

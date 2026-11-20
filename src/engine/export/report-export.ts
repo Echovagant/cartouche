@@ -42,10 +42,11 @@ export type ReportKind = 'csv' | 'change-report' | 'health-report' | 'audit-log'
 /**
  * 报告的输出格式。
  *
- * 契约里有 pdf，但引擎目前没有任何一种 kind 支持它（PDF 那条路是给**图件**用的，
- * 报告走的是文本渲染）：选 pdf 会明确报错，不会悄悄换成别的格式。
+ * 契约里曾经有 pdf，但引擎没有任何一种 kind 支持它（PDF 那条路是给**图件**用的，
+ * 报告走的是文本渲染）——2026-11-21 审计收窄时从契约与类型里一起摘掉了：
+ * 契约与引擎能力不一致就是「AI 提议必报错」的另一个名字。
  */
-export type ReportFormat = 'csv' | 'html' | 'pdf' | 'json';
+export type ReportFormat = 'csv' | 'html' | 'json';
 
 /** 契约里 export.report 的 include 取值全集 */
 export const REPORT_INCLUDE_ITEMS: readonly string[] = [

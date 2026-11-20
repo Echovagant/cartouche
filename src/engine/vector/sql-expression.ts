@@ -489,7 +489,9 @@ function compileCall(
         if (arg.kind !== 'text') {
           throw new VectorError(
             `超大文件里 CONCAT 只接文字参数：第 ${i + 1} 个参数是${kindName(arg.kind)}。` +
-              '请先把数字转成文字列，或把文件拆小后再处理。',
+              '数字转文字的位数口径两边不一样（引擎按 JS 的 17 位有效数字，数据库按 15 位），' +
+              '拼出来的字符串会差最后几位，所以不做静默转换。' +
+              '请先把数字存进文字列再拼，或把文件拆小后用普通路径处理。',
           );
         }
         return `COALESCE(${arg.sql}, '')`;
