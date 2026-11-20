@@ -135,7 +135,8 @@ test('export.image 与 export.report 都进了已实现清单', () => {
   assert.ok(ops.includes('export.report'));
   // 清单是「引擎真能跑的 op」，加一个 op 就要改这个数 ——
   // 写死是有意的：少登记了会被这条拦住，多登记了也会被这条拦住。
-  assert.equal(ops.length, 23, `实际：${ops.join('、')}`);
+  // 2026-11-21：vector.compact（压缩瘦身）登记后 23 → 24。
+  assert.equal(ops.length, 24, `实际：${ops.join('、')}`);
 });
 
 /* ── 2. export.image ────────────────────────────────────────── */
